@@ -58,8 +58,9 @@ def remove_all_files_in_folder(folder_path):
 
 
 if __name__ == "__main__":
-    ARC_TRAIN_DIR = "ARC-AGI/data/training"
-    SOLVED_VIZ_DIR = "solved-viz"
+    ARC_TRAIN_DIR = "third_party/ARC-AGI/data/training"
+    SOLVED_VIZ_DIR = "legacy/solved-viz"
+    os.makedirs(SOLVED_VIZ_DIR, exist_ok=True)
     remove_all_files_in_folder(SOLVED_VIZ_DIR)
     grid_acc, task_acc, n_grids, n_tasks = evaluate_folder(
         folder=ARC_TRAIN_DIR, 

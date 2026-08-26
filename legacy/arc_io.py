@@ -101,8 +101,9 @@ def draw_grid(ax, grid):
 
 if __name__ == "__main__":
     # Example usage
-    ARC_TRAIN_DIR = "ARC-AGI/data/training"
-    OUT_DIR = "visualizations"
+    ARC_TRAIN_DIR = "third_party/ARC-AGI/data/training"
+    OUT_DIR = "legacy/visualizations"
+    os.makedirs(OUT_DIR, exist_ok=True)
     files = glob.glob(os.path.join(ARC_TRAIN_DIR, "*.json"))
     # Just plot one task for demo
     print(f"Visualizing {len(files)} tasks...")
@@ -110,5 +111,5 @@ if __name__ == "__main__":
         task_id = Path(task_file).stem
         print(f"Working on task {task_id}")
         task = load_arc_task(task_file)
-        plot_task(task, task_id, save_path=f"visualizations/{task_id}.png")
+        plot_task(task, task_id, save_path=f"{OUT_DIR}/{task_id}.png")
     print(f"Done.")

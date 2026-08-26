@@ -60,10 +60,34 @@ Nothing sensitive. No credentials, no PII, no network calls beyond localhost. No
 ## 12. Versioning and migration — ASSUMED
 `run_meta.json` carries a `schema_version` for the trajectory/metrics log format so the visualizer can degrade gracefully if the format changes later. Low stakes for a solo research tool.
 
-## Forks escalated to user (see chat for the compact grill)
-- F1. `arc-ngps` reuse scope (action-space DSL/executor vs. discard vs. also reuse encoder)
-- F2. Milestone-1 task scope: same-shape-only vs. full variable-size ARC-1
-- F3. Build order: RL first, evolutionary first, or both in parallel
-- F4. RL framework: Gymnasium + Stable-Baselines3 vs. Gymnasium + custom training loop
-- F5. Visualizer live-streaming vs. log-and-replay
-- F6. Visualizer stack: custom web app (Canvas/JS) vs. Streamlit/Gradio
+## Forks — resolution (2026-08-27)
+- **F1. DSL / action-space reuse — PENDING RESEARCH.** User wants this settled by
+  subagent research (max 2, per `CLAUDE.md`) rather than my recommendation,
+  specifically covering Michael Hodel's `arc-dsl` (a hand-written DSL with
+  solver programs for every ARC-1 training task) and his `re-arc` generator
+  (procedurally generates fresh ARC-AGI-1-like tasks from those solver
+  programs — a candidate for training-data augmentation / infinite curriculum).
+  Research should determine: is Hodel's DSL a better action-space/executor
+  foundation than `research/arc-ngps`'s home-grown one; license; whether
+  `re-arc` is usable for RL training-task generation; and how the DSL handles
+  variable output-grid sizing (feeds directly into F2).
+- **F2. Milestone-1 task scope — PENDING RESEARCH.** Folded into the F1 research
+  pass: Hodel's DSL's approach to output-grid sizing (if any) should directly
+  inform whether milestone 1 can support variable-shape tasks or must restrict
+  to same-shape ones.
+- **F3. Build order — ANSWERED: RL (PPO) first.** Confirmed by user.
+- **F4. RL framework — ANSWERED: Gymnasium-style env + custom hand-rolled
+  training loop** (no Stable-Baselines3). Confirmed by user.
+- **F5. Visualizer live vs. replay — ANSWERED: log-and-replay** (trainer writes
+  JSONL, visualizer tails/polls). Confirmed by user.
+- **F6. Visualizer stack — ANSWERED: custom web app**, small server +
+  Canvas-based grid renderer with play/pause/step/speed controls. Frontend
+  language: **TypeScript preferred over JavaScript** (user's explicit call,
+  refines the original recommendation).
+
+## Second research thread (added 2026-08-27)
+User also wants an RL/evolutionary-methods literature and prior-art survey
+(reward shaping for grid similarity, evolutionary program search over a DSL vs.
+neuroevolution of policy weights, notable ARC-AGI-1 RL/evolutionary attempts) —
+this and the F1 DSL research are the two subagents to run next, per the
+`CLAUDE.md` cap of 2.
