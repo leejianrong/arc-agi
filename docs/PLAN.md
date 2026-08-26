@@ -35,6 +35,7 @@ decision-maker.
 ## Scope
 
 **In this milestone.**
+
 - A Gymnasium-style ARC environment exposing a curated subset of `arc-dsl`
   primitives (ADR-0001) as a discrete action space.
 - A same-shape-only task subset for the first slice, extended to
@@ -51,6 +52,7 @@ decision-maker.
 - `re-arc`-generated task variations as an expanded training curriculum.
 
 **Out.**
+
 - ARC-AGI-2 (this project targets ARC-AGI-1 only, per the vendored dataset).
 - Kaggle/private-test-set submission tooling — the private test set isn't
   available to us; success is measured against the public
@@ -69,10 +71,10 @@ decision-maker.
 ## Requirements
 
 | ID | Requirement | Status |
-|----|-------------|--------|
+| --- | --- | --- |
 | R0 | Demonstrate measurable, non-zero learning improvement on a bounded ARC-AGI-1 task subset via an RL and/or evolutionary agent editing the grid step-by-step, visualizable end to end | Core goal |
 | R1 | Gymnasium-style ARC env exposing `arc-dsl` primitives as a discrete action space, with scratch-canvas + commit/crop for variable output shape | Must-have |
-| R2 | Hand-rolled PPO trainer with dense delta-shaped reward, logging to `runs/<run_id>/` | Must-have |
+| R2 | Hand-rolled PPO trainer with dense delta-shaped reward, training one dedicated policy per task at solve-time (ADR-0008), logging to `runs/<run_id>/` | Must-have |
 | R3 | Genetic-programming trainer over the same DSL/env, sharing the trajectory log format | Must-have |
 | R4 | Local TypeScript web visualizer: step-by-step episode replay (play/pause/step/speed) | Must-have |
 | R5 | Training-metrics dashboard (reward curve, success rate) tailing `runs/<run_id>/metrics.jsonl` | Must-have |
@@ -83,10 +85,10 @@ decision-maker.
 ## Shape
 
 | Part | Mechanism | ADR |
-|------|-----------|-----|
+| --- | --- | --- |
 | S1 | ARC Gymnasium-style env wrapping vendored `arc-dsl` primitives as actions, 30×30 scratch canvas + commit/crop, task loader over `third_party/ARC-AGI` + `third_party/re-arc` | ADR-0001, ADR-0002 |
 | S2 | JSONL trajectory logs + JSONL/CSV metrics + `run_meta.json` (with `schema_version`) under `runs/<run_id>/` | ADR-0006 |
-| S3 | Hand-rolled PPO trainer: rollout buffer, GAE, clipped surrogate objective, dense delta-shaped reward | ADR-0004, ADR-0005 |
+| S3 | Hand-rolled PPO trainer: rollout buffer, GAE, clipped surrogate objective, dense delta-shaped reward, one policy trained per task at solve-time, color-embedding + conv/attention encoder with a factored action head | ADR-0004, ADR-0005, ADR-0008 |
 | S4 | Genetic-programming trainer: population of DSL-program ASTs, crossover/mutation, fitness = train-pair match / pixel distance, same env/executor as S1 | ADR-0003 |
 | S5 | Local visualizer: backend serving `runs/` as JSON, TypeScript + Canvas frontend for replay + metrics dashboard | ADR-0007 |
 
@@ -95,7 +97,7 @@ decision-maker.
 **UI.**
 
 | Affordance | Place | Wires to |
-|------------|-------|----------|
+| --- | --- | --- |
 | Run picker | Visualizer home | Scans `runs/` on disk |
 | Training dashboard (reward curve, success-rate curve, task breakdown) | Visualizer, per-run view | Polls `runs/<run_id>/metrics.jsonl` |
 | Episode replay (grid canvas, play/pause/step/speed) | Visualizer, per-episode view | Loads `runs/<run_id>/episodes/<episode_id>.jsonl` |
@@ -103,7 +105,7 @@ decision-maker.
 **Non-UI.**
 
 | Affordance | Kind | Wires to |
-|------------|------|----------|
+| --- | --- | --- |
 | `train.py --algo ppo\|gp --config ...` | CLI command | S1 env, S3/S4 trainer, S2 logging |
 | ARC env module | Library / Gym interface | `third_party/arc-dsl` executor, `third_party/ARC-AGI` + `third_party/re-arc` data |
 | Visualizer backend | Local HTTP server | `runs/` directory tree |
@@ -116,7 +118,12 @@ decision-maker.
   `third_party/ARC-AGI/data/{training,evaluation}` and, once R7 lands,
   `third_party/re-arc`-generated variants).
 - `trainers/ppo/`: rollout collection, GAE, clipped-objective update step
-  (ADR-0004), consuming the shared reward function (ADR-0005).
+  (ADR-0004), consuming the shared reward function (ADR-0005). Trains one
+  dedicated policy per `task_id` at solve-time — never a policy shared
+  across tasks — using the color-embedding + conv/attention encoder and
+  factored action head described in ADR-0008. No representation-pretraining
+  stage (e.g. an autoencoder/VAE) precedes this; the encoder is learned
+  end-to-end from the PPO reward signal (ADR-0008).
 - `trainers/gp/`: population management, crossover/mutation over DSL-program
   ASTs, fitness evaluation reusing the same reward function and env/executor
   (ADR-0003).
@@ -147,10 +154,10 @@ decision-maker.
   solver programs through our env's executor; each must reproduce its
   task's expected output exactly. This is a strong, free regression test
   since the ground truth already exists (ADR-0001).
-- **PPO sanity**: a smoke test that PPO can learn a single trivial
-  single-action task (e.g. `vmirror`) within a small, fixed step budget —
-  guards against a silently-broken hand-rolled implementation (ADR-0004),
-  not a claim about ARC-AGI-1 accuracy.
+- **PPO sanity**: a smoke test that a single per-task policy (ADR-0008) can
+  learn a single trivial single-action task (e.g. `vmirror`) within a small,
+  fixed step budget — guards against a silently-broken hand-rolled
+  implementation (ADR-0004), not a claim about ARC-AGI-1 accuracy.
 - **GP sanity**: a smoke test that genetic programming finds a program
   matching a trivial task's train pairs within a bounded generation budget.
 - **Visualizer replay**: a fixture `episodes/*.jsonl` file renders the
@@ -164,7 +171,7 @@ Per-slice test plans (with concrete end-to-end acceptance criteria) live in
 ## Assumed defaults
 
 | ID | Assumed | Cost if wrong |
-|----|---------|---------------|
+| --- | --- | --- |
 | Q1 | Solo user, no multi-actor conflicts | Low — nothing in the design assumes single-user; would just need auth/multi-run isolation added later |
 | Q3 | Task/run identity via `task_id` (ARC filename stem) + timestamped `run_id`; JSONL trajectory schema as described in ADR-0006 | Medium — a schema change means a `schema_version` bump and a visualizer compatibility shim, already planned for |
 | Q4 | All state on local disk under `runs/`, no database | Low — flat files remain inspectable/diffable either way; a DB migration would be additive, not corrective |
@@ -191,3 +198,7 @@ Per-slice test plans (with concrete end-to-end acceptance criteria) live in
   slice to reveal it: V4.
 - **TypeScript frontend build tooling adds setup overhead** relative to a
   Python-only dashboard — a one-time cost, surfaced immediately in V1.
+- **Per-task training cost scales linearly with the number of tasks
+  attempted** (ADR-0008) — solving N tasks means N independent training
+  runs, which bounds how large V2/V3's curated task subset can practically
+  be on this CPU-only machine. Earliest slice to reveal it: V2.

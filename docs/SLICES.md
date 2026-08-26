@@ -61,8 +61,12 @@ logic itself.
 
 **Build plan**
 
-1. Build `trainers/ppo/`: rollout buffer, GAE, clipped surrogate objective
-   (ADR-0004).
+1. Build `trainers/ppo/`: the color-embedding + conv/attention encoder and
+   factored action head (ADR-0008), rollout buffer, GAE, clipped surrogate
+   objective (ADR-0004). `train.py --algo ppo --task_id <id>` trains one
+   fresh policy per task at solve-time (ADR-0008) — no shared/pretrained
+   encoder across tasks; running the whole curated subset means looping (or
+   parallelizing across cores) over `task_id`s, one `runs/<run_id>/` each.
 2. Implement the dense delta-shaped reward (ADR-0005) in `arc_env/`.
 3. Vendor `re-arc` (`third_party/re-arc/`) and use it to generate additional
    training instances per task, beyond ARC's native ~3-5 train pairs, for

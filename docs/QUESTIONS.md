@@ -20,6 +20,7 @@ None — all forks from the 2026-08-27 round are resolved (see Register).
 | F6 | Visualizer tech stack | DECIDED (user) | Custom local web app; TypeScript (not JavaScript) + Canvas frontend | ADR-0007 |
 | F7 | Reward shaping design | DECIDED (delegated research: `docs/research/rl-evolutionary-survey.md`) | Dense, delta-based, non-background-normalized similarity reward + no-op step penalty + terminal exact-match bonus | ADR-0005 |
 | F8 | Evolutionary method: genetic programming vs. neuroevolution | DECIDED (delegated research) | Genetic programming over the DSL (CPU-cheap, zero prior benchmark to beat); neuroevolution documented as a future option only | ADR-0003 |
+| F9 | PPO training lifecycle (per-task vs. shared/cross-task) and whether a pretrained autoencoder/VAE embedding is needed | DECIDED (user, via conversation 2026-08-27) | Per-task, solve-time training — one fresh PPO policy per `task_id`, trained only on that task's own train pairs + `re-arc` variations, never shared across tasks. No representation-pretraining this milestone: the grid encoder (color-embedding + conv/attention) is learned end-to-end from the PPO reward signal; a reconstruction-based AE/VAE would target a different problem (general ARC perception) and is a weak proxy for the relational structure ARC needs. Cross-task generalization + shared pretraining documented as an explicit future direction, not this milestone | ADR-0008 |
 | Q1 | Primary user and actors | ASSUMED | Solo user (repo owner), personal research; no multi-actor conflicts | PLAN.md Users and actors |
 | Q2 | Scope boundary | ASSUMED + F2 | ARC-AGI-1 only; no Kaggle/private test; no distributed training; no LLM-in-the-loop; see full in/out list | PLAN.md Scope |
 | Q3 | Core data model and identity | ASSUMED | `task_id` (ARC filename stem) + timestamped `run_id`; JSONL trajectory schema per step | PLAN.md Implementation decisions, ADR-0006 |
@@ -51,6 +52,7 @@ None — all forks from the 2026-08-27 round are resolved (see Register).
 | Versioning and migration | Q12 |
 | Reward design (domain-specific) | F7 |
 | Build order / paradigm sequencing (domain-specific) | F3, F4 |
+| Policy architecture / training lifecycle (domain-specific) | F9 |
 
 ## Repo-audit facts used throughout
 

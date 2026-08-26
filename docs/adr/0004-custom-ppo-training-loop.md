@@ -32,6 +32,9 @@ than depending on Stable-Baselines3.
 
 ## Consequences
 
+- This ADR fixes the library/algorithm boundary only. What the network
+  looks like, and whether training is per-task or shared across tasks, is a
+  separate decision — see ADR-0008.
 - ~150-300 lines of PPO plumbing (rollout buffer, GAE, clipped loss) is our
   code to maintain and test, not a dependency to trust.
 - The action space can be represented naturally (e.g., a factored
