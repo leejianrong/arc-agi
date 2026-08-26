@@ -1,93 +1,66 @@
-# Decision register — ARC-AGI RL/Evolutionary revamp
+# Questions — ARC-AGI RL/Evolutionary revamp
 
-Mode: **Fresh** (no prior planning artifacts existed; idea captured from conversation + repo audit).
+Statuses: `DECIDED` (user or delegated-research answered) · `ASSUMED` (default
+taken, correct it if wrong) · `FORK` (waiting on the user) · `DEFERRED` (not
+needed this milestone).
 
-Status values: `FORK` (escalated to user), `ASSUMED` (default applied), `DEFERRED` (not needed for this milestone).
+## Open forks
 
-## Repo-audit facts used below
-- No GPU: `torch` not even installed at root env; no `nvidia-smi`; 16 CPU cores available. Training must be CPU-tractable.
-- `./ARC-AGI` is the official ARC-AGI-1 clone: `data/training`, `data/evaluation` JSON tasks, plus the human-facing `apps/testing_interface.html`. No private/Kaggle test set present or obtainable.
-- `./arc-ngps` is a half-built *supervised program-synthesis* scaffold (Perceiver encoder, pair-induction, DSL AST + executor with `grid_ops.py`, beam search) — a different paradigm from RL/evolutionary, but its DSL/executor primitives are a plausible action-space library.
-- Root `baseline.py`/`evaluate.py`/`arc_io.py` are a simple non-learned geometric+color-bijection baseline with matplotlib visualization — superseded by this revamp's goals but not necessarily deleted (could stay as a sanity-check baseline).
+None — all forks from the 2026-08-27 round are resolved (see Register).
 
-## 1. Primary user and actors — ASSUMED
-Solo user (the repo owner) building/running this for personal research. No multi-tenant, no other humans. The only "actor" besides the human is the training process itself (RL/evolutionary trainer) and, later, a trained policy being replayed.
+## Register
 
-## 2. Scope boundary — FORK (task-shape scope) + ASSUMED (rest)
-ASSUMED in-scope: an ARC-1 Gym-style environment with a step-by-step grid-editing action space; an RL trainer; an evolutionary trainer (fast-follow, see F3); a local visualizer for (a) training metrics and (b) step-by-step replay of an episode "playing" a task.
-ASSUMED out-of-scope: ARC-AGI-2, Kaggle/private-test submission tooling, distributed/multi-GPU training, cloud deployment, multiplayer or human-in-the-loop play.
-FORK: whether milestone 1 restricts to same-shape (input.shape == output.shape) tasks — see F2.
+| ID | Question | Status | Answer or default | Landed |
+|----|----------|--------|--------------------|--------|
+| F1 | DSL / action-space foundation | DECIDED (delegated research: `docs/research/arc-dsl-survey.md`) | Adopt Hodel's `arc-dsl` (160 primitives, MIT) as the action space/executor; discard `research/arc-ngps`'s DSL/executor; vendor `re-arc` for training-data generation | ADR-0001 |
+| F2 | Variable output-grid shape handling / milestone-1 task scope | DECIDED (delegated research, reverses original same-shape-only recommendation) | Fixed 30×30 scratch canvas + explicit commit/crop action, mirroring `arc-dsl`'s own `canvas`/`crop` primitives; Slice 1 still starts same-shape-only as a smoke test, canvas/commit added in Slice 3 | ADR-0002, SLICES.md V1 & V3 |
+| F3 | Build order: RL vs. evolutionary vs. both | DECIDED (user) | RL (PPO) first; genetic programming over the same DSL as the evolutionary fast-follow; both share one env/DSL/trajectory-log format | ADR-0003 |
+| F4 | RL framework: Stable-Baselines3 vs. custom loop | DECIDED (user) | Gymnasium-style env + hand-rolled PPO (no SB3) | ADR-0004 |
+| F5 | Visualizer live-streaming vs. log-and-replay | DECIDED (user) | Log-and-replay via JSONL/CSV on local disk, no trainer↔visualizer IPC | ADR-0006 |
+| F6 | Visualizer tech stack | DECIDED (user) | Custom local web app; TypeScript (not JavaScript) + Canvas frontend | ADR-0007 |
+| F7 | Reward shaping design | DECIDED (delegated research: `docs/research/rl-evolutionary-survey.md`) | Dense, delta-based, non-background-normalized similarity reward + no-op step penalty + terminal exact-match bonus | ADR-0005 |
+| F8 | Evolutionary method: genetic programming vs. neuroevolution | DECIDED (delegated research) | Genetic programming over the DSL (CPU-cheap, zero prior benchmark to beat); neuroevolution documented as a future option only | ADR-0003 |
+| Q1 | Primary user and actors | ASSUMED | Solo user (repo owner), personal research; no multi-actor conflicts | PLAN.md Users and actors |
+| Q2 | Scope boundary | ASSUMED + F2 | ARC-AGI-1 only; no Kaggle/private test; no distributed training; no LLM-in-the-loop; see full in/out list | PLAN.md Scope |
+| Q3 | Core data model and identity | ASSUMED | `task_id` (ARC filename stem) + timestamped `run_id`; JSONL trajectory schema per step | PLAN.md Implementation decisions, ADR-0006 |
+| Q4 | State and storage | ASSUMED | Local disk only, `runs/<run_id>/`, no database | ADR-0006 |
+| Q5 | Concurrency and conflict | ASSUMED | No locking needed; independent `run_id` directories, no shared mutable state | PLAN.md Assumed defaults |
+| Q6 | Interfaces and contracts (CLI) | ASSUMED | `train.py --algo ppo\|gp --config ...` | PLAN.md Affordances |
+| Q7 | Failure behaviour | ASSUMED | Invalid actions → no-op + small penalty; hard max-step termination; checkpoint-based recovery | PLAN.md Assumed defaults |
+| Q8 | External dependencies (license, offline) | ASSUMED + F1 | `arc-dsl`/`re-arc` MIT; `gymnasium` MIT; numpy/torch (BSD-style), CPU-only wheel installed explicitly (avoids repeating `arc-ngps`'s 6.9GB CUDA-wheel mistake); all offline/local | ADR-0001, PLAN.md Implementation decisions |
+| Q9 | Runtime and deployment | ASSUMED | Single local machine, CPU-only (confirmed: no CUDA, 16 cores), `localhost`-only visualizer | PLAN.md Assumed defaults |
+| Q10 | Measurable success | ASSUMED + research-calibrated | Task-exact-match accuracy on scoped subset; calibrated against ~20% brute-force-search floor (icecuber) as context, not a target | PLAN.md Assumed defaults, `docs/research/rl-evolutionary-survey.md` |
+| Q11 | Security and secrets | ASSUMED | None applicable — no credentials/PII, public dataset only | PLAN.md Assumed defaults |
+| Q12 | Versioning and migration | ASSUMED | `schema_version` field in `run_meta.json` | PLAN.md Assumed defaults |
 
-## 3. Core data model and identity — ASSUMED
-- ARC tasks keep their existing `task_id` (filename stem from `ARC-AGI/data/{training,evaluation}`).
-- Training runs get a `run_id` (timestamp-based directory name).
-- Each episode logs a JSONL trajectory: one line per step `{step, grid_before, action, args, grid_after, reward, done}`.
-- Aggregate training metrics (reward, success rate, loss) logged as JSONL/CSV, one row per episode or update.
-- A `run_meta.json` per run records config, algorithm, `schema_version`.
-All human-readable/diffable text formats, no binary trajectory blobs.
+## Coverage
 
-## 4. State and storage — ASSUMED
-Everything lives under `runs/<run_id>/` on local disk: `meta.json`, `metrics.jsonl`, `episodes/*.jsonl`, `checkpoints/*.pt` (or evolutionary population snapshots). No database. Fully inspectable/diffable by the user directly.
+| Category | Covered by |
+|----------|-----------|
+| Primary user and actors | Q1 |
+| Scope boundary | Q2, F2 |
+| Data model and identity | Q3 |
+| State and storage | Q4 |
+| Concurrency and conflict | Q5 |
+| Interfaces and contracts | Q6, F5, F6 |
+| Failure behaviour | Q7 |
+| External dependencies | Q8, F1, F8 |
+| Runtime and deployment | Q9 |
+| Measurable success | Q10 |
+| Security and secrets | Q11 |
+| Versioning and migration | Q12 |
+| Reward design (domain-specific) | F7 |
+| Build order / paradigm sequencing (domain-specific) | F3, F4 |
 
-## 5. Concurrency and conflict — ASSUMED
-Single human, no simultaneous writers to the same run. Multiple independent training runs may run concurrently in separate `run_id` directories with no shared mutable state — no locking needed.
+## Repo-audit facts used throughout
 
-## 6. Interfaces and contracts — FORK (x3: F4, F5, F6) + ASSUMED (CLI)
-ASSUMED: a CLI entrypoint to launch a training run (`python -m arc_rl.train --algo ppo --config ...`) that writes to `runs/<run_id>/` per above.
-FORK: RL framework/library choice (F4).
-FORK: whether the visualizer needs live streaming from an in-flight trainer, or reads logged files (F5).
-FORK: visualizer tech stack (F6).
-
-## 7. Failure behaviour — ASSUMED
-Invalid/out-of-bounds actions from the policy are clipped to a no-op with a small negative reward and logged, rather than crashing the episode. Episodes hard-terminate at a max-step budget. Training crashes are recoverable via the last checkpoint in `runs/<run_id>/checkpoints/`.
-
-## 8. External dependencies — FORK (x3: F1, F3, F4, F6 — stack choices) + ASSUMED (rest)
-FORK: how much of `arc-ngps` to reuse (F1).
-FORK: RL vs evolutionary build order (F3).
-FORK: RL framework (F4).
-FORK: visualizer stack (F6).
-ASSUMED: `numpy` for grid math, `torch` for any learned policy (CPU build), no other heavy deps (no SB3 unless F4 answer says otherwise), all offline/local, all OSS/permissive licenses (numpy BSD, torch BSD-style, ARC-AGI data is the official public training+evaluation set under its own license already vendored in `./ARC-AGI`).
-
-## 9. Runtime and deployment — ASSUMED
-Single local machine (this WSL2 box), CPU-only (confirmed: no CUDA, 16 cores). Training and visualizer both run as local processes; visualizer is a local web server (`localhost`), not deployed anywhere.
-
-## 10. Measurable success — ASSUMED
-Primary metric: task-exact-match accuracy (all test grids correct) on `ARC-AGI/data/training` (learning set) and `ARC-AGI/data/evaluation` (held-out check), tracked per run in `metrics.jsonl`, same definition as the existing `evaluate.py`'s `task_acc`. Milestone-1 success is a working, visualizable, non-zero-improving-over-training pipeline on the scoped task subset (F2) — not SOTA accuracy.
-
-## 11. Security and secrets — ASSUMED
-Nothing sensitive. No credentials, no PII, no network calls beyond localhost. Nothing to log-scrub.
-
-## 12. Versioning and migration — ASSUMED
-`run_meta.json` carries a `schema_version` for the trajectory/metrics log format so the visualizer can degrade gracefully if the format changes later. Low stakes for a solo research tool.
-
-## Forks — resolution (2026-08-27)
-- **F1. DSL / action-space reuse — PENDING RESEARCH.** User wants this settled by
-  subagent research (max 2, per `CLAUDE.md`) rather than my recommendation,
-  specifically covering Michael Hodel's `arc-dsl` (a hand-written DSL with
-  solver programs for every ARC-1 training task) and his `re-arc` generator
-  (procedurally generates fresh ARC-AGI-1-like tasks from those solver
-  programs — a candidate for training-data augmentation / infinite curriculum).
-  Research should determine: is Hodel's DSL a better action-space/executor
-  foundation than `research/arc-ngps`'s home-grown one; license; whether
-  `re-arc` is usable for RL training-task generation; and how the DSL handles
-  variable output-grid sizing (feeds directly into F2).
-- **F2. Milestone-1 task scope — PENDING RESEARCH.** Folded into the F1 research
-  pass: Hodel's DSL's approach to output-grid sizing (if any) should directly
-  inform whether milestone 1 can support variable-shape tasks or must restrict
-  to same-shape ones.
-- **F3. Build order — ANSWERED: RL (PPO) first.** Confirmed by user.
-- **F4. RL framework — ANSWERED: Gymnasium-style env + custom hand-rolled
-  training loop** (no Stable-Baselines3). Confirmed by user.
-- **F5. Visualizer live vs. replay — ANSWERED: log-and-replay** (trainer writes
-  JSONL, visualizer tails/polls). Confirmed by user.
-- **F6. Visualizer stack — ANSWERED: custom web app**, small server +
-  Canvas-based grid renderer with play/pause/step/speed controls. Frontend
-  language: **TypeScript preferred over JavaScript** (user's explicit call,
-  refines the original recommendation).
-
-## Second research thread (added 2026-08-27)
-User also wants an RL/evolutionary-methods literature and prior-art survey
-(reward shaping for grid similarity, evolutionary program search over a DSL vs.
-neuroevolution of policy weights, notable ARC-AGI-1 RL/evolutionary attempts) —
-this and the F1 DSL research are the two subagents to run next, per the
-`CLAUDE.md` cap of 2.
+- No GPU: `torch` not installed at root env at time of audit; no `nvidia-smi`;
+  16 CPU cores available. Confirmed directly, not assumed.
+- `third_party/ARC-AGI/` is the official ARC-AGI-1 clone (de-gitted, plain
+  tracked files): `data/training`, `data/evaluation`, plus the human-facing
+  `apps/testing_interface.html`. No private/Kaggle test set present or
+  obtainable.
+- `research/arc-ngps/` was a half-built supervised program-synthesis scaffold;
+  superseded per ADR-0001, not deleted, disposition deferred.
+- `legacy/` holds the original non-learned geometric-transform baseline;
+  kept as a reference, not deleted.
