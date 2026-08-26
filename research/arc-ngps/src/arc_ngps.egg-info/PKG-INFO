@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: arc-ngps
+Version: 0.0.1
+Summary: ARC Neural-Guided Program Synthesis scaffold
+Requires-Python: >=3.10
+Requires-Dist: torch>=2.1
+Requires-Dist: numpy>=1.24
+Requires-Dist: tqdm>=4.66
