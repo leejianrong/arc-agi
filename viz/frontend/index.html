@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ARC-AGI Agent Replay</title>
+    <style>
+      body {
+        background: #111;
+        color: #eee;
+        font-family: system-ui, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        padding: 16px;
+      }
+      select, button {
+        font-size: 14px;
+        padding: 4px 8px;
+      }
+      #controls { display: flex; gap: 8px; align-items: center; }
+      #grids { display: flex; gap: 24px; align-items: flex-start; }
+      .grid-panel { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+      canvas { border: 1px solid #444; image-rendering: pixelated; }
+      #status { min-height: 1.5em; }
+    </style>
+  </head>
+  <body>
+    <h1>ARC-AGI Agent Replay</h1>
+    <div id="controls">
+      <label>Run: <select id="run-select"></select></label>
+      <label>Episode: <select id="episode-select"></select></label>
+      <button id="btn-back">&#9664; step</button>
+      <button id="btn-play">&#9654; play</button>
+      <button id="btn-forward">step &#9654;</button>
+      <label>Speed:
+        <input id="speed" type="range" min="50" max="2000" step="50" value="500" />
+      </label>
+    </div>
+    <div id="grids">
+      <div class="grid-panel">
+        <span>Agent's grid</span>
+        <canvas id="canvas-current"></canvas>
+      </div>
+      <div class="grid-panel">
+        <span>Target</span>
+        <canvas id="canvas-target"></canvas>
+      </div>
+    </div>
+    <div id="status"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
