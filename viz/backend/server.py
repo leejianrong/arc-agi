@@ -9,6 +9,7 @@ brings the whole visualizer up.
 Routes:
     GET /api/runs                              -> [{run_id, algo, created_at, task_ids}, ...]
     GET /api/runs/<run_id>/meta                 -> run_meta.json, verbatim
+    GET /api/runs/<run_id>/metrics              -> [metrics.jsonl row, ...] (ADR-0006, V2 training dashboard)
     GET /api/runs/<run_id>/episodes             -> [episode_id, ...]
     GET /api/runs/<run_id>/episodes/<episode_id> -> {start, steps: [...], end}
     GET /* (anything else)                      -> static files from frontend/dist, index.html for unknown paths
@@ -55,6 +56,19 @@ def list_runs(runs_dir: Path) -> list:
 def read_run_meta(runs_dir: Path, run_id: str) -> dict:
     with open(runs_dir / run_id / "run_meta.json") as f:
         return json.load(f)
+
+
+def read_metrics(runs_dir: Path, run_id: str) -> list:
+    path = runs_dir / run_id / "metrics.jsonl"
+    if not path.is_file():
+        return []
+    rows = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
 
 
 def list_episode_ids(runs_dir: Path, run_id: str) -> list:
@@ -112,6 +126,12 @@ def make_handler(runs_dir: Path):
                     if not _safe_id(run_id):
                         return self._error(HTTPStatus.BAD_REQUEST, "invalid run_id")
                     return self._json(read_run_meta(runs_dir, run_id))
+
+                if parts[:2] == ["api", "runs"] and len(parts) == 4 and parts[3] == "metrics":
+                    run_id = parts[2]
+                    if not _safe_id(run_id):
+                        return self._error(HTTPStatus.BAD_REQUEST, "invalid run_id")
+                    return self._json(read_metrics(runs_dir, run_id))
 
                 if parts[:2] == ["api", "runs"] and len(parts) == 4 and parts[3] == "episodes":
                     run_id = parts[2]

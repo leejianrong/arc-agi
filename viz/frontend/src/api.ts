@@ -46,6 +46,17 @@ export interface Episode {
   end: EpisodeEnd;
 }
 
+// One metrics.jsonl row (ADR-0006). Only the fields the dashboard actually
+// reads are typed strictly; trainer-specific extras pass through untyped.
+export interface MetricsRow {
+  update: number;
+  timestamp: string;
+  n_episodes: number;
+  mean_reward: number | null;
+  success_rate: number | null;
+  [key: string]: unknown;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path);
   if (!res.ok) {
@@ -64,4 +75,8 @@ export function fetchEpisodeIds(runId: string): Promise<string[]> {
 
 export function fetchEpisode(runId: string, episodeId: string): Promise<Episode> {
   return getJSON(`/api/runs/${encodeURIComponent(runId)}/episodes/${encodeURIComponent(episodeId)}`);
+}
+
+export function fetchMetrics(runId: string): Promise<MetricsRow[]> {
+  return getJSON(`/api/runs/${encodeURIComponent(runId)}/metrics`);
 }
