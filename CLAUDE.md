@@ -36,8 +36,15 @@ Planning artifacts (read these before making architectural changes):
 - `trainers/ppo/` — the ADR-0008 policy/value network (`network.py`),
   rollout collection with truncation-aware GAE (`rollout.py`, `gae.py`),
   and the clipped-surrogate PPO update (`ppo.py`).
-- `train.py` — `train.py --algo ppo --task_id <id>`: trains one dedicated
-  policy per task (ADR-0008), logging to `runs/<run_id>/`.
+- `trainers/gp/` — the ADR-0003 evolutionary trainer: DSL-program genomes
+  as flat gene lists (`genome.py` — no separate AST, same non-compositional
+  action space PPO uses), fitness evaluation reusing `arc_env`'s executor
+  and reward similarity (`fitness.py`), the generational loop (`evolve.py`),
+  and best-program replay for logging (`replay.py`).
+- `train.py` — `train.py --algo ppo|gp --task_id <id>`: trains one
+  dedicated PPO policy (ADR-0008) or evolves one dedicated GP population
+  (ADR-0003) per task, logging to `runs/<run_id>/` in the same shape either
+  way.
 - `scripts/rollout_random.py` — random-policy rollout script (no training);
   writes `runs/<run_id>/` (gitignored, generated locally).
 - `viz/backend/` — read-only local HTTP server exposing `runs/` as JSON,
@@ -59,7 +66,7 @@ Planning artifacts (read these before making architectural changes):
 - `make install` — `uv sync` (Python) + `npm ci` (frontend).
 - `make test` (or `uv run pytest -m "not slow"` / `cd viz/frontend && npm run typecheck && npm test`) — the fast layer, no external services needed, ~4s. `make test-py-slow` (or `uv run pytest`) also runs the ~90s PPO-sanity e2e test (`tests/test_train_ppo.py`, marked `slow`).
 - `make rollout` — random-policy rollout over all curated tasks, writes `runs/demo/`.
-- `make train` — `train.py --algo ppo --task_id 67a3c6ac --run_id demo` (edit the task_id for a different curated task).
+- `make train` — `train.py --algo ppo --task_id 67a3c6ac --run_id demo` (edit the task_id, or pass `--algo gp`, for a different run).
 - `make viz` — builds the frontend and starts the backend at `http://127.0.0.1:8000` (reads `runs/`).
 - `git config core.hooksPath .githooks` — installs the pre-push hook (mirrors CI's fast job); `.github/workflows/ci.yml` (fast job + a parallel `slow` job) is the CI backstop. Branch protection on `main` requires both, plus the `frontend` job, before merge.
 
