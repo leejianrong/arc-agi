@@ -8,16 +8,22 @@
 One scoped-down deviation from ADR-0008's literal wording, worth flagging:
 "coordinates via a pointer/attention lookup over the spatial feature map"
 is implemented here as a small MLP head over the pooled+primitive-embedding
-context, not a dedicated spatial pointer network. `fill_cell` is the only
-curated action with coordinate args, none of the 11 V1/V2 curated tasks
-need it (see `arc_env/actions.py`), and a full pointer mechanism is real
-added complexity for zero exercised benefit this milestone - upgrading it
-later wouldn't touch `arc_env`/the action space at all. The self-attention
-layer(s) over the spatial feature map (the part of ADR-0008 that isn't
-task-specific) are implemented as specified.
+context, not a dedicated spatial pointer network. `fill_cell` and `commit`
+(V3, ADR-0002) are the curated actions with coordinate args - `commit`'s
+*are* exercised by a fixture task (`d10ecb37`: `commit(0, 0, 2, 2)`) - but
+ADR-0008 also fixes per-task, solve-time training (point 1): one policy is
+trained per task, never shared across tasks, so a coordinate head only ever
+needs to represent *one task's* fixed answer (here, always "(0, 0)"), not
+generalize across many objects/positions the way a real pointer network
+would justify. A small conditioned MLP can already fit that; a full spatial
+pointer mechanism would be added complexity with no accuracy payoff at this
+training regime - upgrading it later (e.g. for multi-task or cross-task
+training) wouldn't touch `arc_env`/the action space at all. The
+self-attention layer(s) over the spatial feature map (the part of ADR-0008
+that isn't task-specific) are implemented as specified.
 
-The network doesn't know which *kind* of argument (color/factor/coord)
-each of the 3 generic arg slots means for a given primitive - `arc_env.
+The network doesn't know which *kind* of argument (color/factor/coord/dim)
+each of the 4 generic arg slots means for a given primitive - `arc_env.
 actions`'s decode functions already handle that from a plain
 `Discrete(RAW_ARG_RANGE)` value, so every arg head is just a
 `RAW_ARG_RANGE`-way categorical conditioned on the chosen primitive,

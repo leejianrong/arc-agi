@@ -20,17 +20,32 @@ Planning artifacts (read these before making architectural changes):
   action-space DSL/executor (`dsl.py`, `arc_types.py`, `constants.py`) plus
   `solvers.py` (400 known-correct per-task solver programs, used as a free
   regression-test fixture). Read-only, see `third_party/arc-dsl/README.md`.
+- `third_party/re-arc/` — vendored Michael Hodel's `re-arc` (per-task
+  synthetic-instance generators). Two deliberate deviations from a verbatim
+  vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
+  `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py`), the task loader
-  (`task_loader.py`), `env.py`, and the JSONL trajectory/run-meta writers
-  (`episode_log.py`), per ADR-0004/ADR-0006.
-- `scripts/rollout_random.py` — random-policy rollout script; writes
-  `runs/<run_id>/` (gitignored, generated locally).
-- `viz/backend/` — read-only local HTTP server exposing `runs/` as JSON
-  (`server.py`); also serves `viz/frontend/dist` so one process runs the
-  whole visualizer.
-- `viz/frontend/` — TypeScript + Canvas replay UI (Vite + Vitest), per
-  ADR-0007.
+  `arc-dsl`-primitive action space (`actions.py` — 23 actions as of V3:
+  structural transforms, `fill_cell`, `canvas`, and `commit`, ADR-0002), the
+  task loader (`task_loader.py` — 16 curated tasks, 11 same-shape + 5
+  variable-shape), `env.py`, ADR-0005's dense reward (`reward.py`), extra
+  practice-instance generation via `re-arc` (`re_arc.py`), and the JSONL
+  trajectory/run-meta writers (`episode_log.py`), per ADR-0004/ADR-0006.
+  `info["exact_match"]`, not the broader `terminated`, is what "solved"
+  means once `commit` can end an episode without matching.
+- `trainers/ppo/` — the ADR-0008 policy/value network (`network.py`),
+  rollout collection with truncation-aware GAE (`rollout.py`, `gae.py`),
+  and the clipped-surrogate PPO update (`ppo.py`).
+- `train.py` — `train.py --algo ppo --task_id <id>`: trains one dedicated
+  policy per task (ADR-0008), logging to `runs/<run_id>/`.
+- `scripts/rollout_random.py` — random-policy rollout script (no training);
+  writes `runs/<run_id>/` (gitignored, generated locally).
+- `viz/backend/` — read-only local HTTP server exposing `runs/` as JSON,
+  including `metrics.jsonl` (`server.py`); also serves `viz/frontend/dist`
+  so one process runs the whole visualizer.
+- `viz/frontend/` — TypeScript + Canvas replay UI: training dashboard
+  (reward/success-rate curves) and dual side-by-side episode replay for
+  early- vs. late-training comparison (Vite + Vitest), per ADR-0007.
 - `legacy/` — the original geometric-transform + color-bijection baseline
   (`baseline.py`, `evaluate.py`, `arc_io.py`). Kept as a reference/sanity-check
   baseline, not part of the new agent.
@@ -42,10 +57,11 @@ Planning artifacts (read these before making architectural changes):
 ## Commands
 
 - `make install` — `uv sync` (Python) + `npm ci` (frontend).
-- `make test` (or `uv run pytest` / `cd viz/frontend && npm run typecheck && npm test`) — the fast test layers; no external services needed.
-- `make rollout` — random-policy rollout over all curated V1 tasks, writes `runs/demo/`.
+- `make test` (or `uv run pytest -m "not slow"` / `cd viz/frontend && npm run typecheck && npm test`) — the fast layer, no external services needed, ~4s. `make test-py-slow` (or `uv run pytest`) also runs the ~90s PPO-sanity e2e test (`tests/test_train_ppo.py`, marked `slow`).
+- `make rollout` — random-policy rollout over all curated tasks, writes `runs/demo/`.
+- `make train` — `train.py --algo ppo --task_id 67a3c6ac --run_id demo` (edit the task_id for a different curated task).
 - `make viz` — builds the frontend and starts the backend at `http://127.0.0.1:8000` (reads `runs/`).
-- `git config core.hooksPath .githooks` — installs the pre-push hook (mirrors CI's cheap jobs); `.github/workflows/ci.yml` is the CI backstop.
+- `git config core.hooksPath .githooks` — installs the pre-push hook (mirrors CI's fast job); `.github/workflows/ci.yml` (fast job + a parallel `slow` job) is the CI backstop. Branch protection on `main` requires both, plus the `frontend` job, before merge.
 
 ## Research subagent policy
 

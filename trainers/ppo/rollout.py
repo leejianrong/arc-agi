@@ -88,7 +88,7 @@ class RolloutCollector:
             args = tuple(int(a) for a in sample.args[0].tolist())
             action = {"primitive": primitive, **{f"arg{i + 1}": args[i] for i in range(MAX_ARITY)}}
 
-            next_obs, reward, terminated, truncated, _ = self.env.step(action)
+            next_obs, reward, terminated, truncated, info = self.env.step(action)
 
             obs_buf.append(self._obs)
             primitive_buf.append(primitive)
@@ -103,7 +103,7 @@ class RolloutCollector:
             if terminated or truncated:
                 next_value_buf.append(0.0 if terminated else self._value_of(next_obs))
                 episode_returns.append(self._episode_reward)
-                episode_successes.append(terminated)
+                episode_successes.append(info["exact_match"])  # not `terminated` - V3's commit can end without matching
                 self._reset_episode()
             else:
                 next_value_buf.append(None)  # patched below, once value_buf[t + 1] exists
@@ -138,6 +138,7 @@ def evaluate_episode(env: ArcEnv, network: ActorCritic, task_id: str, pair: Pair
     obs, _ = env.reset(task_id=task_id, pair=pair)
     steps = []
     terminated = truncated = False
+    exact_match = False
     total_reward = 0.0
 
     while not (terminated or truncated):
@@ -150,6 +151,7 @@ def evaluate_episode(env: ArcEnv, network: ActorCritic, task_id: str, pair: Pair
         }}
         obs, reward, terminated, truncated, info = env.step(action)
         total_reward += reward
+        exact_match = info["exact_match"]
         steps.append({
             "grid_before": grid_before,
             "action_name": info["action_name"],
@@ -159,6 +161,7 @@ def evaluate_episode(env: ArcEnv, network: ActorCritic, task_id: str, pair: Pair
             "terminated": terminated,
             "truncated": truncated,
             "valid_action": info["valid_action"],
+            "exact_match": exact_match,
         })
 
-    return {"steps": steps, "success": terminated, "total_reward": total_reward}
+    return {"steps": steps, "success": exact_match, "total_reward": total_reward}

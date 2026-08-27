@@ -96,6 +96,7 @@ def log_eval_episode(run_dir: Path, env: ArcEnv, network: ActorCritic, task_id: 
                 terminated=step["terminated"],
                 truncated=step["truncated"],
                 valid_action=step["valid_action"],
+                exact_match=step["exact_match"],
             )
         writer.end(n_steps=len(result["steps"]), success=result["success"], total_reward=result["total_reward"])
 

@@ -94,7 +94,13 @@ class EpisodeWriter:
         terminated: bool,
         truncated: bool,
         valid_action: bool,
+        exact_match: bool = None,
     ) -> None:
+        """`terminated` can now be true without `exact_match` (V3's `commit`
+        action ends the episode on a chosen crop whether or not it matches)
+        - `exact_match` defaults to `terminated` for callers written before
+        V3 that only ever had one way to terminate."""
+
         self._write({
             "type": "step",
             "step": step,
@@ -106,6 +112,7 @@ class EpisodeWriter:
             "truncated": truncated,
             "done": terminated or truncated,
             "valid_action": valid_action,
+            "exact_match": terminated if exact_match is None else exact_match,
         })
 
     def end(self, n_steps: int, success: bool, total_reward: float) -> None:
