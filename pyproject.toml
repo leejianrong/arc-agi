@@ -12,6 +12,12 @@ dependencies = ["numpy>=1.24", "gymnasium>=0.29", "torch>=2.4"]
 [tool.setuptools.packages.find]
 include = ["arc_env*", "viz*", "trainers*"]
 
+# train.py is a standalone top-level module (not inside a package) that
+# tests/test_train_ppo.py imports directly - without this, `uv run pytest`
+# (unlike `python -m pytest`, which adds the CWD to sys.path) can't find it.
+[tool.setuptools]
+py-modules = ["train"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
