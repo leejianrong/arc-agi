@@ -1,27 +1,26 @@
-"""The V1 Gymnasium-style ARC environment (ADR-0004).
+"""The Gymnasium-style ARC environment (ADR-0004).
 
-One episode = one (task_id, train-pair) instance. `reset` starts from the
-pair's input grid; the agent edits it one curated action (`arc_env.actions`)
-at a time; the episode ends on an exact match with the pair's output grid
-(success) or a max-step budget (Q7).
+One episode = one (task_id, grid pair) instance - either one of the task's
+native train pairs, or an on-the-fly `arc_env.re_arc`-generated instance of
+the same task concept (`docs/SLICES.md` V2 build plan step 3). `reset`
+starts from the pair's input grid; the agent edits it one curated action
+(`arc_env.actions`) at a time; the episode ends on an exact match with the
+pair's output grid (success) or a max-step budget (Q7).
 
-Reward here is a placeholder, not ADR-0005's dense delta-shaped reward -
-that's explicitly V2 scope (`docs/SLICES.md` V2 build plan step 2). V1 has
-no trainer yet, only the random-policy rollout script, so a sparse
-exact-match terminal reward is enough to make the trajectory log's `reward`
-field non-degenerate without doing V2's work early.
+Reward is ADR-0005's dense delta-shaped reward (`arc_env.reward`), wired in
+per `docs/SLICES.md` V2 build plan step 2 - V1's placeholder sparse
+terminal-only reward is gone.
 """
 
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from arc_env import actions
-from arc_env.task_loader import Task, load_task
+from arc_env import actions, reward as reward_mod
+from arc_env.task_loader import Pair, Task, load_task
 
 PAD_VALUE = 10  # beyond ARC's 10 colors (0-9); marks padding in the fixed-size observation
 DEFAULT_MAX_STEPS = 25
-STEP_PENALTY = 0.02  # Q7: small penalty for an invalid/no-op action
 
 
 def _pad_grid(grid: tuple) -> np.ndarray:
@@ -57,17 +56,33 @@ class ArcEnv(gym.Env):
         self._task_id = None
         self._pair_index = None
         self._step_count = 0
+        self._diff_mask = None
 
-    def reset(self, *, task_id: str, pair_index: int = 0, task: Task = None, seed=None, options=None):
+    def reset(
+        self,
+        *,
+        task_id: str,
+        pair_index: int = 0,
+        task: Task = None,
+        pair: Pair = None,
+        seed=None,
+        options=None,
+    ):
+        """`pair`, if given, overrides `task`/`pair_index` entirely (e.g. a
+        `arc_env.re_arc.generate_pair` instance) - `pair_index` is then just
+        a label for logging, not a lookup key."""
+
         super().reset(seed=seed)
-        task = task if task is not None else load_task(task_id)
-        pair = task.train[pair_index]
+        if pair is None:
+            task = task if task is not None else load_task(task_id)
+            pair = task.train[pair_index]
 
         self._grid = pair.input
         self._target = pair.output
         self._task_id = task_id
         self._pair_index = pair_index
         self._step_count = 0
+        self._diff_mask = reward_mod.compute_diff_mask(pair.input, pair.output)
 
         return _pad_grid(self._grid), self._info()
 
@@ -84,6 +99,7 @@ class ArcEnv(gym.Env):
             action_name = None
         raw_args = tuple(int(action[f"arg{i + 1}"]) for i in range(arity))
 
+        prev_grid = self._grid
         new_grid, decoded_args, valid = actions.execute(primitive_index, raw_args, self._grid)
         self._grid = new_grid
         self._step_count += 1
@@ -92,16 +108,17 @@ class ArcEnv(gym.Env):
         terminated = bool(exact_match)
         truncated = self._step_count >= self.max_steps and not terminated
 
-        reward = 1.0 if terminated else 0.0
-        if not valid:
-            reward -= STEP_PENALTY
+        result = reward_mod.compute_reward(
+            prev_grid, self._grid, self._target, self._diff_mask, valid, terminated
+        )
 
         info = self._info()
         info["action_name"] = action_name
         info["action_args"] = decoded_args
         info["valid_action"] = valid
+        info["similarity"] = result.similarity
 
-        return _pad_grid(self._grid), reward, terminated, truncated, info
+        return _pad_grid(self._grid), result.reward, terminated, truncated, info
 
     def get_grid(self) -> tuple:
         """The actual (unpadded) current grid - for episode logging/replay."""

@@ -70,7 +70,10 @@ def test_episode_terminates_on_exact_match():
     _, reward, terminated, truncated, info = env.step(action("vmirror"))
     assert terminated is True
     assert truncated is False
-    assert reward == pytest.approx(1.0)
+    # ADR-0005 dense reward: full similarity delta (0 -> 1) - step_cost + terminal_bonus.
+    from arc_env.reward import STEP_COST, TERMINAL_BONUS
+
+    assert reward == pytest.approx(1.0 - STEP_COST + TERMINAL_BONUS)
     assert env.get_grid() == task.train[0].output
 
 

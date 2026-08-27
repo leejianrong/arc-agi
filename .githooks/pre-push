@@ -6,8 +6,8 @@
 
 set -e
 
-echo "pre-push: python tests"
-uv run pytest -q
+echo "pre-push: python tests (fast layer - excludes the ~90s PPO smoke test; CI runs both)"
+uv run pytest -q -m "not slow"
 
 if [ -d viz/frontend/node_modules ]; then
   echo "pre-push: frontend typecheck + tests"

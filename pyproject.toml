@@ -7,10 +7,10 @@ name = "arc-agi-agent"
 version = "0.0.1"
 description = "RL/evolutionary agent for ARC-AGI-1, plus a training/replay visualizer"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "gymnasium>=0.29"]
+dependencies = ["numpy>=1.24", "gymnasium>=0.29", "torch>=2.4"]
 
 [tool.setuptools.packages.find]
-include = ["arc_env*", "viz*"]
+include = ["arc_env*", "viz*", "trainers*"]
 
 [dependency-groups]
 dev = [
@@ -19,3 +19,17 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: takes >1s (PPO training runs) - excluded from the default/pre-push run, included in CI",
+]
+
+# CPU-only torch wheel, not the default CUDA build - PLAN.md Implementation
+# decisions is explicit about this (this machine has no GPU; the CUDA wheel
+# cost `arc-ngps` 6.9GB of disk for nothing, per repo-cleanup history).
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

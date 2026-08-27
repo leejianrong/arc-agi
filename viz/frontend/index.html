@@ -11,43 +11,49 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 12px;
+        gap: 20px;
         padding: 16px;
       }
+      h1 { margin-bottom: 0; }
+      h2 { margin: 0; font-size: 1rem; color: #aaa; font-weight: normal; }
       select, button {
         font-size: 14px;
         padding: 4px 8px;
       }
-      #controls { display: flex; gap: 8px; align-items: center; }
-      #grids { display: flex; gap: 24px; align-items: flex-start; }
+      #run-picker { display: flex; gap: 8px; align-items: center; }
+      #dashboard { display: flex; gap: 16px; }
+      #dashboard canvas { border: 1px solid #444; }
+      #players { display: flex; gap: 32px; flex-wrap: wrap; justify-content: center; }
+      .player-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; border: 1px solid #333; padding: 12px; border-radius: 4px; }
+      .player-controls { display: flex; gap: 8px; align-items: center; }
+      .player-grids { display: flex; gap: 16px; align-items: flex-start; }
       .grid-panel { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-      canvas { border: 1px solid #444; image-rendering: pixelated; }
-      #status { min-height: 1.5em; }
+      canvas.grid-canvas { border: 1px solid #444; image-rendering: pixelated; }
+      .player-status { min-height: 1.5em; font-size: 0.9em; }
     </style>
   </head>
   <body>
     <h1>ARC-AGI Agent Replay</h1>
-    <div id="controls">
+    <div id="run-picker">
       <label>Run: <select id="run-select"></select></label>
-      <label>Episode: <select id="episode-select"></select></label>
-      <button id="btn-back">&#9664; step</button>
-      <button id="btn-play">&#9654; play</button>
-      <button id="btn-forward">step &#9654;</button>
-      <label>Speed:
-        <input id="speed" type="range" min="50" max="2000" step="50" value="500" />
-      </label>
     </div>
-    <div id="grids">
-      <div class="grid-panel">
-        <span>Agent's grid</span>
-        <canvas id="canvas-current"></canvas>
+
+    <section>
+      <h2>Training dashboard</h2>
+      <div id="dashboard">
+        <canvas id="reward-chart" width="360" height="160"></canvas>
+        <canvas id="success-chart" width="360" height="160"></canvas>
       </div>
-      <div class="grid-panel">
-        <span>Target</span>
-        <canvas id="canvas-target"></canvas>
+    </section>
+
+    <section>
+      <h2>Episode replay - compare two episodes side by side (e.g. an early- vs. late-training checkpoint)</h2>
+      <div id="players">
+        <div class="player-panel" id="panel-a" data-panel-label="A"></div>
+        <div class="player-panel" id="panel-b" data-panel-label="B"></div>
       </div>
-    </div>
-    <div id="status"></div>
+    </section>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

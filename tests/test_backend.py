@@ -43,6 +43,20 @@ def test_list_runs_on_missing_dir_is_empty(tmp_path):
     assert backend.list_runs(tmp_path / "does-not-exist") == []
 
 
+def test_read_metrics_on_run_without_metrics_file_is_empty(sample_runs_dir):
+    # V1's random-rollout runs never write metrics.jsonl - only trainers do.
+    assert backend.read_metrics(sample_runs_dir, "run-a") == []
+
+
+def test_read_metrics_parses_jsonl_rows(sample_runs_dir):
+    rows = [
+        {"update": 0, "timestamp": "2026-08-27T00:00:00Z", "mean_reward": 0.1, "success_rate": 0.0},
+        {"update": 1, "timestamp": "2026-08-27T00:00:05Z", "mean_reward": 0.5, "success_rate": 0.2},
+    ]
+    (sample_runs_dir / "run-a" / "metrics.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    assert backend.read_metrics(sample_runs_dir, "run-a") == rows
+
+
 def test_read_run_meta(sample_runs_dir):
     meta = backend.read_run_meta(sample_runs_dir, "run-a")
     assert meta["algo"] == "random"
@@ -86,6 +100,12 @@ def test_http_get_episode(running_server):
     assert status == 200
     assert body["start"]["grid"] == [[1, 2], [3, 4]]
     assert body["steps"][0]["grid_after"] == [[2, 1], [4, 3]]
+
+
+def test_http_get_metrics_on_run_without_metrics_is_empty_list(running_server):
+    status, body = _get_json(f"{running_server}/api/runs/run-a/metrics")
+    assert status == 200
+    assert body == []
 
 
 def test_http_rejects_path_traversal_ids(running_server):
