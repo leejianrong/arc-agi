@@ -39,11 +39,13 @@ def run_episode(env: ArcEnv, run_dir: Path, task_id: str, pair_index: int, episo
         total_reward = 0.0
         step = 0
         terminated = truncated = False
+        exact_match = False
         while not (terminated or truncated):
             grid_before = env.get_grid()
             action = env.action_space.sample()
             _, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
+            exact_match = info["exact_match"]
             writer.step(
                 step=step,
                 grid_before=grid_before,
@@ -54,12 +56,13 @@ def run_episode(env: ArcEnv, run_dir: Path, task_id: str, pair_index: int, episo
                 terminated=terminated,
                 truncated=truncated,
                 valid_action=info["valid_action"],
+                exact_match=exact_match,
             )
             step += 1
 
-        writer.end(n_steps=step, success=terminated, total_reward=total_reward)
+        writer.end(n_steps=step, success=exact_match, total_reward=total_reward)
 
-    return {"episode_id": episode_id, "task_id": task_id, "success": terminated, "n_steps": step}
+    return {"episode_id": episode_id, "task_id": task_id, "success": exact_match, "n_steps": step}
 
 
 def main() -> None:
@@ -76,7 +79,7 @@ def main() -> None:
     if not args.task_id and not args.all:
         parser.error("pass --task_id <id> or --all")
     if args.task_id and args.task_id not in CURATED_TASK_IDS:
-        parser.error(f"{args.task_id!r} is not in the V1 curated task subset: {sorted(CURATED_TASK_IDS)}")
+        parser.error(f"{args.task_id!r} is not in the curated task subset: {sorted(CURATED_TASK_IDS)}")
 
     task_ids = sorted(CURATED_TASK_IDS) if args.all else [args.task_id]
     run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")

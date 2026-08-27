@@ -4,12 +4,29 @@ One episode = one (task_id, grid pair) instance - either one of the task's
 native train pairs, or an on-the-fly `arc_env.re_arc`-generated instance of
 the same task concept (`docs/SLICES.md` V2 build plan step 3). `reset`
 starts from the pair's input grid; the agent edits it one curated action
-(`arc_env.actions`) at a time; the episode ends on an exact match with the
-pair's output grid (success) or a max-step budget (Q7).
+(`arc_env.actions`) at a time. The episode ends (`terminated=True`) on an
+exact match with the pair's output grid, OR (V3, ADR-0002) when the agent
+plays a valid `commit` action - which crops the grid to a chosen sub-region
+and ends the episode there whether or not that crop happens to match. Use
+`info["exact_match"]`, not the `terminated` return value, to tell success
+from "the agent gave up and committed something wrong" - both terminate the
+episode, only one is a success. `truncated=True` on a max-step budget (Q7),
+same as before.
 
-Reward is ADR-0005's dense delta-shaped reward (`arc_env.reward`), wired in
-per `docs/SLICES.md` V2 build plan step 2 - V1's placeholder sparse
-terminal-only reward is gone.
+Reward is ADR-0005's dense delta-shaped reward (`arc_env.reward`).
+
+One deviation from ADR-0002's literal wording, worth flagging: there is no
+persistent 30x30 canvas held separately from "the grid" - `canvas` (an
+action, `arc_env.actions`) replaces the single working grid outright, and
+`commit` crops that same working grid in place, rather than the agent
+maintaining a fixed 30x30 surface that a smaller committed output is shown
+"cut out of" alongside. ADR-0002's consequences describe the visualizer
+needing to render "a canvas larger than the committed output, showing the
+scratch area, then the cropped final grid" - here that shows up as an
+ordinary before/after step (the grid shrinking at the `commit` step),
+reusing the replay mechanism V1 already has, not a second persistent
+canvas view. Simpler, and every same-shape V1 task still works unmodified
+(their grid was never forced into a 30x30 field to begin with).
 """
 
 import numpy as np
@@ -105,11 +122,12 @@ class ArcEnv(gym.Env):
         self._step_count += 1
 
         exact_match = self._grid == self._target
-        terminated = bool(exact_match)
+        is_commit = valid and action_name == "commit"
+        terminated = bool(exact_match or is_commit)
         truncated = self._step_count >= self.max_steps and not terminated
 
         result = reward_mod.compute_reward(
-            prev_grid, self._grid, self._target, self._diff_mask, valid, terminated
+            prev_grid, self._grid, self._target, self._diff_mask, valid, exact_match
         )
 
         info = self._info()
@@ -117,6 +135,7 @@ class ArcEnv(gym.Env):
         info["action_args"] = decoded_args
         info["valid_action"] = valid
         info["similarity"] = result.similarity
+        info["exact_match"] = exact_match
 
         return _pad_grid(self._grid), result.reward, terminated, truncated, info
 

@@ -1,34 +1,50 @@
-"""The V1 curated discrete action space over `arc-dsl` primitives.
+"""The curated discrete action space over `arc-dsl` primitives.
 
 Per ADR-0001, actions call `arc-dsl` primitives directly - no separate AST or
-executor layer of our own. Per ADR-0001/ADR-0002, higher-order primitives
-(`compose`, `chain`, `fork`, `rbind`, `lbind`, `power`) and the canvas/crop
-mechanism are excluded from this slice.
+executor layer of our own. Higher-order primitives (`compose`, `chain`,
+`fork`, `rbind`, `lbind`, `power`) are excluded for good: they build
+closures rather than transforming a grid, which a flat "pick one primitive
+per step" action space can't represent (see `docs/adr/0001*.md`).
 
-Beyond those exclusions, V1 is further restricted to primitives whose
+Beyond that exclusion, this module is further restricted to primitives whose
 signature is `Grid [, scalar args] -> Grid` - i.e. primitives that operate
 directly on the single grid the agent is editing, with typed scalar
-arguments (a color, a scale factor, a coordinate) rather than an
-`Object`/`Indices`/`Callable` argument that would require other, unpicked
+arguments (a color, a scale factor, a coordinate, a dimension) rather than
+an `Object`/`Indices`/`Callable` argument that would require other, unpicked
 primitives to construct. This is what makes the action space "directly
 steppable": every action maps one grid to the next.
 
 This scalar-args-only restriction was derived by checking, for every
 ARC-AGI-1 training task with a known-correct `arc-dsl` solver, whether that
-solver (a) only transforms between same-shape input/output pairs and (b)
-only calls primitives from this module's `ZERO_ARG`/`ONE_ARG`/`TWO_ARG` sets.
-Exactly 11 tasks qualify - see `arc_env/task_loader.py`:CURATED_TASK_IDS -
-which is the V1 task subset and also the regression-test fixture set
+solver only calls primitives from this module's action groups below.
+Exactly 16 tasks qualify (11 same-shape, from V1; 5 variable-shape, added in
+V3) - see `arc_env/task_loader.py`:CURATED_TASK_IDS - which is the curated
+task subset and also the regression-test fixture set
 (`tests/test_dsl_regression.py`).
 
-`fill_cell` is the one action here NOT drawn from that solver analysis: it's
-`dsl.fill(grid, color, patch)` with `patch` built from the action's own
-(row, col) args as a single-cell `Indices` literal, rather than a patch
-computed via other primitives. It's included so the curated space has at
-least one pixel-level edit (structural transforms alone can never solve a
-task that needs localized recoloring) - it just isn't exercised by any V1
-fixture task, all of which happen to be solved by structural transforms
-alone.
+V1 additionally restricted the *task subset* to same-shape-only pairs, as
+the smallest possible first slice (ADR-0002) - not because the action space
+couldn't already produce a variable-shape output via `trim`/`compress`/
+`tophalf`/.../`upscale`/`downscale`. V3 lifts that task-subset restriction
+and adds the two primitives ADR-0002 actually calls for: `canvas` (build a
+fresh grid of any size up to 30x30, replacing the current one - the escape
+hatch for outputs that aren't reachable by transforming the input at all)
+and `commit` (crop the current grid to a chosen sub-region *and* end the
+episode there - ADR-0002's "explicit commit-output action", fused with
+`crop` itself since committing is the only reason to crop). No other
+Object/Indices/Callable-arg primitives are added - ADR-0002 is explicit
+that this is a bounded, one-action-plus-two-primitives growth, not
+open-ended.
+
+`fill_cell` and `canvas` are the two actions here NOT drawn from the solver
+analysis: `fill_cell` is `dsl.fill(grid, color, patch)` with `patch` built
+from the action's own (row, col) args as a single-cell `Indices` literal,
+included so the curated space has at least one pixel-level edit (no
+fixture task needs it, but structural transforms alone can never solve a
+task that needs localized recoloring). `canvas` is included per ADR-0002's
+decision even though none of the 5 new V3 fixture tasks happens to call it
+directly - the general "build from scratch" escape hatch is the point of
+the primitive, not any one task in this small a subset.
 """
 
 from dataclasses import dataclass, field
@@ -49,7 +65,7 @@ class ArgSpec:
     """
 
     name: str
-    kind: str  # "color" | "factor" | "coord"
+    kind: str  # "color" | "factor" | "coord" | "dim"
     decode: Callable[[int], int]
 
 
@@ -65,9 +81,14 @@ def _decode_coord(raw: int) -> int:
     return raw  # clamped/validated against actual grid bounds at exec time
 
 
+def _decode_dim(raw: int) -> int:
+    return raw + 1  # {1, ..., 30} - RAW_ARG_RANGE is 30, so this covers the full canvas
+
+
 COLOR_ARG = lambda name: ArgSpec(name, "color", _decode_color)
 FACTOR_ARG = lambda name: ArgSpec(name, "factor", _decode_factor)
 COORD_ARG = lambda name: ArgSpec(name, "coord", _decode_coord)
+DIM_ARG = lambda name: ArgSpec(name, "dim", _decode_dim)
 
 
 @dataclass(frozen=True)
@@ -87,6 +108,14 @@ class Action:
 
 def _fill_cell(grid: Grid, color: int, row: int, col: int) -> Grid:
     return dsl.fill(grid, color, frozenset({(row, col)}))
+
+
+def _canvas(grid: Grid, value: int, height: int, width: int) -> Grid:
+    return dsl.canvas(value, (height, width))  # replaces `grid` outright; ignores it
+
+
+def _commit(grid: Grid, row: int, col: int, height: int, width: int) -> Grid:
+    return dsl.crop(grid, (row, col), (height, width))
 
 
 # Zero-arg grid transforms.
@@ -121,12 +150,23 @@ TWO_ARG = [
     Action("switch", dsl.switch, (COLOR_ARG("a"), COLOR_ARG("b"))),
 ]
 
-# Three-arg (color, row, col) pixel edit. See module docstring.
+# Three-arg (color, row, col) pixel edit, and (color, height, width) fresh-
+# canvas construction (ADR-0002). See module docstring.
 THREE_ARG = [
     Action("fill_cell", _fill_cell, (COLOR_ARG("color"), COORD_ARG("row"), COORD_ARG("col"))),
+    Action("canvas", _canvas, (COLOR_ARG("value"), DIM_ARG("height"), DIM_ARG("width"))),
 ]
 
-ACTIONS: list = ZERO_ARG + ONE_ARG + TWO_ARG + THREE_ARG
+# Four-arg (row, col, height, width) crop-and-end-episode (ADR-0002's
+# "commit" action). See module docstring and `execute`'s commit-specific
+# bounds check below (row + height <= grid height, col + width <= grid width
+# - a cross-argument constraint the generic per-arg validity loop can't
+# express, so it's handled as a one-off rather than a general mechanism).
+FOUR_ARG = [
+    Action("commit", _commit, (COORD_ARG("row"), COORD_ARG("col"), DIM_ARG("height"), DIM_ARG("width"))),
+]
+
+ACTIONS: list = ZERO_ARG + ONE_ARG + TWO_ARG + THREE_ARG + FOUR_ARG
 ACTION_BY_NAME = {a.name: i for i, a in enumerate(ACTIONS)}
 MAX_ARITY = max(a.arity for a in ACTIONS)
 RAW_ARG_RANGE = 30  # matches ARC's max grid dimension; also covers colors/factors with room to spare
@@ -170,6 +210,10 @@ def execute(primitive_index: int, raw_args: tuple, grid: Grid) -> tuple:
                 return grid, decoded, False
             if action.name in ("vupscale", "upscale") and h * value > MAX_GRID_DIM:
                 return grid, decoded, False
+
+    if action.name == "commit":
+        if decoded["row"] + decoded["height"] > h or decoded["col"] + decoded["width"] > w:
+            return grid, decoded, False
 
     try:
         new_grid = action.fn(grid, *decoded.values())

@@ -15,6 +15,14 @@ This is V1's env.py's placeholder reward, promoted to the real thing per
 `docs/SLICES.md` V2 build plan step 2. One function, so genetic programming
 (ADR-0003, V4) can reuse the exact same "how close is this grid to correct"
 definition later.
+
+V3 note: `diff_mask` only makes sense when the episode's starting grid and
+its target are the same shape (there's no natural cell-to-cell
+correspondence otherwise). For a variable-shape pair, `compute_diff_mask`
+returns `None` and `similarity` falls back to matching against every target
+cell once the current grid happens to reach the target's shape (0.0 until
+then) - a coarser signal (no credit for "getting the shape right" itself),
+but still dense once shape is achieved, and exact everywhere else.
 """
 
 from dataclasses import dataclass
@@ -31,9 +39,12 @@ DiffMask = frozenset  # frozenset[tuple[int, int]]
 def compute_diff_mask(input_grid: Grid, target_grid: Grid) -> DiffMask:
     """The (fixed, per-episode) set of cell coordinates where the episode's
     starting grid and its target disagree - the only cells `similarity`
-    scores. Assumes `input_grid` and `target_grid` are the same shape (true
-    for every V1/V2 curated task)."""
+    scores. `None` if `input_grid`/`target_grid` are different shapes (a
+    variable-shape pair - see module docstring); `similarity` handles that
+    case separately."""
 
+    if _grid_shape(input_grid) != _grid_shape(target_grid):
+        return None
     return frozenset(
         (i, j)
         for i, row in enumerate(input_grid)
@@ -52,7 +63,20 @@ def similarity(grid: Grid, target_grid: Grid, diff_mask: DiffMask) -> float:
     1.0 if `diff_mask` is empty (nothing needed to change - trivially
     already correct). 0.0 if `grid`'s shape doesn't match `target_grid`'s
     (a shape-changing action can never be judged cell-for-cell against it).
+
+    If `diff_mask` is `None` (a variable-shape pair - `compute_diff_mask`),
+    falls back to matching against every target cell once `grid` reaches
+    the target's shape, 0.0 until then.
     """
+
+    if diff_mask is None:
+        if _grid_shape(grid) != _grid_shape(target_grid):
+            return 0.0
+        total = sum(len(row) for row in target_grid)
+        if total == 0:
+            return 1.0
+        matched = sum(1 for i, row in enumerate(grid) for j, v in enumerate(row) if v == target_grid[i][j])
+        return matched / total
 
     if not diff_mask:
         return 1.0
@@ -75,13 +99,17 @@ def compute_reward(
     target_grid: Grid,
     diff_mask: DiffMask,
     valid_action: bool,
-    terminated: bool,
+    exact_match: bool,
 ) -> RewardResult:
+    """`exact_match` (not the env's broader `terminated`, which V3's `commit`
+    action can also trigger without a match) is what earns `TERMINAL_BONUS` -
+    a voluntary but wrong `commit` ends the episode without it."""
+
     prev_sim = similarity(prev_grid, target_grid, diff_mask)
     cur_sim = similarity(grid, target_grid, diff_mask)
     reward = (cur_sim - prev_sim) - STEP_COST
     if not valid_action:
         reward -= INVALID_ACTION_PENALTY
-    if terminated:
+    if exact_match:
         reward += TERMINAL_BONUS
     return RewardResult(reward=reward, prev_similarity=prev_sim, similarity=cur_sim)

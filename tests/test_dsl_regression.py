@@ -1,6 +1,8 @@
-"""V1 integration test (SLICES.md): replay each curated task's known-correct
-`arc-dsl` solver program through the env's action executor and check it
-reproduces the task's exact expected output, for every train and test pair.
+"""Integration test (SLICES.md V1 + V3): replay each curated task's
+known-correct `arc-dsl` solver program through the env's action executor and
+check it reproduces the task's exact expected output, for every train and
+test pair - now covering V3's variable-shape tasks (via `canvas`/`commit`)
+alongside V1's same-shape ones.
 
 This is the "riskiest-mechanism-first" check for V1 (PLAN.md Testing
 approach / ADR-0001 consequences): it's free ground truth, since the ARC
@@ -54,4 +56,6 @@ def _encode(spec: actions.ArgSpec, value: int) -> int:
         return value % 10
     if spec.kind == "factor":
         return value - 2
+    if spec.kind == "dim":
+        return value - 1
     return value  # "coord": decode is the identity

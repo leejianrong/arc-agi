@@ -47,6 +47,39 @@ def test_fill_cell_paints_exactly_one_cell():
     assert result == ((0, 0), (5, 0))
 
 
+def test_canvas_replaces_the_grid_with_a_fresh_uniformly_colored_one():
+    grid = ((1, 2, 3), (4, 5, 6))
+    result = actions.ACTIONS[actions.ACTION_BY_NAME["canvas"]].fn(grid, 7, 2, 4)
+    assert result == ((7, 7, 7, 7), (7, 7, 7, 7))
+
+
+# SLICES.md V3 unit test: commit/crop produces the expected sub-grid for a
+# range of hand-constructed painted regions (corners, full canvas, single
+# cell).
+GRID_4X4 = (
+    (1, 2, 3, 4),
+    (5, 6, 7, 8),
+    (9, 10, 11, 12),
+    (13, 14, 15, 16),
+)
+
+
+@pytest.mark.parametrize(
+    "row,col,height,width,expected",
+    [
+        (0, 0, 2, 2, ((1, 2), (5, 6))),  # top-left corner
+        (0, 2, 2, 2, ((3, 4), (7, 8))),  # top-right corner
+        (2, 0, 2, 2, ((9, 10), (13, 14))),  # bottom-left corner
+        (2, 2, 2, 2, ((11, 12), (15, 16))),  # bottom-right corner
+        (0, 0, 4, 4, GRID_4X4),  # full canvas
+        (1, 1, 1, 1, ((6,),)),  # single cell
+    ],
+)
+def test_commit_crops_to_the_expected_sub_grid(row, col, height, width, expected):
+    result = actions.ACTIONS[actions.ACTION_BY_NAME["commit"]].fn(GRID_4X4, row, col, height, width)
+    assert result == expected
+
+
 @pytest.mark.parametrize(
     "action_name,primitive_index_offset",
     [(a.name, i) for i, a in enumerate(actions.ACTIONS)],

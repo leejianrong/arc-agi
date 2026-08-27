@@ -31,6 +31,10 @@ export interface EpisodeStep {
   truncated: boolean;
   done: boolean;
   valid_action: boolean;
+  // V3 (ADR-0002): `commit` can end an episode (terminated=true) without
+  // matching the target - exact_match is what actually means "solved".
+  // Optional for episodes logged before this field existed.
+  exact_match?: boolean;
 }
 
 export interface EpisodeEnd {

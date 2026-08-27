@@ -2,6 +2,7 @@ import { drawGrid, cellSizeFor, type Grid } from "./grid";
 import { fetchRuns, fetchEpisodeIds, fetchEpisode, fetchMetrics, type Episode } from "./api";
 import { EpisodePlayer } from "./player";
 import { computeLinePoints, drawLineChart } from "./dashboard";
+import { formatEpisodeStatus } from "./status";
 
 const runSelect = document.getElementById("run-select") as HTMLSelectElement;
 const rewardChart = document.getElementById("reward-chart") as HTMLCanvasElement;
@@ -103,14 +104,11 @@ class PlayerPanel {
   private renderFrame(): void {
     if (!this.player) return;
     renderGridToCanvas(this.canvasCurrent, this.player.currentGrid);
-    const step = this.player.currentStep;
-    const parts = [`step ${this.player.currentIndex} / ${this.player.frameCount - 1}`];
-    if (step) {
-      parts.push(`action: ${step.action.name ?? "(invalid)"}`, `reward: ${step.reward.toFixed(2)}`);
-      if (step.terminated) parts.push("SOLVED");
-      if (step.truncated) parts.push("truncated (max steps)");
-    }
-    this.statusEl.textContent = parts.join(" | ");
+    this.statusEl.textContent = formatEpisodeStatus(
+      this.player.currentStep,
+      this.player.currentIndex,
+      this.player.frameCount
+    );
     this.btnPlay.textContent = this.player.isPlaying ? "⏸ pause" : "▶ play";
   }
 }

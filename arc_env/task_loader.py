@@ -1,16 +1,25 @@
-"""Loads the V1 same-shape-only, curated-action-space task subset.
+"""Loads the curated-action-space task subset.
 
-`CURATED_TASK_IDS` was derived, not hand-picked: a task qualifies iff (a)
-every train/test pair's output grid has the exact same shape as its input
-grid, and (b) `third_party/arc-dsl/solvers.py`'s known-correct solver for
-that task calls only primitives in `arc_env.actions`'s
-`ZERO_ARG`/`ONE_ARG`/`TWO_ARG` sets (i.e. never touches an `Object`/
-`Indices`/`Callable`-typed primitive, and never uses `canvas`/`crop`). See
-`arc_env/actions.py`'s module docstring for the full reasoning; the
-derivation script's output is reproduced in `tests/test_dsl_regression.py`'s
-module docstring for anyone who wants to re-run the check.
+`CURATED_TASK_IDS` was derived, not hand-picked: a task qualifies iff
+`third_party/arc-dsl/solvers.py`'s known-correct solver for that task calls
+only primitives in `arc_env.actions`'s action groups (`ZERO_ARG`/`ONE_ARG`/
+`TWO_ARG`/`THREE_ARG`/`FOUR_ARG`). See `arc_env/actions.py`'s module
+docstring for the full reasoning.
 
-This is also exactly the V1 regression-test fixture set
+V1 additionally required same-shape input/output pairs, as the smallest
+possible first slice - not because variable-shape outputs needed a
+different action space (`trim`/`tophalf`/`upscale`/`downscale`/... already
+change shape). V3 lifts that restriction and adds the 5 tasks that need
+`canvas`/`commit` (ADR-0002) or a variable-shape chain of the existing
+actions: 11 same-shape (V1) + 5 variable-shape (V3) = 16 total.
+
+`d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
+- which is exactly what `commit(row=0, col=0, height=2, width=2)` does
+(`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
+module's docstring), so its entry below uses `"commit"` as the primitive
+name, not `"crop"`.
+
+This is also exactly the regression-test fixture set
 (`tests/test_dsl_regression.py`): each task's solver program, replayed
 through `arc_env.actions.execute`, must reproduce the task's expected output
 exactly.
@@ -26,11 +35,12 @@ TRAINING_DATA_DIR = (
 
 # task_id -> the known-correct solver's call sequence, as
 # (primitive_name, real_args) pairs transcribed from
-# `third_party/arc-dsl/solvers.py`'s `solve_<task_id>`. This is both the V1
-# task subset and the regression-test fixture table
+# `third_party/arc-dsl/solvers.py`'s `solve_<task_id>`. This is both the
+# curated task subset and the regression-test fixture table
 # (`tests/test_dsl_regression.py` replays each sequence through
 # `arc_env.actions` and checks it reproduces the task's exact output).
 CURATED_TASK_IDS = {
+    # V1: same-shape.
     "6150a2bd": [("rot180", ())],
     "b1948b0a": [("replace", (6, 2))],
     "3c9b0459": [("rot180", ())],
@@ -47,7 +57,18 @@ CURATED_TASK_IDS = {
         ("switch", (2, 6)),
         ("switch", (1, 5)),
     ],
+    # V3: variable-shape.
+    "d10ecb37": [("commit", (0, 0, 2, 2))],  # solver: crop(I, ORIGIN, TWO_BY_TWO)
+    "c59eb873": [("upscale", (2,))],
+    "9172f3a0": [("upscale", (3,))],
+    "5614dbcf": [("replace", (5, 0)), ("downscale", (3,))],
+    "46f33fce": [("rot180", ()), ("downscale", (2,)), ("rot180", ()), ("upscale", (4,))],
 }
+
+# task_id -> whether every train/test pair is same-shape (V1) or not (V3).
+# Not used by the env/trainers - just documents the split for anyone
+# auditing coverage (e.g. `tests/test_task_loader.py`).
+VARIABLE_SHAPE_TASK_IDS = {"d10ecb37", "c59eb873", "9172f3a0", "5614dbcf", "46f33fce"}
 
 
 @dataclass(frozen=True)
