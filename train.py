@@ -23,9 +23,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from arc_env.env import ArcEnv, DEFAULT_MAX_STEPS
+from arc_env.env import DEFAULT_MAX_STEPS, ArcEnv
 from arc_env.episode_log import EpisodeWriter, RunMeta, write_run_meta
-from arc_env.re_arc import generate_pair
+from arc_env.re_arc import GenerationError, generate_pair
 from arc_env.task_loader import CURATED_TASK_IDS, load_task
 from trainers.gp.evolve import GPConfig, run_gp
 from trainers.gp.replay import program_to_episode_trace
@@ -47,7 +47,17 @@ def make_next_pair_fn(task_id: str, re_arc_prob: float, rng: random.Random):
     def next_pair():
         if rng.random() < re_arc_prob:
             center = rng.uniform(0.0, 1.0)
-            pair = generate_pair(task_id, max(0.0, center - 0.15), min(1.0, center + 0.15))
+            try:
+                pair = generate_pair(task_id, max(0.0, center - 0.15), min(1.0, center + 0.15))
+            except GenerationError:
+                # A narrow difficulty band can make every re-arc attempt land
+                # on a degenerate (input == output) instance - e.g. 67a3c6ac's
+                # generator picks width 1 with non-trivial odds near diff 0,
+                # and vmirror is a no-op on a single column. Rare per call,
+                # but over a full training run's worth of calls, likely
+                # enough to hit eventually - fall back to a native pair
+                # rather than crash the run.
+                pair = task.train[rng.randrange(len(task.train))]
         else:
             pair = task.train[rng.randrange(len(task.train))]
         return task_id, pair
@@ -121,7 +131,7 @@ def train_ppo(
     max_steps: int,
     seed: int,
     config: PPOConfig,
-    resume_from: Path = None,
+    resume_from: Path | None = None,
 ) -> None:
     random.seed(seed)
     np.random.seed(seed)
