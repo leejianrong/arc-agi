@@ -79,7 +79,7 @@ logic itself.
 5. `viz/frontend`: add the training dashboard (reward curve, success-rate
    curve) polling `metrics.jsonl`, and a run/episode picker so late-training
    eval episodes can be replayed next to early-training ones.
-6. `train.py --algo ppo --config ...` CLI entrypoint.
+6. `train.py --algo ppo --task_id <id> [hyperparameter flags]` CLI entrypoint.
 
 **Demo:** launch `train.py --algo ppo`, watch the dashboard's reward/
 success-rate curves update over the run, then replay an early-training vs.
@@ -173,7 +173,7 @@ exists to validate.
    program's execution trace as an `episodes/*.jsonl` file, in the same
    format V1-V3 already produce (ADR-0006), so the visualizer needs no
    changes to replay it.
-4. `train.py --algo gp --config ...` CLI entrypoint.
+4. `train.py --algo gp --task_id <id> [hyperparameter flags]` CLI entrypoint.
 
 **Demo:** run `train.py --algo gp` against a handful of tasks, watch best-
 fitness-per-generation in the dashboard (same charting code as PPO's reward

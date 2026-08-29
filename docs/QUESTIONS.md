@@ -26,7 +26,7 @@ None — all forks from the 2026-08-27 round are resolved (see Register).
 | Q3 | Core data model and identity | ASSUMED | `task_id` (ARC filename stem) + timestamped `run_id`; JSONL trajectory schema per step | PLAN.md Implementation decisions, ADR-0006 |
 | Q4 | State and storage | ASSUMED | Local disk only, `runs/<run_id>/`, no database | ADR-0006 |
 | Q5 | Concurrency and conflict | ASSUMED | No locking needed; independent `run_id` directories, no shared mutable state | PLAN.md Assumed defaults |
-| Q6 | Interfaces and contracts (CLI) | ASSUMED | `train.py --algo ppo\|gp --config ...` | PLAN.md Affordances |
+| Q6 | Interfaces and contracts (CLI) | ASSUMED | `train.py --algo ppo\|gp --task_id <id> [hyperparameter flags]` (flat per-hyperparameter flags, no single `--config`) | PLAN.md Affordances |
 | Q7 | Failure behaviour | ASSUMED | Invalid actions → no-op + small penalty; hard max-step termination; checkpoint-based recovery | PLAN.md Assumed defaults |
 | Q8 | External dependencies (license, offline) | ASSUMED + F1 | `arc-dsl`/`re-arc` MIT; `gymnasium` MIT; numpy/torch (BSD-style), CPU-only wheel installed explicitly (avoids repeating `arc-ngps`'s 6.9GB CUDA-wheel mistake); all offline/local | ADR-0001, PLAN.md Implementation decisions |
 | Q9 | Runtime and deployment | ASSUMED | Single local machine, CPU-only (confirmed: no CUDA, 16 cores), `localhost`-only visualizer | PLAN.md Assumed defaults |

@@ -11,10 +11,12 @@ The starting point was a non-learned geometric-transform baseline (still in `leg
 Requires Python 3.10+, [uv](https://docs.astral.sh/uv/), and Node 20+.
 
 ```bash
-make install   # uv sync (Python) + npm ci (frontend)
-make rollout   # random-policy episodes across all 16 curated tasks
-make train     # trains a PPO policy on one task (~90s)
-make viz       # builds the frontend, serves the dashboard + replay UI at :8000
+make            # no target: lists every available command
+make install    # uv sync (Python) + npm ci (frontend)
+make rollout    # random-policy episodes across all 16 curated tasks
+make train      # trains a PPO policy on one task (~90s)
+make viz        # builds the frontend, serves the dashboard + replay UI at :8000 (override with PORT=)
+make demo       # train + viz in one command - trains, then opens the visualizer on that run
 ```
 
 Or run things by hand:
@@ -82,7 +84,9 @@ make test           # the fast layer: 264 tests, ~4 seconds, no GPU or training 
 make test-py-slow   # adds the PPO convergence check (~90s): does reward actually improve over training?
 ```
 
-CI runs both, in parallel jobs, and `main` is protected on all three checks (`python-tests`, `python-tests-slow`, `frontend`) passing before merge.
+CI runs five jobs in parallel - `python-tests`, `python-tests-slow`, `frontend`, `lint` (`ruff check .`), and `security` (`gitleaks` secret scan + `pip-audit`, plus `npm audit` in the `frontend` job) - and `main` is protected on all five passing before merge. Dependabot opens weekly update PRs for the `uv`, `npm`, and GitHub Actions dependencies.
+
+`git config core.hooksPath .githooks` installs a pre-push hook that mirrors the fast checks (`ruff`, the fast test layer, frontend typecheck/tests, and a local `gitleaks` scan if installed) so most red CI runs never happen.
 
 The regression backbone is `tests/test_dsl_regression.py`: every curated task's known-correct `arc-dsl` solver gets replayed through this project's own action executor and has to reproduce the exact expected output. Since the ARC dataset and Hodel's solvers already establish ground truth, this is free, strong coverage for the part of the system where a subtle bug would be easiest to miss.
 
