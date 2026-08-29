@@ -13,7 +13,8 @@ falling back to the ADR-0005 similarity measure as a tiebreaker").
 
 from dataclasses import dataclass
 
-from arc_env import actions, reward as reward_mod
+from arc_env import actions
+from arc_env import reward as reward_mod
 from arc_env.task_loader import Task
 from trainers.gp.genome import Program
 
@@ -22,7 +23,7 @@ Fitness = tuple  # (exact_match_fraction: float, mean_similarity: float)
 ZERO_FITNESS: Fitness = (0.0, 0.0)
 
 
-def run_program(program: Program, grid: tuple, target: tuple = None) -> tuple:
+def run_program(program: Program, grid: tuple, target: tuple | None = None) -> tuple:
     """Applies `program`'s genes to `grid` in order via `actions.execute`,
     mirroring `ArcEnv.step`'s own termination conditions exactly (an
     earlier version of this function didn't, which meant a found program's

@@ -2,7 +2,6 @@
 hand-computed value for a small fixed trajectory."""
 
 import numpy as np
-import pytest
 
 from trainers.ppo.gae import compute_gae
 

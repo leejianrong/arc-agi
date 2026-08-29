@@ -33,7 +33,7 @@ matching the env's own action `Dict` space exactly.
 from dataclasses import dataclass
 
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.distributions import Categorical
 
 from arc_env import actions
@@ -113,7 +113,6 @@ class ActorCritic(nn.Module):
         for block in self.conv_blocks:
             x = block(x)
 
-        b, c, h, w = x.shape
         seq = x.flatten(2).permute(0, 2, 1)  # (B, H*W, C)
         for attn, norm in zip(self.attn_layers, self.attn_norms):
             attn_out, _ = attn(seq, seq, seq, need_weights=False)
@@ -127,7 +126,7 @@ class ActorCritic(nn.Module):
         pooled = self._encode(grid)
         return self.value_head(pooled).squeeze(-1)
 
-    def get_action_and_value(self, grid: torch.Tensor, action: dict = None) -> ActionSample:
+    def get_action_and_value(self, grid: torch.Tensor, action: dict | None = None) -> ActionSample:
         """`action`, if given, is `{"primitive": (B,), "arg1": (B,), ...}` -
         recomputes log-prob/entropy for an already-taken action (PPO update)
         instead of sampling a new one (rollout collection)."""

@@ -4,12 +4,12 @@ for a hand-constructed before/after grid pair, per ADR-0005."""
 import pytest
 
 from arc_env.reward import (
-    STEP_COST,
     INVALID_ACTION_PENALTY,
+    STEP_COST,
     TERMINAL_BONUS,
     compute_diff_mask,
-    similarity,
     compute_reward,
+    similarity,
 )
 
 

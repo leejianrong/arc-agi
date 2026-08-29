@@ -63,12 +63,15 @@ Planning artifacts (read these before making architectural changes):
 
 ## Commands
 
-- `make install` — `uv sync` (Python) + `npm ci` (frontend).
+- `make` (no target) — lists every available command; it is not `install` (that's just the first target in the Makefile, not the default goal).
+- `make install` — `uv sync --group dev` (Python, includes `ruff`/`pytest`/`pip-audit`) + `npm ci` (frontend).
 - `make test` (or `uv run pytest -m "not slow"` / `cd viz/frontend && npm run typecheck && npm test`) — the fast layer, no external services needed, ~4s. `make test-py-slow` (or `uv run pytest`) also runs the ~90s PPO-sanity e2e test (`tests/test_train_ppo.py`, marked `slow`).
+- `uv run ruff check .` — lint (config in `pyproject.toml`'s `[tool.ruff]`; excludes `third_party/`, `legacy/`, `research/` — only the shipped agent's own code is linted).
 - `make rollout` — random-policy rollout over all curated tasks, writes `runs/demo/`.
 - `make train` — `train.py --algo ppo --task_id 67a3c6ac --run_id demo` (edit the task_id, or pass `--algo gp`, for a different run).
-- `make viz` — builds the frontend and starts the backend at `http://127.0.0.1:8000` (reads `runs/`).
-- `git config core.hooksPath .githooks` — installs the pre-push hook (mirrors CI's fast job); `.github/workflows/ci.yml` (fast job + a parallel `slow` job) is the CI backstop. Branch protection on `main` requires both, plus the `frontend` job, before merge.
+- `make viz` — builds the frontend and starts the backend at `http://127.0.0.1:8000` (reads `runs/`; override the port with `make viz PORT=8001` if 8000 is taken).
+- `make demo` — `train` + `viz` in one command: trains a fresh run, then opens the visualizer on it. If `runs/` already has something in it (`make rollout`/`make train` output, or any prior run), `make viz` alone is faster.
+- `git config core.hooksPath .githooks` — installs the pre-push hook: `ruff check .`, the fast test layer, frontend typecheck/tests, and a `gitleaks` secret scan (skipped with a warning if `gitleaks` isn't installed locally; CI runs it regardless). `.github/workflows/ci.yml` runs five jobs in parallel: `lint` (`ruff`), `python-tests`, `python-tests-slow`, `frontend` (adds `npm audit`), and `security` (`gitleaks` + `pip-audit --skip-editable`, skipping the local `arc-agi-agent` package and the CPU-only `torch` build since neither resolves on PyPI under those exact names/versions). Branch protection on `main` requires all five before merge. `.github/dependabot.yml` opens weekly update PRs for `uv`, `npm` (`viz/frontend`), and GitHub Actions.
 
 ## Research subagent policy
 

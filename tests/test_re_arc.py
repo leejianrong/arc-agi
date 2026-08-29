@@ -3,7 +3,7 @@ the vendored `re-arc` (SLICES.md V2 build plan step 3)."""
 
 import pytest
 
-from arc_env.re_arc import generate_pair, GenerationError
+from arc_env.re_arc import generate_pair
 from arc_env.task_loader import CURATED_TASK_IDS
 
 
@@ -14,7 +14,7 @@ def test_generate_pair_produces_a_valid_nondegenerate_grid_pair(task_id):
     for grid in (pair.input, pair.output):
         assert 1 <= len(grid) <= 30
         assert all(1 <= len(row) <= 30 for row in grid)
-        assert len(set(len(row) for row in grid)) == 1
+        assert len({len(row) for row in grid}) == 1
         assert all(0 <= v <= 9 for row in grid for v in row)
 
 

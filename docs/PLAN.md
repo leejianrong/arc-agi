@@ -1,6 +1,6 @@
 # ARC-AGI RL/Evolutionary Agent: Plan
 
-Status: agreed · Milestone: MVP
+Status: MVP shipped (V1-V4 all landed - see `SLICES.md`; PRs #1-#6)
 
 ## Problem
 
@@ -17,7 +17,7 @@ the training run's progress and any individual episode's playthrough.
 
 ## Solution
 
-Run `train.py --algo ppo --config ...` and watch a run directory fill up
+Run `train.py --algo ppo --task_id <id>` and watch a run directory fill up
 under `runs/<run_id>/` with metrics and periodic evaluation episodes. Open
 the local visualizer, see a reward/success-rate dashboard update as training
 progresses, pick any logged episode, and watch the agent's grid change one
@@ -106,7 +106,7 @@ decision-maker.
 
 | Affordance | Kind | Wires to |
 | --- | --- | --- |
-| `train.py --algo ppo\|gp --config ...` | CLI command | S1 env, S3/S4 trainer, S2 logging |
+| `train.py --algo ppo\|gp --task_id <id> [hyperparameter flags]` | CLI command | S1 env, S3/S4 trainer, S2 logging |
 | ARC env module | Library / Gym interface | `third_party/arc-dsl` executor, `third_party/ARC-AGI` + `third_party/re-arc` data |
 | Visualizer backend | Local HTTP server | `runs/` directory tree |
 
@@ -184,21 +184,45 @@ Per-slice test plans (with concrete end-to-end acceptance criteria) live in
 
 ## Open risks
 
+All five below were written before V2-V4 existed to reveal their outcome;
+each now carries what actually happened, appended rather than rewritten.
+
 - **PPO may show no measurable learning even on the scoped subset.** The one
   existing ARC RL paper (ARCLE) needed human-demonstration behavior cloning
   to make PPO tractable at all; we have no such dataset. Reward shaping
   (ADR-0005) mitigates but may not fully solve this. Earliest slice to reveal
   it: V2.
+  **Resolved in V2**: it does learn. `tests/test_train_ppo.py`'s PPO-sanity
+  check (mean eval reward over the last 10% of updates strictly beats a
+  100-episode random-policy baseline) passes, and single-action tasks
+  converge in well under two minutes of wall-clock training (README `What
+  actually works right now`). Not yet tested past this 16-task subset.
 - **The scratch-canvas + commit/crop action for variable output shape might
   be awkward in practice** (e.g., large unproductive exploration of canvas
   space before painting anything useful). Earliest slice to reveal it: V3.
+  **Confirmed in V3, still open**: neither trainer reliably solves tasks
+  needing `commit`'s exact four-argument combination. The actual failure
+  mode is narrower than feared — not unproductive exploration, but a reward
+  cliff: similarity scores zero for any wrong-shape output, so there's no
+  gradient until the agent stumbles onto the right dimensions by chance
+  (README). Getting the shape right first is the concrete open problem, not
+  addressed by any slice yet.
 - **Genetic programming over ~150 primitives may need real constraint/typing
   enforcement to avoid combinatorial explosion**, since there's no existing
   benchmark to calibrate population size/generation budget against. Earliest
   slice to reveal it: V4.
+  **Did not materialize in V4**: GP's shipped design — a flat list of
+  (action, argument) pairs over the same 23-action curated space PPO uses,
+  not arc-dsl's full ~150 primitives, and no AST/typing to enforce (ADR-0003,
+  `trainers/gp/genome.py`) — sidesteps this by construction. GP finds
+  solutions in single-digit milliseconds on anything the action space can
+  express in a handful of steps (README).
 - **TypeScript frontend build tooling adds setup overhead** relative to a
   Python-only dashboard — a one-time cost, surfaced immediately in V1.
+  **Paid in V1**: one-time setup cost as expected; not a live risk since.
 - **Per-task training cost scales linearly with the number of tasks
   attempted** (ADR-0008) — solving N tasks means N independent training
   runs, which bounds how large V2/V3's curated task subset can practically
   be on this CPU-only machine. Earliest slice to reveal it: V2.
+  **Confirmed and accepted**: this is why the curated subset is capped at 16
+  tasks (`arc_env/task_loader.py`), not a defect to fix.
