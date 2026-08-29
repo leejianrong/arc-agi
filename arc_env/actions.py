@@ -17,10 +17,21 @@ steppable": every action maps one grid to the next.
 This scalar-args-only restriction was derived by checking, for every
 ARC-AGI-1 training task with a known-correct `arc-dsl` solver, whether that
 solver only calls primitives from this module's action groups below.
-Exactly 16 tasks qualify (11 same-shape, from V1; 5 variable-shape, added in
-V3) - see `arc_env/task_loader.py`:CURATED_TASK_IDS - which is the curated
-task subset and also the regression-test fixture set
+24 tasks qualify (11 same-shape, from V1; 13 variable-shape: 5 from V3, plus
+8 added in ADR-0010 Phase 1) - see `arc_env/task_loader.py`:CURATED_TASK_IDS
+- which is the curated task subset and also the regression-test fixture set
 (`tests/test_dsl_regression.py`).
+
+ADR-0010 Phase 1 (2026-08-29) added `hconcat_self`, `hconcat_self_vmirror`,
+`vconcat_self_hmirror_top`, and `vconcat_self_hmirror_bottom` - a repo-audit
+of `third_party/arc-dsl/solvers.py` found several solvers doubling the grid
+by concatenating it with itself (optionally mirrored) via `dsl.hconcat`/
+`dsl.vconcat`, which don't fit this module's "Grid [, scalar args] -> Grid"
+signature directly (they're `Grid, Grid -> Grid`) but *do* fit it once the
+second `Grid` argument is always a fixed function of the first - the same
+"derived, not drawn from a solver 1:1" pattern `fill_cell` already
+established. No new representational mechanism, per ADR-0010's Phase 1
+scope: still zero-arg, still `Grid -> Grid`.
 
 V1 additionally restricted the *task subset* to same-shape-only pairs, as
 the smallest possible first slice (ADR-0002) - not because the action space
@@ -118,6 +129,25 @@ def _commit(grid: Grid, row: int, col: int, height: int, width: int) -> Grid:
     return dsl.crop(grid, (row, col), (height, width))
 
 
+# ADR-0010 Phase 1: self-concatenation (optionally mirrored) - see module
+# docstring. Each fixes `dsl.hconcat`/`dsl.vconcat`'s second `Grid` argument
+# as a function of the first, so the action stays zero-arg `Grid -> Grid`.
+def _hconcat_self(grid: Grid) -> Grid:
+    return dsl.hconcat(grid, grid)
+
+
+def _hconcat_self_vmirror(grid: Grid) -> Grid:
+    return dsl.hconcat(grid, dsl.vmirror(grid))
+
+
+def _vconcat_self_hmirror_top(grid: Grid) -> Grid:
+    return dsl.vconcat(dsl.hmirror(grid), grid)
+
+
+def _vconcat_self_hmirror_bottom(grid: Grid) -> Grid:
+    return dsl.vconcat(grid, dsl.hmirror(grid))
+
+
 # Zero-arg grid transforms.
 ZERO_ARG = [
     Action("identity", dsl.identity),
@@ -134,6 +164,11 @@ ZERO_ARG = [
     Action("bottomhalf", dsl.bottomhalf),
     Action("lefthalf", dsl.lefthalf),
     Action("righthalf", dsl.righthalf),
+    # ADR-0010 Phase 1: self-concatenation, optionally mirrored.
+    Action("hconcat_self", _hconcat_self),
+    Action("hconcat_self_vmirror", _hconcat_self_vmirror),
+    Action("vconcat_self_hmirror_top", _vconcat_self_hmirror_top),
+    Action("vconcat_self_hmirror_bottom", _vconcat_self_hmirror_bottom),
 ]
 
 # One-arg (scale factor) grid transforms.
@@ -226,7 +261,7 @@ def execute(primitive_index: int, raw_args: tuple, grid: Grid) -> tuple:
         return grid, decoded, False
 
     new_h, new_w = _grid_shape(new_grid)
-    if new_h == 0 or new_w == 0:
+    if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
         return grid, decoded, False
 
     return new_grid, decoded, True

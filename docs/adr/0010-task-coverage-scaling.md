@@ -86,6 +86,41 @@ with each other (ADR-0003's shared-substrate requirement).
   filter, update `CURATED_TASK_IDS`, extend `tests/test_dsl_regression.py`'s fixture
   coverage accordingly (ADR-0001's existing regression-test pattern already handles
   new fixture tasks with zero new test-writing beyond adding rows to the table).
+
+### Phase 1 implementation (2026-08-29)
+
+Landed: 4 new zero-arg actions - `hconcat_self`, `hconcat_self_vmirror`,
+`vconcat_self_hmirror_top`, `vconcat_self_hmirror_bottom` - each fixing
+`dsl.hconcat`/`dsl.vconcat`'s second `Grid` argument as a function of the
+first (self, or a mirror of self), the same "derived, not a 1:1 solver call"
+pattern `fill_cell` already established. A repo-audit script (AST-parsing
+`solvers.py`, tracking which extra, non-curated calls a candidate solver
+needs beyond the existing 23 actions) found these 4 primitives fully cover 7
+solvers that only differ in call order/mirroring, plus one already-expressible
+`commit` call (`5bd6f4ac`: `crop(I, tojvec(SIX), THREE_BY_THREE)`, a
+constant-only literal never touching the grid, exactly `d10ecb37`'s pattern) -
+8 new tasks, verified exact-match against every train *and* test pair before
+adding: `a416b8f3`, `6d0aefbc`, `c9e6f938`, `4c4377d9`, `6fa7a44f`,
+`8be77c9e`, `f25ffba3`, `5bd6f4ac`. `CURATED_TASK_IDS` grew 16 → 24 (12
+same-shape + 12 variable-shape - `f25ffba3` nets back to its input shape
+despite using a shape-changing action mid-sequence, so it counts as
+same-shape, not variable). `arc_env/actions.py::execute` also gained a
+generic oversized-grid guard (`new_h/new_w > MAX_GRID_DIM` → invalid/no-op)
+since these new actions can double a dimension past the 30x30 canvas -
+previously only `upscale`/`hupscale`/`vupscale`/`commit` had bounds checks
+because no other existing action could grow a grid at all.
+
+The audit also surfaced solvers needing exactly one more primitive
+(`mostcolor`, `leastcolor`, `cellwise`, `ofcolor`) that were deliberately
+**not** added this pass: each depends on the grid's actual content
+(`mostcolor(I)`/`leastcolor(I)` compute a color that varies by instance,
+`ofcolor`/`cellwise` build/compare `Indices`/multi-grid state), so a single
+literal transcription into `CURATED_TASK_IDS` (one fixed action sequence
+applied identically to every train/test pair) either isn't safe in general
+or strays into Phase 2's object/indices territory - out of scope for a
+"broaden with simple primitives" pass. Remains available as a smaller
+fast-follow if worth revisiting.
+
 - Phase 2 needs its own design pass (observation-space change, action-space change,
   both trainers' representations must agree) before implementation - this ADR scopes
   the target and constraints, not the mechanism.
