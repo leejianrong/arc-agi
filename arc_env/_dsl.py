@@ -13,7 +13,7 @@ _ARC_DSL_DIR = Path(__file__).resolve().parent.parent / "third_party" / "arc-dsl
 if str(_ARC_DSL_DIR) not in sys.path:
     sys.path.insert(0, str(_ARC_DSL_DIR))
 
-import dsl  # noqa: E402
-import constants  # noqa: E402
+import constants
+import dsl
 
-__all__ = ["dsl", "constants"]
+__all__ = ["constants", "dsl"]

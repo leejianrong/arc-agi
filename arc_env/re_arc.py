@@ -71,7 +71,8 @@ def generate_pair(task_id: str, diff_lb: float = 0.0, diff_ub: float = 1.0) -> P
     for _ in range(MAX_ATTEMPTS):
         try:
             example = generator(diff_lb, diff_ub)
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - a vendored re-arc generator can raise
+            # anything for an unlucky diff bound; retry rather than propagate.
             continue
         input_grid, output_grid = example["input"], example["output"]
         if input_grid == output_grid:

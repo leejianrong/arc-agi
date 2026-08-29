@@ -6,6 +6,9 @@
 
 set -e
 
+echo "pre-push: ruff lint"
+uv run ruff check .
+
 echo "pre-push: python tests (fast layer - excludes the ~90s PPO smoke test; CI runs both)"
 uv run pytest -q -m "not slow"
 
@@ -14,4 +17,11 @@ if [ -d viz/frontend/node_modules ]; then
   (cd viz/frontend && npm run typecheck && npm test)
 else
   echo "pre-push: skipping frontend checks (viz/frontend/node_modules missing - run 'make install')"
+fi
+
+if command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-push: gitleaks secret scan"
+  gitleaks detect --source . -v --redact
+else
+  echo "pre-push: skipping gitleaks (not installed - CI runs it regardless); see https://github.com/gitleaks/gitleaks#installing"
 fi

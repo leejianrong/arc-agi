@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from arc_env.env import ArcEnv, DEFAULT_MAX_STEPS
+from arc_env.env import DEFAULT_MAX_STEPS, ArcEnv
 from arc_env.episode_log import EpisodeWriter, RunMeta, write_run_meta
 from arc_env.task_loader import CURATED_TASK_IDS, load_task
 
@@ -25,7 +25,7 @@ RUNS_DIR = Path(__file__).resolve().parent.parent / "runs"
 
 def run_episode(env: ArcEnv, run_dir: Path, task_id: str, pair_index: int, episode_id: str) -> dict:
     task = load_task(task_id)
-    obs, info = env.reset(task_id=task_id, pair_index=pair_index, task=task)
+    _obs, info = env.reset(task_id=task_id, pair_index=pair_index, task=task)
 
     with EpisodeWriter(run_dir, episode_id) as writer:
         writer.start(

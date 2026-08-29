@@ -94,7 +94,7 @@ class EpisodeWriter:
         terminated: bool,
         truncated: bool,
         valid_action: bool,
-        exact_match: bool = None,
+        exact_match: bool | None = None,
     ) -> None:
         """`terminated` can now be true without `exact_match` (V3's `commit`
         action ends the episode on a chosen crop whether or not it matches)

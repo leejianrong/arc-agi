@@ -21,7 +21,7 @@ def test_zero_arg_action_matches_direct_dsl_call(action, grid):
     dsl_fn = getattr(dsl, action.name)
     try:
         expected = dsl_fn(grid)
-    except Exception:
+    except Exception:  # noqa: BLE001 - any DSL error means "not applicable here", skip
         pytest.skip(f"{action.name} not well-defined for this grid shape")
     assert action.fn(grid) == expected
 

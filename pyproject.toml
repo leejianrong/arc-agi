@@ -20,7 +20,9 @@ py-modules = ["train"]
 
 [dependency-groups]
 dev = [
+    "pip-audit>=2.10.1",
     "pytest>=8.0",
+    "ruff>=0.16.5",
 ]
 
 [tool.pytest.ini_options]
@@ -28,6 +30,14 @@ testpaths = ["tests"]
 markers = [
     "slow: takes >1s (PPO training runs) - excluded from the default/pre-push run, included in CI",
 ]
+
+# Excludes third_party/ (vendored, read-only upstream), legacy/ (kept as a
+# reference baseline, not part of the new agent) and research/ (superseded
+# scaffold, off the path to the shipped agent) per CLAUDE.md's repo layout -
+# only the shipped agent's own code is linted.
+[tool.ruff]
+target-version = "py310"
+extend-exclude = ["third_party", "legacy", "research"]
 
 # CPU-only torch wheel, not the default CUDA build - PLAN.md Implementation
 # decisions is explicit about this (this machine has no GPU; the CUDA wheel

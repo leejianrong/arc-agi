@@ -3,7 +3,6 @@ metrics and the best-found program's execution trace - loads through
 `viz/backend/server.py`'s existing read functions with no GP-specific code
 (ADR-0006: same `runs/<run_id>/` shape V1-V3 already produce)."""
 
-import json
 
 from arc_env.task_loader import load_task
 from train import train_gp

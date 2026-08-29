@@ -20,7 +20,7 @@ def test_rollout_script_produces_a_valid_replayable_episode(tmp_path):
             "--seed", "1",
             "--runs_dir", str(tmp_path),
         ],
-        capture_output=True, text=True, cwd=REPO_ROOT,
+        capture_output=True, text=True, cwd=REPO_ROOT, check=False,
     )
     assert result.returncode == 0, result.stderr
 

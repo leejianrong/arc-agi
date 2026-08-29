@@ -1,7 +1,7 @@
 """The PPO update step (ADR-0004): clipped surrogate objective, over
 `n_epochs` passes of shuffled minibatches from one rollout buffer."""
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 
 import numpy as np
 import torch

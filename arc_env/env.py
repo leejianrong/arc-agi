@@ -29,11 +29,14 @@ canvas view. Simpler, and every same-shape V1 task still works unmodified
 (their grid was never forced into a 30x30 field to begin with).
 """
 
-import numpy as np
+from typing import ClassVar
+
 import gymnasium as gym
+import numpy as np
 from gymnasium import spaces
 
-from arc_env import actions, reward as reward_mod
+from arc_env import actions
+from arc_env import reward as reward_mod
 from arc_env.task_loader import Pair, Task, load_task
 
 PAD_VALUE = 10  # beyond ARC's 10 colors (0-9); marks padding in the fixed-size observation
@@ -49,7 +52,7 @@ def _pad_grid(grid: tuple) -> np.ndarray:
 
 
 class ArcEnv(gym.Env):
-    metadata = {"render_modes": []}
+    metadata: ClassVar[dict] = {"render_modes": []}
 
     def __init__(self, max_steps: int = DEFAULT_MAX_STEPS):
         super().__init__()

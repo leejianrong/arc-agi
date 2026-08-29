@@ -16,7 +16,6 @@ curve, and a periodic checkpoint loads and resumes training without error.
 """
 
 import json
-import random
 
 import numpy as np
 import pytest
@@ -24,9 +23,9 @@ import torch
 
 from arc_env.env import ArcEnv
 from arc_env.re_arc import generate_pair
+from train import load_checkpoint, train_ppo
 from trainers.ppo.network import ActorCritic
 from trainers.ppo.ppo import PPOConfig
-from train import load_checkpoint, train_ppo
 
 TASK_ID = "67a3c6ac"  # solved by a single vmirror - PLAN.md's named PPO-sanity fixture
 N_UPDATES = 20
@@ -35,7 +34,6 @@ MAX_STEPS = 10
 
 
 def _random_baseline_mean_reward(task_id: str, n_episodes: int, max_steps: int, seed: int) -> float:
-    rng = random.Random(seed)
     env = ArcEnv(max_steps=max_steps)
     env.action_space.seed(seed)
     rewards = []

@@ -21,7 +21,7 @@ import torch
 
 from arc_env.env import ArcEnv
 from arc_env.task_loader import Pair
-from trainers.ppo.network import ActorCritic, MAX_ARITY
+from trainers.ppo.network import MAX_ARITY, ActorCritic
 
 
 @dataclass

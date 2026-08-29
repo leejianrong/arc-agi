@@ -47,10 +47,10 @@ directly - the general "build from scratch" escape hatch is the point of
 the primitive, not any one task in this small a subset.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
-from arc_env._dsl import dsl, constants
+from arc_env._dsl import dsl
 
 Grid = tuple
 
@@ -211,13 +211,14 @@ def execute(primitive_index: int, raw_args: tuple, grid: Grid) -> tuple:
             if action.name in ("vupscale", "upscale") and h * value > MAX_GRID_DIM:
                 return grid, decoded, False
 
-    if action.name == "commit":
-        if decoded["row"] + decoded["height"] > h or decoded["col"] + decoded["width"] > w:
-            return grid, decoded, False
+    if action.name == "commit" and (
+        decoded["row"] + decoded["height"] > h or decoded["col"] + decoded["width"] > w
+    ):
+        return grid, decoded, False
 
     try:
         new_grid = action.fn(grid, *decoded.values())
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Q7: invalid/out-of-bounds actions are a no-op with a penalty, not a
         # crash - guards against any edge case in a DSL primitive we didn't
         # anticipate (e.g. a degenerate grid shape) on top of the explicit

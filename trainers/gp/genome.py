@@ -20,12 +20,11 @@ evaluation time, independently of genome operators).
 """
 
 import random
-from typing import List, Tuple
 
 from arc_env import actions
 
-Gene = Tuple[int, Tuple[int, ...]]  # (primitive_index, raw_args)
-Program = List[Gene]
+Gene = tuple[int, tuple[int, ...]]  # (primitive_index, raw_args)
+Program = list[Gene]
 
 MIN_LENGTH = 1
 
