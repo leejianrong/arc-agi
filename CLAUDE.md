@@ -25,10 +25,12 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 23 actions as of V3:
-  structural transforms, `fill_cell`, `canvas`, and `commit`, ADR-0002), the
-  task loader (`task_loader.py` — 16 curated tasks, 11 same-shape + 5
-  variable-shape), `env.py`, ADR-0005's dense reward (`reward.py`), extra
+  `arc-dsl`-primitive action space (`actions.py` — 27 actions as of
+  ADR-0010 Phase 1: structural transforms including the 4
+  self-concatenation actions, `fill_cell`, `canvas`, and `commit`,
+  ADR-0002/ADR-0010), the task loader (`task_loader.py` — 24 curated tasks,
+  12 same-shape + 12 variable-shape), `env.py`, ADR-0005's dense reward
+  (`reward.py`), extra
   practice-instance generation via `re-arc` (`re_arc.py`), and the JSONL
   trajectory/run-meta writers (`episode_log.py`), per ADR-0004/ADR-0006.
   `info["exact_match"]`, not the broader `terminated`, is what "solved"

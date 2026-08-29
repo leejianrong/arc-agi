@@ -11,13 +11,23 @@ possible first slice - not because variable-shape outputs needed a
 different action space (`trim`/`tophalf`/`upscale`/`downscale`/... already
 change shape). V3 lifts that restriction and adds the 5 tasks that need
 `canvas`/`commit` (ADR-0002) or a variable-shape chain of the existing
-actions: 11 same-shape (V1) + 5 variable-shape (V3) = 16 total.
+actions: 11 same-shape (V1) + 5 variable-shape (V3) = 16 total. ADR-0010
+Phase 1 (2026-08-29) adds 8 more tasks reachable via the new
+self-concatenation actions (`hconcat_self`/etc., see `arc_env/actions.py`)
+or an already-expressible-but-previously-untranscribed `commit` call: 7 of
+those 8 are variable-shape, but `f25ffba3` nets back to the same shape
+(`bottomhalf` then `vconcat_self_hmirror_top` undoes its own height change),
+so it's a same-shape task despite going through an intermediate shape
+change - 12 same-shape + 12 variable-shape = 24 total.
 
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
 module's docstring), so its entry below uses `"commit"` as the primitive
-name, not `"crop"`.
+name, not `"crop"`. `5bd6f4ac`'s solver is `crop(I, tojvec(SIX), THREE_BY_THREE)`
+= `crop(I, (0, 6), (3, 3))` - `tojvec`/`THREE_BY_THREE` are arc-dsl constant-
+building sugar, not grid-dependent, so this is exactly `commit(0, 6, 3, 3)`,
+the same pattern as `d10ecb37`.
 
 This is also exactly the regression-test fixture set
 (`tests/test_dsl_regression.py`): each task's solver program, replayed
@@ -63,12 +73,27 @@ CURATED_TASK_IDS = {
     "9172f3a0": [("upscale", (3,))],
     "5614dbcf": [("replace", (5, 0)), ("downscale", (3,))],
     "46f33fce": [("rot180", ()), ("downscale", (2,)), ("rot180", ()), ("upscale", (4,))],
+    # ADR-0010 Phase 1: variable-shape, via the new self-concatenation
+    # actions or an already-expressible `commit` call (see module docstring).
+    "a416b8f3": [("hconcat_self", ())],
+    "6d0aefbc": [("hconcat_self_vmirror", ())],
+    "c9e6f938": [("hconcat_self_vmirror", ())],
+    "4c4377d9": [("vconcat_self_hmirror_top", ())],
+    "6fa7a44f": [("vconcat_self_hmirror_bottom", ())],
+    "8be77c9e": [("vconcat_self_hmirror_bottom", ())],
+    "5bd6f4ac": [("commit", (0, 6, 3, 3))],  # solver: crop(I, tojvec(SIX), THREE_BY_THREE)
+    # ADR-0010 Phase 1, same-shape: bottomhalf then vconcat_self_hmirror_top
+    # nets back to the original shape (halves height, then doubles it back).
+    "f25ffba3": [("bottomhalf", ()), ("vconcat_self_hmirror_top", ())],
 }
 
-# task_id -> whether every train/test pair is same-shape (V1) or not (V3).
-# Not used by the env/trainers - just documents the split for anyone
-# auditing coverage (e.g. `tests/test_task_loader.py`).
-VARIABLE_SHAPE_TASK_IDS = {"d10ecb37", "c59eb873", "9172f3a0", "5614dbcf", "46f33fce"}
+# task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
+# ADR-0010 Phase 1). Not used by the env/trainers - just documents the split
+# for anyone auditing coverage (e.g. `tests/test_task_loader.py`).
+VARIABLE_SHAPE_TASK_IDS = {
+    "d10ecb37", "c59eb873", "9172f3a0", "5614dbcf", "46f33fce",
+    "a416b8f3", "6d0aefbc", "c9e6f938", "4c4377d9", "6fa7a44f", "8be77c9e", "5bd6f4ac",
+}
 
 
 @dataclass(frozen=True)
