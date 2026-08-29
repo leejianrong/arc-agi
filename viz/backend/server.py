@@ -186,8 +186,15 @@ def make_handler(runs_dir: Path):
 
 def serve(runs_dir: Path = DEFAULT_RUNS_DIR, port: int = 8000) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(runs_dir))
-    print(f"viz backend serving {runs_dir} on http://127.0.0.1:{port}")
-    server.serve_forever()
+    server.daemon_threads = True  # don't let a stuck in-flight request block Ctrl-C
+    print(f"viz backend serving {runs_dir} on http://127.0.0.1:{port} (Ctrl-C to stop)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("\nshutting down")
+        server.server_close()  # release the port immediately for the next `make viz`
 
 
 def main() -> None:
