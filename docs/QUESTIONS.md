@@ -21,6 +21,8 @@ None — all forks from the 2026-08-27 round are resolved (see Register).
 | F7 | Reward shaping design | DECIDED (delegated research: `docs/research/rl-evolutionary-survey.md`) | Dense, delta-based, non-background-normalized similarity reward + no-op step penalty + terminal exact-match bonus | ADR-0005 |
 | F8 | Evolutionary method: genetic programming vs. neuroevolution | DECIDED (delegated research) | Genetic programming over the DSL (CPU-cheap, zero prior benchmark to beat); neuroevolution documented as a future option only | ADR-0003 |
 | F9 | PPO training lifecycle (per-task vs. shared/cross-task) and whether a pretrained autoencoder/VAE embedding is needed | DECIDED (user, via conversation 2026-08-27) | Per-task, solve-time training — one fresh PPO policy per `task_id`, trained only on that task's own train pairs + `re-arc` variations, never shared across tasks. No representation-pretraining this milestone: the grid encoder (color-embedding + conv/attention) is learned end-to-end from the PPO reward signal; a reconstruction-based AE/VAE would target a different problem (general ARC perception) and is a weak proxy for the relational structure ARC needs. Cross-task generalization + shared pretraining documented as an explicit future direction, not this milestone | ADR-0008 |
+| F10 | GP-to-PPO behavior-cloning warm-start: always-on pipeline vs. opt-in flag vs. continuous auxiliary loss | DECIDED (user, via conversation 2026-08-29) | Opt-in only: `train.py --algo ppo --warm_start_from <gp_run_dir>` loads a same-task GP run's best-program trajectory and runs a one-time supervised pretrain phase before normal PPO proceeds unmodified. Design decision only — implementation not yet built | ADR-0009 |
+| F11 | Task-coverage scaling past the curated 16: broaden primitives vs. add object selection vs. hold at 16 vs. deepen via re-arc | DECIDED (user, via conversation 2026-08-29) | Both broadening curated primitives and object selection, sequenced: Phase 1 (near-term) extends the curated action space with more scalar-arg-only arc-dsl primitives, no new mechanism, ceiling ~61/400 tasks per a 2026-08-29 repo audit; Phase 2 (fast-follow, not yet designed) adds an object-selection mechanism to reach the larger 79/400 object-manipulation bucket | ADR-0010 |
 | Q1 | Primary user and actors | ASSUMED | Solo user (repo owner), personal research; no multi-actor conflicts | PLAN.md Users and actors |
 | Q2 | Scope boundary | ASSUMED + F2 | ARC-AGI-1 only; no Kaggle/private test; no distributed training; no LLM-in-the-loop; see full in/out list | PLAN.md Scope |
 | Q3 | Core data model and identity | ASSUMED | `task_id` (ARC filename stem) + timestamped `run_id`; JSONL trajectory schema per step | PLAN.md Implementation decisions, ADR-0006 |
@@ -53,6 +55,8 @@ None — all forks from the 2026-08-27 round are resolved (see Register).
 | Reward design (domain-specific) | F7 |
 | Build order / paradigm sequencing (domain-specific) | F3, F4 |
 | Policy architecture / training lifecycle (domain-specific) | F9 |
+| RL/GP interoperation (domain-specific) | F10 |
+| Task-coverage scope past the curated 16 (domain-specific) | F11 |
 
 ## Repo-audit facts used throughout
 
@@ -66,3 +70,10 @@ None — all forks from the 2026-08-27 round are resolved (see Register).
   superseded per ADR-0001, not deleted, disposition deferred.
 - `legacy/` holds the original non-learned geometric-transform baseline;
   kept as a reference, not deleted.
+- 2026-08-29 solver-corpus audit (parsing `third_party/arc-dsl/solvers.py`'s 400
+  `solve_<task_id>` bodies for calls to higher-order-combinator vs.
+  object-manipulation function names): 260/400 (65%) need a higher-order combinator
+  (excluded per ADR-0001), 79/400 (20%) need object selection/manipulation (no
+  representation yet), 61/400 (15%) need neither — of those 61, only 16 are
+  currently curated (`arc_env/task_loader.py`'s `CURATED_TASK_IDS`). Basis for
+  ADR-0010's task-coverage-scaling decision (F11).
