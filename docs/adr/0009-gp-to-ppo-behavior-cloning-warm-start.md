@@ -76,3 +76,47 @@ with how V1-V4 each started at the smallest viable slice before growing.
   fitness program, `--warm_start_from` still loads whatever trajectory is on disk;
   callers are responsible for pointing it at a GP run worth cloning from - this ADR
   doesn't add a fitness-quality gate.
+
+### Implementation (2026-08-31)
+
+Landed as designed: `trainers/ppo/warm_start.py` (`load_demonstration`,
+`pretrain_from_demonstration`) plus `train.py --algo ppo --warm_start_from
+<gp_run_dir> [--warm_start_epochs --warm_start_batch_size --warm_start_lr]`.
+
+- `load_demonstration` reuses `viz.backend.server.read_episode` verbatim to parse
+  `<gp_run_dir>/episodes/best-program.jsonl` - no new parsing logic, per this ADR's
+  original wording. Each logged step's `action.name`/`action.args` (the *decoded*
+  values `arc_env.env.ArcEnv.step` logs, not the raw `Discrete(RAW_ARG_RANGE)`
+  values the policy's arg heads predict over) are mapped back to a raw value via
+  the exact inverse of each `ArgSpec.kind`'s `decode` function. `color`/`factor`
+  decode (`raw % 10` / `2 + raw % 3`) is many-to-one, so the inverse picks the
+  canonical smallest raw value in that decode's preimage - any raw value in the
+  same preimage decodes identically, so this loses no reachable behavior, only
+  fixes one arbitrary representative among equivalent raw encodings for the
+  policy to imitate.
+- The supervised pretrain loss turned out to need no new network code: the target
+  action's negative log-probability under the network's existing factored
+  `Categorical` distributions is exactly what `ActorCritic.get_action_and_value
+  (grid, action=target)` already computes for PPO's own ratio calculation (arg-head
+  masking by the target primitive's arity falls out of the same code path for
+  free) - `pretrain_from_demonstration`'s loss is literally `-sample.log_prob.
+  mean()` over that call, no bespoke cross-entropy head needed.
+- Pretraining uses its own short-lived Adam optimizer, separate from the main PPO
+  optimizer constructed immediately afterward - keeps PPO's own optimizer state
+  clean (no residual pretrain-phase momentum) rather than reusing one Adam
+  instance across both phases.
+- `--warm_start_from` is validated against the target run's `run_meta.json`
+  (`train.check_warm_start_compatible`): must be an `algo: "gp"` run whose
+  `task_ids` is exactly `[task_id]`, erroring via `argparse` otherwise. Combining
+  `--warm_start_from` with `--resume_from` skips the pretrain phase entirely (the
+  resumed checkpoint's weights would immediately overwrite it anyway).
+- End-to-end test (`tests/test_warm_start_e2e.py`) uses `67a3c6ac` (`vmirror`), not
+  this ADR's suggested `d10ecb37` example: `d10ecb37`/`5bd6f4ac` need `commit`'s 4
+  raw args to land exactly right *simultaneously* for the crop to match at all -
+  `arc_env.actions.execute`'s bounds check is all-or-nothing, so there's no partial-
+  credit gradient toward "almost right" args for random GP mutation to climb, and
+  it did not reliably solve either commit-based task within a fast test's budget in
+  practice (verified empirically, not merely suspected). `vmirror` is GP-solvable in
+  a handful of generations and sufficient to demonstrate the mechanism; across 3
+  seeds, 5-update BC-pretrained PPO reached mean eval success rate 1.0 vs.
+  cold-start's ~0.0-0.1 on the identical budget.
