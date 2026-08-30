@@ -51,3 +51,30 @@ to discourage no-op/oscillating behavior.
 - The same reward function is reused by genetic programming's fitness
   evaluation (ADR-0003) where useful, keeping one definition of "how close is
   this grid to correct" across both trainers.
+
+## Amendment (2026-08-29): shape-distance gradient for variable-shape pairs
+
+`similarity`'s variable-shape fallback (`diff_mask is None`, ADR-0002) scored
+a flat `0.0` for any wrong-shape grid until it happened to land on the
+target's exact shape - a genuine dead zone, not a tuning problem: neither
+trainer could reliably solve a task needing `commit`'s exact 4-argument
+(row, col, height, width) combination, because there was no reward signal at
+all to distinguish a close-but-wrong crop from a wildly wrong one. Both
+trainers share `compute_reward`/`similarity`, so this blocked both equally.
+
+`similarity` now blends in `SHAPE_MATCH_CREDIT` (0.3) worth of score for how
+close the current grid's shape is to the target's (normalized Manhattan
+distance between shapes), continuous with the content-match score exactly at
+the shape boundary, before falling back to the original per-cell match once
+shape is achieved. This preserves the ADR's dense/delta-based/non-background-
+normalized design - it only fills in what `similarity` returns during the
+"wrong shape" case that was previously undefined-in-practice (always 0.0).
+The same-shape (`diff_mask` given) path is untouched: a shape mismatch there
+means an already-same-shape task's episode played a shape-changing action
+unnecessarily, which isn't the scenario this fixes.
+
+Verified against the `d10ecb37` fixture task (ADR-0002's `commit`-only
+solver): see `tests/test_reward.py`'s shape-gradient tests for the
+delta/monotonicity/continuity properties, and `tests/test_train_gp.py` for
+end-to-end confirmation that a trainer solves `d10ecb37` within a bounded
+budget.

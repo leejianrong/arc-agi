@@ -65,7 +65,9 @@ decision-maker.
   genetic programming underperforms, not built this milestone.
 - Behavior-cloning warm-start of RL from GP-found programs — the shared
   trajectory format (ADR-0006) is built to make this possible later, but it
-  is not a slice in this milestone.
+  is not a slice in this milestone. Design decided (ADR-0009, 2026-08-29:
+  opt-in `--warm_start_from` flag, same-task only) but not yet implemented —
+  a future slice, not part of V1-V4.
 - Deployment anywhere beyond `localhost` on this machine.
 
 ## Requirements
