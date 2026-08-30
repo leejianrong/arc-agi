@@ -13,7 +13,7 @@ Requires Python 3.10+, [uv](https://docs.astral.sh/uv/), and Node 20+.
 ```bash
 make            # no target: lists every available command
 make install    # uv sync (Python) + npm ci (frontend)
-make rollout    # random-policy episodes across all 16 curated tasks
+make rollout    # random-policy episodes across all 24 curated tasks
 make train      # trains a PPO policy on one task (~90s)
 make viz        # builds the frontend, serves the dashboard + replay UI at :8000 (override with PORT=)
 make demo       # train + viz in one command - trains, then opens the visualizer on that run
@@ -32,11 +32,11 @@ uv run python -m viz.backend.server   # http://127.0.0.1:8000, reads runs/
 
 ## How it works
 
-**The environment.** `arc_env/` wraps a curated slice of Michael Hodel's [arc-dsl](https://github.com/michaelhodel/arc-dsl) as a discrete, factored action space: 23 actions in total, from simple zero-argument transforms like `rot90` and `vmirror` up to `commit`, a four-argument action that crops the working grid to a chosen region and ends the episode there. Higher-order primitives (`compose`, `chain`, `fork`, and friends) are excluded on purpose. They build closures rather than transforming a grid directly, and a flat "pick one action per step" space has no way to represent that. Picking an action that needs an argument the DSL can't express as a plain color, coordinate, or size (an arbitrary object, say) is out of scope for the same reason; see [`docs/adr/0001`](docs/adr/0001-arc-dsl-as-action-space.md) for the full reasoning.
+**The environment.** `arc_env/` wraps a curated slice of Michael Hodel's [arc-dsl](https://github.com/michaelhodel/arc-dsl) as a discrete, factored action space: 27 actions in total, from simple zero-argument transforms like `rot90` and `vmirror` up to `commit`, a four-argument action that crops the working grid to a chosen region and ends the episode there. Higher-order primitives (`compose`, `chain`, `fork`, and friends) are excluded on purpose. They build closures rather than transforming a grid directly, and a flat "pick one action per step" space has no way to represent that. Picking an action that needs an argument the DSL can't express as a plain color, coordinate, or size (an arbitrary object, say) is out of scope for the same reason; see [`docs/adr/0001`](docs/adr/0001-arc-dsl-as-action-space.md) for the full reasoning. ADR-0010's Phase 1 (2026-08-29) added 4 self-concatenation actions (`hconcat_self` and friends) on the same basis, growing the curated task subset from 16 to 24.
 
 Reward is dense, not sparse: at each step it's the change in how many of the "should differ" cells now match the target, minus a small per-step cost, plus a bonus on an exact match. A purely terminal reward starves both trainers of signal on anything but the most trivial task, which is exactly what happened in the one prior ARC RL paper we could find.
 
-**The task set.** Not every ARC-1 task is solvable with this action space, and rather than guess which ones are, we checked. Of the 400 training tasks with a known-correct `arc-dsl` solver, exactly 16 can be solved using only the curated actions: 11 where the output is the same shape as the input, 5 where it isn't. That list lives in `arc_env/task_loader.py`, derived by parsing every solver program and testing it against the action whitelist, not picked by hand.
+**The task set.** Not every ARC-1 task is solvable with this action space, and rather than guess which ones are, we checked. Of the 400 training tasks with a known-correct `arc-dsl` solver, 24 can be solved using only the curated actions: 12 where the output is the same shape as the input, 12 where it isn't. That list lives in `arc_env/task_loader.py`, derived by parsing every solver program and testing it against the action whitelist, not picked by hand.
 
 **PPO** (`trainers/ppo/`). A small network, about 178K parameters: a learned embedding per color over the padded 30x30 grid, a couple of residual conv blocks, one self-attention layer so it can notice relations a local convolution would miss (symmetry, "the other object like this one"), and a factored action head that picks a primitive first and its arguments second. No pretraining. The encoder learns end-to-end from the PPO signal on that one task's handful of instances, which is a narrow enough job that a general-purpose pretrained representation wouldn't obviously help.
 
@@ -48,9 +48,9 @@ Reward is dense, not sparse: at each step it's the change in how many of the "sh
 
 ## What actually works right now
 
-PPO and GP both solve the easy end of the task set reliably and fast: single-action tasks converge in well under two minutes of wall-clock training, GP faster still since there's no network to optimize. Neither trainer reliably solves the tasks that need `commit`'s exact four-argument combination within a reasonable search budget, and that's not a bug so much as a property of the reward: similarity is scored as zero for any output of the wrong shape, so there's no gradient at all until an agent stumbles onto the right dimensions by chance. Getting the shape right first, then the content, is the open problem, not something either trainer currently gets partial credit for.
+PPO and GP both solve the easy end of the task set reliably and fast: single-action tasks converge in well under two minutes of wall-clock training, GP faster still since there's no network to optimize. The reward used to score a flat zero for any output of the wrong shape, so there was no gradient at all toward `commit`'s exact four-argument combination until an agent stumbled onto the right dimensions by chance. Fixed 2026-08-29 (`docs/adr/0005-dense-delta-shaped-reward.md`'s amendment): `similarity` now gives partial credit for how close the shape is before falling back to content-matching once it's exact. PPO's success rate on the `commit`-requiring fixture task went from 0% to 20-25% within a single ~3.5-minute training run after the fix.
 
-Scaling past this 16-task set to more of ARC-AGI-1 needs a real decision first, not just more compute. Over half of the 400 training tasks need the higher-order primitives this action space deliberately excludes, and most of the rest need selecting or manipulating a specific object, which has no clean way to be a small categorical action.
+Scaling past the original 16-task set needed a real decision first, not just more compute (`docs/adr/0010-task-coverage-scaling.md`): over half of the 400 training tasks need the higher-order primitives this action space deliberately excludes, and most of the rest need selecting or manipulating a specific object, which has no clean way to be a small categorical action yet (a scoped-but-not-yet-designed fast-follow). What's already landed (2026-08-29): broadening the curated actions with 4 self-concatenation primitives, taking the task set from 16 to 24 with no new representational mechanism.
 
 ## Repo layout
 

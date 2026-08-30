@@ -5,6 +5,7 @@ import pytest
 
 from arc_env.reward import (
     INVALID_ACTION_PENALTY,
+    SHAPE_MATCH_CREDIT,
     STEP_COST,
     TERMINAL_BONUS,
     compute_diff_mask,
@@ -51,15 +52,39 @@ def test_diff_mask_is_none_for_a_variable_shape_pair():
     assert compute_diff_mask(input_grid, target_grid) is None
 
 
-def test_similarity_with_none_diff_mask_is_zero_until_shape_matches():
-    input_grid = ((1, 2), (3, 4))
+def test_similarity_with_none_diff_mask_gives_partial_credit_for_wrong_shape():
+    # 2026-08-29 shape-gradient fix (ADR-0005 amendment): a wrong-shape grid
+    # against a variable-shape target no longer scores a flat 0.0 - it gets
+    # SHAPE_MATCH_CREDIT scaled by how close its shape is to the target's.
+    target_grid = ((1, 2, 1, 2), (3, 4, 3, 4))  # 2x4
+
+    same_row_count_wrong_col_count = ((0, 0, 0), (0, 0, 0))  # 2x3 - distance 1
+    farther_shape = ((0,) * 6,)  # 1x6 - distance |2-1| + |4-6| = 3
+    assert similarity(same_row_count_wrong_col_count, target_grid, None) > 0.0
+    assert similarity(farther_shape, target_grid, None) > 0.0
+    # Closer shape scores strictly higher than a farther one.
+    assert similarity(same_row_count_wrong_col_count, target_grid, None) > similarity(
+        farther_shape, target_grid, None
+    )
+
+
+def test_similarity_with_none_diff_mask_is_continuous_at_the_shape_boundary():
+    target_grid = ((1, 2, 1, 2), (3, 4, 3, 4))  # 2x4
+    almost_right_shape = ((0, 0, 0), (0, 0, 0))  # 2x3 - distance 1, just short of matching
+    right_shape_wrong_content = ((0, 0, 0, 0), (0, 0, 0, 0))  # 2x4, 0% content match
+
+    # The jump from "one dimension short" to "shape matches, content wrong"
+    # should not be a cliff - both land near SHAPE_MATCH_CREDIT.
+    assert similarity(almost_right_shape, target_grid, None) < SHAPE_MATCH_CREDIT
+    assert similarity(right_shape_wrong_content, target_grid, None) == pytest.approx(SHAPE_MATCH_CREDIT)
+
+
+def test_similarity_with_none_diff_mask_still_matches_content_once_shape_is_right():
     target_grid = ((1, 2, 1, 2), (3, 4, 3, 4))
-    assert similarity(input_grid, target_grid, None) == 0.0
-    # right shape, wrong content: partial credit against every target cell.
-    wrong_content = ((0, 0, 0, 0), (0, 0, 0, 0))
-    assert similarity(wrong_content, target_grid, None) == 0.0
     half_right = ((1, 2, 0, 0), (3, 4, 0, 0))
-    assert similarity(half_right, target_grid, None) == pytest.approx(0.5)
+    assert similarity(half_right, target_grid, None) == pytest.approx(
+        SHAPE_MATCH_CREDIT + (1 - SHAPE_MATCH_CREDIT) * 0.5
+    )
     assert similarity(target_grid, target_grid, None) == 1.0
 
 
