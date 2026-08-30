@@ -37,7 +37,9 @@ Planning artifacts (read these before making architectural changes):
   means once `commit` can end an episode without matching.
 - `trainers/ppo/` — the ADR-0008 policy/value network (`network.py`),
   rollout collection with truncation-aware GAE (`rollout.py`, `gae.py`),
-  and the clipped-surrogate PPO update (`ppo.py`).
+  the clipped-surrogate PPO update (`ppo.py`), and the ADR-0009 opt-in
+  GP-to-PPO behavior-cloning warm-start (`warm_start.py`,
+  `train.py --algo ppo --warm_start_from <gp_run_dir>`).
 - `trainers/gp/` — the ADR-0003 evolutionary trainer: DSL-program genomes
   as flat gene lists (`genome.py` — no separate AST, same non-compositional
   action space PPO uses), fitness evaluation reusing `arc_env`'s executor

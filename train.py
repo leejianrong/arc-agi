@@ -32,6 +32,7 @@ from trainers.gp.replay import program_to_episode_trace
 from trainers.ppo.network import ActorCritic
 from trainers.ppo.ppo import PPOConfig, ppo_update
 from trainers.ppo.rollout import RolloutCollector, evaluate_episode
+from trainers.ppo.warm_start import load_demonstration, pretrain_from_demonstration
 
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 
@@ -87,6 +88,25 @@ def load_checkpoint(path: Path, network: ActorCritic, optimizer: torch.optim.Opt
     return checkpoint["update"]
 
 
+def check_warm_start_compatible(task_id: str, warm_start_from: Path) -> str | None:
+    """Returns an error message if `warm_start_from` isn't a GP run for
+    `task_id` (ADR-0009's same-task-only constraint), else `None`."""
+
+    meta_path = warm_start_from / "run_meta.json"
+    if not meta_path.is_file():
+        return f"{warm_start_from} is not a run directory (no run_meta.json)"
+    with open(meta_path) as f:
+        meta = json.load(f)
+    if meta.get("algo") != "gp":
+        return f"{warm_start_from} is not a GP run (algo={meta.get('algo')!r})"
+    if meta.get("task_ids") != [task_id]:
+        return (
+            f"{warm_start_from} was trained on {meta.get('task_ids')!r}, not [{task_id!r}] - "
+            "warm-start is same-task only (ADR-0009)"
+        )
+    return None
+
+
 def append_metrics(run_dir: Path, row: dict) -> None:
     with open(run_dir / "metrics.jsonl", "a") as f:
         f.write(json.dumps(row) + "\n")
@@ -132,6 +152,10 @@ def train_ppo(
     seed: int,
     config: PPOConfig,
     resume_from: Path | None = None,
+    warm_start_from: Path | None = None,
+    warm_start_epochs: int = 50,
+    warm_start_batch_size: int = 32,
+    warm_start_lr: float = 1e-3,
 ) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -141,6 +165,23 @@ def train_ppo(
     env = ArcEnv(max_steps=max_steps)
     eval_env = ArcEnv(max_steps=max_steps)
     network = ActorCritic()
+
+    # ADR-0009: a one-time supervised pretrain phase against a same-task GP
+    # run's best-program trajectory, before the normal PPO optimizer/loop
+    # exist - skipped when also resuming, since `load_checkpoint` below
+    # would immediately overwrite these weights with the checkpoint's own
+    # (already-trained, possibly already warm-started) state anyway.
+    warm_start_losses = None
+    if warm_start_from is not None and resume_from is None:
+        demonstration = load_demonstration(warm_start_from)
+        print(f"warm-starting from {warm_start_from} ({len(demonstration)} demonstrated steps)")
+        warm_start_losses = pretrain_from_demonstration(
+            network, demonstration, n_epochs=warm_start_epochs,
+            batch_size=warm_start_batch_size, lr=warm_start_lr,
+        )
+        for epoch, loss in enumerate(warm_start_losses):
+            print(f"warm-start epoch {epoch:4d} | bc_loss {loss:.4f}")
+
     optimizer = torch.optim.Adam(network.parameters(), lr=config.lr)
 
     start_update = 0
@@ -150,7 +191,11 @@ def train_ppo(
     write_run_meta(run_dir, RunMeta(
         run_id=run_dir.name, algo="ppo", task_ids=[task_id],
         config={"n_updates": n_updates, "rollout_steps": rollout_steps, "eval_every": eval_every,
-                "re_arc_prob": re_arc_prob, "max_steps": max_steps, "seed": seed, **config.to_dict()},
+                "re_arc_prob": re_arc_prob, "max_steps": max_steps, "seed": seed,
+                "warm_start_from": str(warm_start_from) if warm_start_from else None,
+                "warm_start_epochs": warm_start_epochs if warm_start_losses else None,
+                "warm_start_final_loss": warm_start_losses[-1] if warm_start_losses else None,
+                **config.to_dict()},
     ))
 
     collector = RolloutCollector(env, network, make_next_pair_fn(task_id, re_arc_prob, rng))
@@ -230,6 +275,13 @@ def main() -> None:
     ppo_group.add_argument("--lr", type=float, default=3e-4)
     ppo_group.add_argument("--n_epochs", type=int, default=4)
     ppo_group.add_argument("--minibatch_size", type=int, default=64)
+    ppo_group.add_argument(
+        "--warm_start_from", type=Path, default=None,
+        help="An existing runs/<run_id>/ from a prior `--algo gp` run for the same --task_id (ADR-0009).",
+    )
+    ppo_group.add_argument("--warm_start_epochs", type=int, default=50)
+    ppo_group.add_argument("--warm_start_batch_size", type=int, default=32)
+    ppo_group.add_argument("--warm_start_lr", type=float, default=1e-3)
 
     gp_group = parser.add_argument_group("--algo gp")
     gp_group.add_argument("--population_size", type=int, default=200)
@@ -244,6 +296,13 @@ def main() -> None:
 
     if args.task_id not in CURATED_TASK_IDS:
         parser.error(f"{args.task_id!r} is not in the curated task subset: {sorted(CURATED_TASK_IDS)}")
+
+    if args.warm_start_from is not None:
+        if args.algo != "ppo":
+            parser.error("--warm_start_from is only valid with --algo ppo")
+        error = check_warm_start_compatible(args.task_id, args.warm_start_from)
+        if error is not None:
+            parser.error(error)
 
     run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
     run_dir = args.runs_dir / run_id
@@ -262,6 +321,8 @@ def main() -> None:
             task_id=args.task_id, run_dir=run_dir, n_updates=args.n_updates,
             rollout_steps=args.rollout_steps, eval_every=args.eval_every, re_arc_prob=args.re_arc_prob,
             max_steps=args.max_steps, seed=args.seed, config=config, resume_from=args.resume_from,
+            warm_start_from=args.warm_start_from, warm_start_epochs=args.warm_start_epochs,
+            warm_start_batch_size=args.warm_start_batch_size, warm_start_lr=args.warm_start_lr,
         )
     print(f"\nwrote run to {run_dir}")
 
