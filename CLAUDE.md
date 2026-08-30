@@ -25,11 +25,14 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 27 actions as of
-  ADR-0010 Phase 1: structural transforms including the 4
-  self-concatenation actions, `fill_cell`, `canvas`, and `commit`,
-  ADR-0002/ADR-0010), the task loader (`task_loader.py` — 24 curated tasks,
-  12 same-shape + 12 variable-shape), `env.py`, ADR-0005's dense reward
+  `arc-dsl`-primitive action space (`actions.py` — 30 actions as of
+  ADR-0011: structural transforms including the 4 self-concatenation
+  actions, `fill_cell`, `canvas`, `commit`, plus ADR-0011's 3 object-
+  selection actions (`select_largest`/`select_smallest`/`commit_selection`)
+  threading a "currently selected patch" side-channel, ADR-0002/ADR-0010/
+  ADR-0011), the task loader (`task_loader.py` — 26 curated tasks, 12
+  same-shape + 14 variable-shape), `env.py` (2-channel observation as of
+  ADR-0011: grid + selection mask), ADR-0005's dense reward
   (`reward.py`), extra
   practice-instance generation via `re-arc` (`re_arc.py`), and the JSONL
   trajectory/run-meta writers (`episode_log.py`), per ADR-0004/ADR-0006.

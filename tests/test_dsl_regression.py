@@ -16,9 +16,15 @@ from arc_env.task_loader import CURATED_TASK_IDS, load_task
 
 
 def replay(task_id: str, grid: tuple) -> tuple:
+    selected = None
     for primitive_name, args in CURATED_TASK_IDS[task_id]:
         action = actions.ACTIONS[actions.ACTION_BY_NAME[primitive_name]]
-        grid = action.fn(grid, *args)
+        if action.kind == "select":
+            selected = action.fn(grid)
+        elif action.kind == "act_on_selection":
+            grid = action.fn(grid, selected, *args)
+        else:
+            grid = action.fn(grid, *args)
     return grid
 
 
@@ -38,11 +44,12 @@ def test_solver_replays_through_env_action_executor(task_id):
     task = load_task(task_id)
     for pair in (*task.train, *task.test):
         grid = pair.input
+        selected = None
         for primitive_name, args in CURATED_TASK_IDS[task_id]:
             primitive_index = actions.ACTION_BY_NAME[primitive_name]
             action = actions.ACTIONS[primitive_index]
             raw_args = tuple(_encode(spec, value) for spec, value in zip(action.args, args))
-            grid, decoded, valid = actions.execute(primitive_index, raw_args, grid)
+            grid, selected, decoded, valid = actions.execute(primitive_index, raw_args, grid, selected)
             assert valid, f"{task_id}: {primitive_name}{args} was rejected as invalid"
             assert tuple(decoded.values()) == args
         assert grid == pair.output

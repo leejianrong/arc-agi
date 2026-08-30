@@ -36,11 +36,26 @@ _DECODE_INVERSE = {
 
 
 def _pad_grid(grid: list) -> np.ndarray:
-    obs = np.full((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), PAD_VALUE, dtype=np.int8)
+    """Matches `ArcEnv`'s 2-channel observation (ADR-0011): channel 0 the
+    padded grid, channel 1 the "currently selected" mask. Logged episode
+    steps only carry `grid_before`/`grid_after` (ADR-0006's schema), not the
+    env's internal selection state, so the selection channel is always zero
+    here - a demonstration that used `select_largest`/`select_smallest`/
+    `commit_selection` (ADR-0011) is still cloned faithfully action-by-
+    action, but the policy is trained as if nothing were ever selected,
+    which is wrong for whichever steps followed a real selection. No
+    curated task's solver sequence uses those actions together with
+    `--warm_start_from` yet, so this is a known, currently-inert gap, not a
+    silently wrong result in practice - revisit (e.g. by logging the
+    selection mask per step, or replaying the raw GP program instead of the
+    JSONL trace) before warm-starting off a selection-using demonstration."""
+
+    padded = np.full((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), PAD_VALUE, dtype=np.int8)
     for i, row in enumerate(grid):
         for j, v in enumerate(row):
-            obs[i, j] = v
-    return obs
+            padded[i, j] = v
+    selected_mask = np.zeros((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8)
+    return np.stack([padded, selected_mask])
 
 
 def _encode_action(action_name: str, action_args: dict) -> tuple:

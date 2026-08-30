@@ -44,10 +44,14 @@ def run_program(program: Program, grid: tuple, target: tuple | None = None) -> t
     if target is not None and grid == target:
         return grid
 
+    selected = None
     for primitive_index, raw_args in program:
-        new_grid, _, valid = actions.execute(primitive_index, raw_args, grid)
+        new_grid, selected, _, valid = actions.execute(primitive_index, raw_args, grid, selected)
         grid = new_grid
-        is_commit = valid and 0 <= primitive_index < len(actions.ACTIONS) and actions.ACTIONS[primitive_index].name == "commit"
+        is_commit = (
+            valid and 0 <= primitive_index < len(actions.ACTIONS)
+            and actions.ACTIONS[primitive_index].name in ("commit", "commit_selection")
+        )
         if is_commit or (target is not None and grid == target):
             break
     return grid
