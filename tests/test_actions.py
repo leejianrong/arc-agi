@@ -14,8 +14,17 @@ GRIDS = [
     ((2, 2, 2, 2),),
 ]
 
+# ADR-0010 Phase 1's self-concatenation actions are derived (composed from
+# more than one `dsl` call, like `fill_cell`/`canvas`/`commit`), not a 1:1
+# `dsl.<name>` call - excluded from the generic 1:1 check below, covered by
+# their own dedicated tests instead.
+DERIVED_ZERO_ARG_NAMES = {
+    "hconcat_self", "hconcat_self_vmirror", "vconcat_self_hmirror_top", "vconcat_self_hmirror_bottom",
+}
+DIRECT_ZERO_ARG = [a for a in actions.ZERO_ARG if a.name not in DERIVED_ZERO_ARG_NAMES]
 
-@pytest.mark.parametrize("action", actions.ZERO_ARG, ids=lambda a: a.name)
+
+@pytest.mark.parametrize("action", DIRECT_ZERO_ARG, ids=lambda a: a.name)
 @pytest.mark.parametrize("grid", GRIDS)
 def test_zero_arg_action_matches_direct_dsl_call(action, grid):
     dsl_fn = getattr(dsl, action.name)
@@ -24,6 +33,30 @@ def test_zero_arg_action_matches_direct_dsl_call(action, grid):
     except Exception:  # noqa: BLE001 - any DSL error means "not applicable here", skip
         pytest.skip(f"{action.name} not well-defined for this grid shape")
     assert action.fn(grid) == expected
+
+
+@pytest.mark.parametrize("grid", GRIDS)
+def test_hconcat_self_matches_dsl_hconcat_with_itself(grid):
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["hconcat_self"]]
+    assert action.fn(grid) == dsl.hconcat(grid, grid)
+
+
+@pytest.mark.parametrize("grid", GRIDS)
+def test_hconcat_self_vmirror_matches_dsl_hconcat_with_vmirror(grid):
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["hconcat_self_vmirror"]]
+    assert action.fn(grid) == dsl.hconcat(grid, dsl.vmirror(grid))
+
+
+@pytest.mark.parametrize("grid", GRIDS)
+def test_vconcat_self_hmirror_top_matches_dsl_vconcat_with_hmirror_first(grid):
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["vconcat_self_hmirror_top"]]
+    assert action.fn(grid) == dsl.vconcat(dsl.hmirror(grid), grid)
+
+
+@pytest.mark.parametrize("grid", GRIDS)
+def test_vconcat_self_hmirror_bottom_matches_dsl_vconcat_with_hmirror_second(grid):
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["vconcat_self_hmirror_bottom"]]
+    assert action.fn(grid) == dsl.vconcat(grid, dsl.hmirror(grid))
 
 
 @pytest.mark.parametrize("action", actions.ONE_ARG, ids=lambda a: a.name)
