@@ -86,7 +86,9 @@ class ActorCritic(nn.Module):
     def __init__(self):
         super().__init__()
         self.color_embed = nn.Embedding(N_COLORS_PLUS_PAD, EMBED_DIM)
-        self.input_proj = nn.Conv2d(EMBED_DIM + 1, CONV_CHANNELS, kernel_size=1)
+        # ADR-0011: +1 for the active-region mask (unchanged), +1 for the new
+        # "currently selected" mask channel.
+        self.input_proj = nn.Conv2d(EMBED_DIM + 2, CONV_CHANNELS, kernel_size=1)
         self.conv_blocks = nn.ModuleList(ResidualBlock(CONV_CHANNELS) for _ in range(N_CONV_BLOCKS))
 
         self.attn_layers = nn.ModuleList(
@@ -102,13 +104,17 @@ class ActorCritic(nn.Module):
         arg_context_dim = CONV_CHANNELS + PRIMITIVE_EMBED_DIM
         self.arg_heads = nn.ModuleList(nn.Linear(arg_context_dim, RAW_ARG_RANGE) for _ in range(MAX_ARITY))
 
-    def _encode(self, grid: torch.Tensor) -> torch.Tensor:
-        """`grid`: (B, 30, 30) long, values 0-10. Returns pooled features (B, CONV_CHANNELS)."""
+    def _encode(self, obs: torch.Tensor) -> torch.Tensor:
+        """`obs`: (B, 2, 30, 30) long - channel 0 the grid (values 0-10),
+        channel 1 the ADR-0011 "currently selected" binary mask. Returns
+        pooled features (B, CONV_CHANNELS)."""
 
+        grid = obs[:, 0, :, :]  # (B, 30, 30)
+        selected = obs[:, 1, :, :].float()  # (B, 30, 30)
         mask = (grid != PAD_VALUE).float()  # (B, 30, 30)
         x = self.color_embed(grid)  # (B, 30, 30, EMBED_DIM)
-        x = torch.cat([x, mask.unsqueeze(-1)], dim=-1)  # (B, 30, 30, EMBED_DIM + 1)
-        x = x.permute(0, 3, 1, 2)  # (B, EMBED_DIM + 1, 30, 30)
+        x = torch.cat([x, mask.unsqueeze(-1), selected.unsqueeze(-1)], dim=-1)  # (B, 30, 30, EMBED_DIM + 2)
+        x = x.permute(0, 3, 1, 2)  # (B, EMBED_DIM + 2, 30, 30)
         x = self.input_proj(x)
         for block in self.conv_blocks:
             x = block(x)

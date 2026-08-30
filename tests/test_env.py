@@ -22,10 +22,17 @@ def test_reset_returns_padded_observation_matching_actual_grid():
     obs, info = env.reset(task_id="67a3c6ac", pair_index=0)
     grid = env.get_grid()
     h, w = len(grid), len(grid[0])
-    assert obs.shape == (30, 30)
-    assert np.array_equal(obs[:h, :w], np.array(grid))
-    assert (obs[h:, :] == PAD_VALUE).all()
+    assert obs.shape == (2, 30, 30)  # ADR-0011: grid channel + selection-mask channel
+    grid_channel = obs[0]
+    assert np.array_equal(grid_channel[:h, :w], np.array(grid))
+    assert (grid_channel[h:, :] == PAD_VALUE).all()
     assert info["task_id"] == "67a3c6ac"
+
+
+def test_reset_starts_with_no_selection():
+    env = ArcEnv()
+    obs, _ = env.reset(task_id="67a3c6ac", pair_index=0)
+    assert (obs[1] == 0).all()
 
 
 def test_valid_action_applies_the_dsl_primitive_exactly():

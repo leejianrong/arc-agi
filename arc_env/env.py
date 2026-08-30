@@ -51,6 +51,22 @@ def _pad_grid(grid: tuple) -> np.ndarray:
     return obs
 
 
+def _selected_mask(selected) -> np.ndarray:
+    """ADR-0011: a (30, 30) binary channel marking currently-selected cells,
+    0 everywhere when nothing is selected - the fixed-shape stand-in for
+    "what's selected" that never needs to represent how many objects exist."""
+
+    mask = np.zeros((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8)
+    if selected:
+        for i, j in selected:
+            mask[i, j] = 1
+    return mask
+
+
+def _make_obs(grid: tuple, selected) -> np.ndarray:
+    return np.stack([_pad_grid(grid), _selected_mask(selected)])
+
+
 class ArcEnv(gym.Env):
     metadata: ClassVar[dict] = {"render_modes": []}
 
@@ -58,8 +74,10 @@ class ArcEnv(gym.Env):
         super().__init__()
         self.max_steps = max_steps
 
+        # ADR-0011: 2 channels - the grid (0-9 colors, PAD_VALUE for padding)
+        # and a binary "currently selected" mask, same fixed (30, 30) shape.
         self.observation_space = spaces.Box(
-            low=0, high=PAD_VALUE, shape=(actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8
+            low=0, high=PAD_VALUE, shape=(2, actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8
         )
         self.action_space = spaces.Dict(
             {
@@ -77,6 +95,7 @@ class ArcEnv(gym.Env):
         self._pair_index = None
         self._step_count = 0
         self._diff_mask = None
+        self._selected = None
 
     def reset(
         self,
@@ -103,8 +122,9 @@ class ArcEnv(gym.Env):
         self._pair_index = pair_index
         self._step_count = 0
         self._diff_mask = reward_mod.compute_diff_mask(pair.input, pair.output)
+        self._selected = None
 
-        return _pad_grid(self._grid), self._info()
+        return _make_obs(self._grid, self._selected), self._info()
 
     def step(self, action: dict):
         if self._grid is None:
@@ -120,12 +140,15 @@ class ArcEnv(gym.Env):
         raw_args = tuple(int(action[f"arg{i + 1}"]) for i in range(arity))
 
         prev_grid = self._grid
-        new_grid, decoded_args, valid = actions.execute(primitive_index, raw_args, self._grid)
+        new_grid, new_selected, decoded_args, valid = actions.execute(
+            primitive_index, raw_args, self._grid, self._selected
+        )
         self._grid = new_grid
+        self._selected = new_selected
         self._step_count += 1
 
         exact_match = self._grid == self._target
-        is_commit = valid and action_name == "commit"
+        is_commit = valid and action_name in ("commit", "commit_selection")
         terminated = bool(exact_match or is_commit)
         truncated = self._step_count >= self.max_steps and not terminated
 
@@ -140,7 +163,7 @@ class ArcEnv(gym.Env):
         info["similarity"] = result.similarity
         info["exact_match"] = exact_match
 
-        return _pad_grid(self._grid), result.reward, terminated, truncated, info
+        return _make_obs(self._grid, self._selected), result.reward, terminated, truncated, info
 
     def get_grid(self) -> tuple:
         """The actual (unpadded) current grid - for episode logging/replay."""

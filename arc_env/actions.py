@@ -9,18 +9,25 @@ per step" action space can't represent (see `docs/adr/0001*.md`).
 Beyond that exclusion, this module is further restricted to primitives whose
 signature is `Grid [, scalar args] -> Grid` - i.e. primitives that operate
 directly on the single grid the agent is editing, with typed scalar
-arguments (a color, a scale factor, a coordinate, a dimension) rather than
-an `Object`/`Indices`/`Callable` argument that would require other, unpicked
-primitives to construct. This is what makes the action space "directly
-steppable": every action maps one grid to the next.
+arguments (a color, a scale factor, a coordinate, a dimension) rather than a
+`Callable` argument that would require other, unpicked primitives to
+construct. This is what makes the action space "directly steppable": every
+action maps one grid to the next. ADR-0011 (ADR-0010 Phase 2) is the one
+deliberate carve-out from "no `Object`/`Indices` argument": a small set of
+`"select"`/`"act_on_selection"` actions thread one extra piece of state (the
+currently selected patch, an `Indices`) alongside the grid - never a
+`Callable`, and never exposed as a raw agent-chosen argument (the criterion
+a `"select"` action uses is always fixed internally, e.g. `select_largest`
+always means "argmax by size"). See that ADR and `execute`'s docstring
+below for the mechanism.
 
-This scalar-args-only restriction was derived by checking, for every
-ARC-AGI-1 training task with a known-correct `arc-dsl` solver, whether that
-solver only calls primitives from this module's action groups below.
-24 tasks qualify (11 same-shape, from V1; 13 variable-shape: 5 from V3, plus
-8 added in ADR-0010 Phase 1) - see `arc_env/task_loader.py`:CURATED_TASK_IDS
-- which is the curated task subset and also the regression-test fixture set
-(`tests/test_dsl_regression.py`).
+This scalar-args-only restriction (plus ADR-0011's selection carve-out) was
+derived by checking, for every ARC-AGI-1 training task with a known-correct
+`arc-dsl` solver, whether that solver only calls primitives from this
+module's action groups below. 26 tasks qualify (11 same-shape, from V1; 15
+variable-shape: 5 from V3, 8 from ADR-0010 Phase 1, 2 from ADR-0011) - see
+`arc_env/task_loader.py`:CURATED_TASK_IDS - which is the curated task subset
+and also the regression-test fixture set (`tests/test_dsl_regression.py`).
 
 ADR-0010 Phase 1 (2026-08-29) added `hconcat_self`, `hconcat_self_vmirror`,
 `vconcat_self_hmirror_top`, and `vconcat_self_hmirror_bottom` - a repo-audit
@@ -106,11 +113,20 @@ DIM_ARG = lambda name: ArgSpec(name, "dim", _decode_dim)
 class Action:
     """One curated action: a name (always the underlying `arc-dsl` primitive
     name, except for the derived `fill_cell`), the callable, and its typed
-    argument slots (empty for zero-arg actions)."""
+    argument slots (empty for zero-arg actions).
+
+    `kind` (ADR-0011): `"transform"` (default - today's `Grid [, args] ->
+    Grid`, unaffected by the selection mechanism) - `fn(grid, *decoded_args)
+    -> Grid`; `"select"` - `fn(grid) -> Indices`, updates the current
+    selection without touching the grid, invalid (no-op) if it finds
+    nothing to select; `"act_on_selection"` - `fn(grid, selected,
+    *decoded_args) -> Grid`, invalid if there is no current selection.
+    """
 
     name: str
     fn: Callable[..., Grid]
     args: tuple = field(default_factory=tuple)
+    kind: str = "transform"
 
     @property
     def arity(self) -> int:
@@ -146,6 +162,32 @@ def _vconcat_self_hmirror_top(grid: Grid) -> Grid:
 
 def _vconcat_self_hmirror_bottom(grid: Grid) -> Grid:
     return dsl.vconcat(grid, dsl.hmirror(grid))
+
+
+# ADR-0011 Phase 2 Slice 1: object selection. `_OBJECTS` fixes `dsl.objects`'s
+# (univalued, diagonal, without_bg) triple to the one variant this pass
+# curates (see that ADR's module-level rationale for why only one variant is
+# landed now) - `select_largest`/`select_smallest` pick one object out of
+# that segmentation by `dsl.size`, mirroring the dominant `argmax(_, size)`/
+# `argmin(_, size)` pattern the ADR's solver audit found. Both are "select"
+# actions: `fn(grid) -> Indices`, invalid (no objects found) rather than
+# `Grid -> Grid`.
+def _objects(grid: Grid):
+    return dsl.objects(grid, True, True, True)
+
+
+def _select_largest(grid: Grid):
+    objs = _objects(grid)
+    return dsl.toindices(dsl.argmax(objs, dsl.size)) if objs else frozenset()
+
+
+def _select_smallest(grid: Grid):
+    objs = _objects(grid)
+    return dsl.toindices(dsl.argmin(objs, dsl.size)) if objs else frozenset()
+
+
+def _commit_selection(grid: Grid, selected) -> Grid:
+    return dsl.subgrid(selected, grid)
 
 
 # Zero-arg grid transforms.
@@ -201,7 +243,20 @@ FOUR_ARG = [
     Action("commit", _commit, (COORD_ARG("row"), COORD_ARG("col"), DIM_ARG("height"), DIM_ARG("width"))),
 ]
 
-ACTIONS: list = ZERO_ARG + ONE_ARG + TWO_ARG + THREE_ARG + FOUR_ARG
+# ADR-0011 Phase 2 Slice 1: object selection (see module docstring addendum
+# and that ADR for the full design). `select_*` actions update the selection
+# without touching the grid; `commit_selection` mirrors `commit`'s
+# crop-and-end-episode semantics, using the selected patch's bounding box
+# instead of 4 literal coordinate/dimension args.
+SELECT = [
+    Action("select_largest", _select_largest, kind="select"),
+    Action("select_smallest", _select_smallest, kind="select"),
+]
+ACT_ON_SELECTION = [
+    Action("commit_selection", _commit_selection, kind="act_on_selection"),
+]
+
+ACTIONS: list = ZERO_ARG + ONE_ARG + TWO_ARG + THREE_ARG + FOUR_ARG + SELECT + ACT_ON_SELECTION
 ACTION_BY_NAME = {a.name: i for i, a in enumerate(ACTIONS)}
 MAX_ARITY = max(a.arity for a in ACTIONS)
 RAW_ARG_RANGE = 30  # matches ARC's max grid dimension; also covers colors/factors with room to spare
@@ -213,19 +268,23 @@ def _grid_shape(grid: Grid) -> tuple:
     return (len(grid), len(grid[0]) if grid else 0)
 
 
-def execute(primitive_index: int, raw_args: tuple, grid: Grid) -> tuple:
-    """Execute one action against `grid`.
+def execute(primitive_index: int, raw_args: tuple, grid: Grid, selected=None) -> tuple:
+    """Execute one action against `grid` (and, per ADR-0011, the current
+    object `selected`, if any).
 
-    Returns `(new_grid, decoded_args, valid)`. `decoded_args` is a dict of
-    the actual (post-`decode`) argument values, present even when `valid` is
-    False, for logging. On invalid input (bad primitive index, out-of-bounds
-    coordinate, a transform that would exceed the 30x30 canvas or collapse a
-    grid dimension to zero), `new_grid` is `grid` unchanged and `valid` is
-    False - the env applies the no-op-with-penalty behavior (Q7).
+    Returns `(new_grid, new_selected, decoded_args, valid)`. `decoded_args`
+    is a dict of the actual (post-`decode`) argument values, present even
+    when `valid` is False, for logging. On invalid input (bad primitive
+    index, out-of-bounds coordinate, a transform that would exceed the
+    30x30 canvas or collapse a grid dimension to zero, a `"select"` action
+    finding nothing to select, or an `"act_on_selection"` action with no
+    current selection), `new_grid`/`new_selected` are `grid`/`selected`
+    unchanged and `valid` is False - the env applies the no-op-with-penalty
+    behavior (Q7).
     """
 
     if not (0 <= primitive_index < len(ACTIONS)):
-        return grid, {}, False
+        return grid, selected, {}, False
 
     action = ACTIONS[primitive_index]
     decoded = {
@@ -233,23 +292,41 @@ def execute(primitive_index: int, raw_args: tuple, grid: Grid) -> tuple:
         for spec, raw in zip(action.args, raw_args)
     }
 
+    if action.kind == "select":
+        new_selected = action.fn(grid)
+        if not new_selected:
+            return grid, selected, decoded, False
+        return grid, new_selected, decoded, True
+
+    if action.kind == "act_on_selection":
+        if not selected:
+            return grid, selected, decoded, False
+        try:
+            new_grid = action.fn(grid, selected, *decoded.values())
+        except Exception:  # noqa: BLE001
+            return grid, selected, decoded, False
+        new_h, new_w = _grid_shape(new_grid)
+        if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
+            return grid, selected, decoded, False
+        return new_grid, selected, decoded, True
+
     h, w = _grid_shape(grid)
 
     for spec, value in zip(action.args, decoded.values()):
         if spec.kind == "coord":
             axis_len = h if spec.name == "row" else w
             if not (0 <= value < axis_len):
-                return grid, decoded, False
+                return grid, selected, decoded, False
         elif spec.kind == "factor":
             if action.name in ("hupscale", "upscale") and w * value > MAX_GRID_DIM:
-                return grid, decoded, False
+                return grid, selected, decoded, False
             if action.name in ("vupscale", "upscale") and h * value > MAX_GRID_DIM:
-                return grid, decoded, False
+                return grid, selected, decoded, False
 
     if action.name == "commit" and (
         decoded["row"] + decoded["height"] > h or decoded["col"] + decoded["width"] > w
     ):
-        return grid, decoded, False
+        return grid, selected, decoded, False
 
     try:
         new_grid = action.fn(grid, *decoded.values())
@@ -258,10 +335,14 @@ def execute(primitive_index: int, raw_args: tuple, grid: Grid) -> tuple:
         # crash - guards against any edge case in a DSL primitive we didn't
         # anticipate (e.g. a degenerate grid shape) on top of the explicit
         # bounds checks above.
-        return grid, decoded, False
+        return grid, selected, decoded, False
 
     new_h, new_w = _grid_shape(new_grid)
     if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
-        return grid, decoded, False
+        return grid, selected, decoded, False
 
-    return new_grid, decoded, True
+    # ADR-0011: a successful ordinary transform invalidates any stale
+    # selection (its indices may no longer correspond to meaningful cells
+    # after a rotation/resize/etc.) - re-selecting is cheap, a silently
+    # wrong stale selection surviving an unrelated edit is not.
+    return new_grid, None, decoded, True

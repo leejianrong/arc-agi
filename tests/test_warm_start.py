@@ -6,9 +6,12 @@ import numpy as np
 import torch
 
 from arc_env import actions
-from arc_env.env import PAD_VALUE
-from train import check_warm_start_compatible, train_gp
+from arc_env.env import PAD_VALUE, ArcEnv
+from arc_env.episode_log import RunMeta, write_run_meta
+from arc_env.task_loader import load_task
+from train import _write_episode, check_warm_start_compatible, train_gp
 from trainers.gp.evolve import GPConfig
+from trainers.gp.replay import program_to_episode_trace
 from trainers.ppo.network import ActorCritic
 from trainers.ppo.warm_start import load_demonstration, pretrain_from_demonstration
 
@@ -22,18 +25,52 @@ def _gp_run(tmp_path):
     return run_dir
 
 
+def _write_demo_run(tmp_path, task_id: str, program: list) -> object:
+    """A hand-picked program written out through the exact same path
+    `train_gp` uses (`program_to_episode_trace` + `_write_episode`), rather
+    than a real GP search - deterministic and independent of GP's RNG
+    outcome for a given action-space size, which is all `load_demonstration`
+    itself needs to be tested against."""
+
+    run_dir = tmp_path / "demo-run"
+    task = load_task(task_id)
+    env = ArcEnv()
+    write_run_meta(run_dir, RunMeta(run_id="demo-run", algo="gp", task_ids=[task_id], config={}))
+    trace = program_to_episode_trace(env, program, task_id, task.train[0])
+    _write_episode(run_dir, "best-program", env, task_id, task.train[0], trace)
+    return run_dir
+
+
 def test_load_demonstration_recovers_the_solving_program(tmp_path):
-    run_dir = _gp_run(tmp_path)
+    vmirror_idx = actions.ACTION_BY_NAME["vmirror"]
+    run_dir = _write_demo_run(tmp_path, TASK_ID, [(vmirror_idx, (0,) * actions.MAX_ARITY)])
 
     demonstration = load_demonstration(run_dir)
 
     assert len(demonstration) == 1  # a single vmirror solves 67a3c6ac
     step = demonstration[0]
-    assert step["primitive"] == actions.ACTION_BY_NAME["vmirror"]
-    assert step["grid"].shape == (actions.MAX_GRID_DIM, actions.MAX_GRID_DIM)
+    assert step["primitive"] == vmirror_idx
+    assert step["grid"].shape == (2, actions.MAX_GRID_DIM, actions.MAX_GRID_DIM)
     assert step["grid"].dtype == np.int8
     # vmirror is zero-arg - the raw arg slots are present but unconstrained/masked.
     assert set(step) == {"grid", "primitive", "arg1", "arg2", "arg3", "arg4"}
+
+
+def test_load_demonstration_recovers_a_select_then_act_on_selection_program(tmp_path):
+    """ADR-0011: `1f85a75f`'s solver is `select_largest` + `commit_selection`
+    - a `"select"` action (no grid change, updates state) followed by an
+    `"act_on_selection"` action, the two new `Action.kind`s this ADR adds."""
+
+    select_idx = actions.ACTION_BY_NAME["select_largest"]
+    commit_idx = actions.ACTION_BY_NAME["commit_selection"]
+    program = [(select_idx, (0,) * actions.MAX_ARITY), (commit_idx, (0,) * actions.MAX_ARITY)]
+    run_dir = _write_demo_run(tmp_path, "1f85a75f", program)
+
+    demonstration = load_demonstration(run_dir)
+
+    assert len(demonstration) == 2
+    assert demonstration[0]["primitive"] == select_idx
+    assert demonstration[1]["primitive"] == commit_idx
 
 
 def test_load_demonstration_pads_the_grid_like_the_env_observation():
@@ -75,8 +112,8 @@ def test_encode_action_round_trips_through_decode_for_every_curated_arg_kind():
 
 def test_pretrain_from_demonstration_drives_the_policy_toward_the_demonstrated_action():
     network = ActorCritic()
-    grid = np.zeros((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8)
-    grid[5:8, 5:8] = 3
+    grid = np.zeros((2, actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8)
+    grid[0, 5:8, 5:8] = 3
     vmirror_idx = actions.ACTION_BY_NAME["vmirror"]
     demonstration = [{
         "grid": grid, "primitive": vmirror_idx,

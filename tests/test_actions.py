@@ -119,3 +119,93 @@ def test_commit_crops_to_the_expected_sub_grid(row, col, height, width, expected
 )
 def test_action_registry_index_is_consistent(action_name, primitive_index_offset):
     assert actions.ACTIONS[actions.ACTION_BY_NAME[action_name]].name == action_name
+
+
+# ADR-0011: object selection - `select_largest`/`select_smallest` (kind
+# "select") and `commit_selection` (kind "act_on_selection").
+OBJECTS_GRID = (
+    (0, 0, 0, 0),
+    (0, 2, 0, 3),
+    (0, 2, 0, 0),
+    (0, 0, 0, 0),
+)  # two 4-connected, single-colored objects (background 0): a 2-cell "2" and a 1-cell "3"
+
+
+def test_select_largest_picks_the_biggest_object_by_size():
+    selected = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest"]].fn(OBJECTS_GRID)
+    assert selected == frozenset({(1, 1), (2, 1)})  # the 2-cell "2" object
+
+
+def test_select_smallest_picks_the_smallest_object_by_size():
+    selected = actions.ACTIONS[actions.ACTION_BY_NAME["select_smallest"]].fn(OBJECTS_GRID)
+    assert selected == frozenset({(1, 3)})  # the 1-cell "3" object
+
+
+def test_select_returns_empty_for_a_grid_with_no_objects():
+    blank = ((0, 0), (0, 0))
+    assert actions.ACTIONS[actions.ACTION_BY_NAME["select_largest"]].fn(blank) == frozenset()
+
+
+def test_commit_selection_crops_to_the_selected_patchs_bounding_box():
+    selected = frozenset({(1, 1), (2, 1)})
+    result = actions.ACTIONS[actions.ACTION_BY_NAME["commit_selection"]].fn(OBJECTS_GRID, selected)
+    assert result == ((2,), (2,))
+
+
+class TestExecuteSelectionThreading:
+    """`execute`'s `selected` parameter/return (ADR-0011), exercised through
+    the full raw-args interface rather than `Action.fn` directly."""
+
+    def test_select_action_updates_selection_without_touching_the_grid(self):
+        idx = actions.ACTION_BY_NAME["select_largest"]
+        new_grid, new_selected, decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        assert valid
+        assert new_grid == OBJECTS_GRID
+        assert new_selected == frozenset({(1, 1), (2, 1)})
+        assert decoded == {}
+
+    def test_select_action_is_invalid_when_no_objects_found(self):
+        blank = ((0, 0), (0, 0))
+        idx = actions.ACTION_BY_NAME["select_largest"]
+        new_grid, new_selected, _decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, blank, None)
+        assert not valid
+        assert new_grid == blank
+        assert new_selected is None  # unchanged - there was nothing selected before either
+
+    def test_act_on_selection_is_invalid_with_no_current_selection(self):
+        idx = actions.ACTION_BY_NAME["commit_selection"]
+        new_grid, new_selected, _decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        assert not valid
+        assert new_grid == OBJECTS_GRID
+        assert new_selected is None
+
+    def test_act_on_selection_consumes_a_prior_selection(self):
+        select_idx = actions.ACTION_BY_NAME["select_smallest"]
+        commit_idx = actions.ACTION_BY_NAME["commit_selection"]
+        grid, selected, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        assert valid
+        grid, selected, _, valid = actions.execute(commit_idx, (0,) * actions.MAX_ARITY, grid, selected)
+        assert valid
+        assert grid == ((3,),)
+
+    def test_a_successful_ordinary_transform_clears_a_stale_selection(self):
+        select_idx = actions.ACTION_BY_NAME["select_largest"]
+        vmirror_idx = actions.ACTION_BY_NAME["vmirror"]
+        _, selected, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        assert valid and selected
+
+        _, selected_after, _, valid = actions.execute(vmirror_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, selected)
+        assert valid
+        assert selected_after is None
+
+    def test_a_failed_ordinary_transform_leaves_the_selection_untouched(self):
+        select_idx = actions.ACTION_BY_NAME["select_largest"]
+        fill_cell_idx = actions.ACTION_BY_NAME["fill_cell"]
+        _, selected, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        assert valid and selected
+
+        # fill_cell's row/col args decode to out-of-bounds coordinates for this grid.
+        out_of_bounds_raw = (0, 29, 29, 0)
+        _, selected_after, _, valid = actions.execute(fill_cell_idx, out_of_bounds_raw, OBJECTS_GRID, selected)
+        assert not valid
+        assert selected_after == selected
