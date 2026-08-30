@@ -25,10 +25,12 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 23 actions as of V3:
-  structural transforms, `fill_cell`, `canvas`, and `commit`, ADR-0002), the
-  task loader (`task_loader.py` — 16 curated tasks, 11 same-shape + 5
-  variable-shape), `env.py`, ADR-0005's dense reward (`reward.py`), extra
+  `arc-dsl`-primitive action space (`actions.py` — 27 actions as of
+  ADR-0010 Phase 1: structural transforms including the 4
+  self-concatenation actions, `fill_cell`, `canvas`, and `commit`,
+  ADR-0002/ADR-0010), the task loader (`task_loader.py` — 24 curated tasks,
+  12 same-shape + 12 variable-shape), `env.py`, ADR-0005's dense reward
+  (`reward.py`), extra
   practice-instance generation via `re-arc` (`re_arc.py`), and the JSONL
   trajectory/run-meta writers (`episode_log.py`), per ADR-0004/ADR-0006.
   `info["exact_match"]`, not the broader `terminated`, is what "solved"
@@ -72,6 +74,19 @@ Planning artifacts (read these before making architectural changes):
 - `make viz` — builds the frontend and starts the backend at `http://127.0.0.1:8000` (reads `runs/`; override the port with `make viz PORT=8001` if 8000 is taken).
 - `make demo` — `train` + `viz` in one command: trains a fresh run, then opens the visualizer on it. If `runs/` already has something in it (`make rollout`/`make train` output, or any prior run), `make viz` alone is faster.
 - `git config core.hooksPath .githooks` — installs the pre-push hook: `ruff check .`, the fast test layer, frontend typecheck/tests, and a `gitleaks` secret scan (skipped with a warning if `gitleaks` isn't installed locally; CI runs it regardless). `.github/workflows/ci.yml` runs five jobs in parallel: `lint` (`ruff`), `python-tests`, `python-tests-slow`, `frontend` (adds `npm audit`), and `security` (`gitleaks` + `pip-audit --skip-editable`, skipping the local `arc-agi-agent` package and the CPU-only `torch` build since neither resolves on PyPI under those exact names/versions). Branch protection on `main` requires all five before merge. `.github/dependabot.yml` opens weekly update PRs for `uv`, `npm` (`viz/frontend`), and GitHub Actions.
+
+## Git workflow
+
+Commit, push, open PRs, and merge without asking first — this is standing
+authorization, not a one-time approval. Concretely: after making changes,
+commit them with a useful message (splitting into multiple logical commits/PRs
+when changes have distinct risk profiles, e.g. a behavioral code change vs. a
+docs-only change), push a branch, open a PR (`gh pr create`), wait for CI, and
+merge once the required checks are green — all without pausing for
+confirmation at each step. Still surface anything genuinely unusual (a failing
+check that isn't a flake, a merge conflict, force-push, or anything else this
+file's absence of a rule wouldn't obviously cover) rather than pushing through
+silently.
 
 ## Research subagent policy
 
