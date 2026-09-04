@@ -102,6 +102,7 @@ def test_encode_action_round_trips_through_decode_for_every_curated_arg_kind():
         ("commit", {"row": 0, "col": 0, "height": 2, "width": 2}),
         ("hupscale", {"factor": 3}),
         ("replace", {"replacee": 1, "replacer": 2}),
+        ("move_selected", {"direction": 2}),  # ADR-0012's "direction" kind
     ]
     for action_name, decoded_args in cases:
         primitive_index, raw_args = _encode_action(action_name, decoded_args)

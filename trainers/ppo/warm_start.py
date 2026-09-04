@@ -22,16 +22,18 @@ from viz.backend import server as backend
 
 # Inverts `arc_env.actions`'s per-`ArgSpec.kind` `decode` function, to
 # recover a raw `Discrete(RAW_ARG_RANGE)` value from a logged *decoded*
-# episode value. `color`/`factor` decode (`raw % 10` / `2 + raw % 3`) is
-# many-to-one, so this picks the canonical smallest raw value in that
-# decode's preimage - any raw value in the same preimage decodes
-# identically, so the policy loses no reachable behavior, only ends up
-# imitating one arbitrary representative among equivalent raw encodings.
+# episode value. `color`/`factor`/`direction` decode (`raw % 10` /
+# `2 + raw % 3` / `raw % 4`) is many-to-one, so this picks the canonical
+# smallest raw value in that decode's preimage - any raw value in the same
+# preimage decodes identically, so the policy loses no reachable behavior,
+# only ends up imitating one arbitrary representative among equivalent raw
+# encodings.
 _DECODE_INVERSE = {
     "color": lambda value: value,
     "factor": lambda value: value - 2,
     "coord": lambda value: value,
     "dim": lambda value: value - 1,
+    "direction": lambda value: value,
 }
 
 
