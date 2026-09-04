@@ -1,4 +1,4 @@
-import { drawGrid, cellSizeFor, type Grid } from "./grid";
+import { drawGrid, cellSizeFor, type Grid, type SelectionCells } from "./grid";
 import { fetchRuns, fetchEpisodeIds, fetchEpisode, fetchMetrics, type Episode } from "./api";
 import { EpisodePlayer } from "./player";
 import { computeLinePoints, drawLineChart } from "./dashboard";
@@ -8,14 +8,14 @@ const runSelect = document.getElementById("run-select") as HTMLSelectElement;
 const rewardChart = document.getElementById("reward-chart") as HTMLCanvasElement;
 const successChart = document.getElementById("success-chart") as HTMLCanvasElement;
 
-function renderGridToCanvas(canvas: HTMLCanvasElement, grid: Grid): void {
+function renderGridToCanvas(canvas: HTMLCanvasElement, grid: Grid, selected?: SelectionCells): void {
   const cellSize = cellSizeFor(grid, 320, 320);
   const rows = grid.length;
   const cols = rows > 0 ? grid[0].length : 0;
   canvas.width = cols * cellSize;
   canvas.height = rows * cellSize;
   const ctx = canvas.getContext("2d");
-  if (ctx) drawGrid(ctx, grid, cellSize);
+  if (ctx) drawGrid(ctx, grid, cellSize, selected);
 }
 
 /** One independent replay panel: its own episode picker, play/pause/step/
@@ -103,7 +103,9 @@ class PlayerPanel {
 
   private renderFrame(): void {
     if (!this.player) return;
-    renderGridToCanvas(this.canvasCurrent, this.player.currentGrid);
+    // `currentStep` is null at frame 0 (the episode's starting grid, before
+    // any action) - nothing is selected yet, so no `selected` is passed.
+    renderGridToCanvas(this.canvasCurrent, this.player.currentGrid, this.player.currentStep?.selected);
     this.statusEl.textContent = formatEpisodeStatus(
       this.player.currentStep,
       this.player.currentIndex,

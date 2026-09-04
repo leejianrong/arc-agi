@@ -57,6 +57,7 @@ def run_episode(env: ArcEnv, run_dir: Path, task_id: str, pair_index: int, episo
                 truncated=truncated,
                 valid_action=info["valid_action"],
                 exact_match=exact_match,
+                selected=info["selected"],
             )
             step += 1
 

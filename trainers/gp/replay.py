@@ -41,6 +41,7 @@ def program_to_episode_trace(env: ArcEnv, program: Program, task_id: str, pair: 
             "truncated": truncated,
             "valid_action": info["valid_action"],
             "exact_match": exact_match,
+            "selected": info["selected"],
         })
 
     return {"steps": steps, "success": exact_match, "total_reward": total_reward}
