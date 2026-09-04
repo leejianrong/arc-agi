@@ -169,6 +169,14 @@ class ArcEnv(gym.Env):
         """The actual (unpadded) current grid - for episode logging/replay."""
         return self._grid
 
+    def get_selected(self) -> list | None:
+        """The currently selected patch's cells, as a sorted `[row, col]`
+        list for JSON logging (`arc_env.episode_log`) - `None` when nothing
+        is selected. `self._selected` itself is a `frozenset`, not directly
+        JSON-serializable."""
+
+        return sorted([i, j] for i, j in self._selected) if self._selected else None
+
     def _info(self) -> dict:
         return {
             "task_id": self._task_id,
@@ -176,4 +184,5 @@ class ArcEnv(gym.Env):
             "step": self._step_count,
             "grid_shape": (len(self._grid), len(self._grid[0])) if self._grid else (0, 0),
             "target_shape": (len(self._target), len(self._target[0])) if self._target else (0, 0),
+            "selected": self.get_selected(),
         }

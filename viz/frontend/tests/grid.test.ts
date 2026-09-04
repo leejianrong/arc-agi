@@ -42,11 +42,32 @@ describe("computeCellRects", () => {
     ];
     const rects = computeCellRects(grid, 10);
     expect(rects).toEqual([
-      { row: 0, col: 0, value: 0, color: "#000000", x: 0, y: 0, size: 10 },
-      { row: 0, col: 1, value: 1, color: "#0074D9", x: 10, y: 0, size: 10 },
-      { row: 1, col: 0, value: 2, color: "#FF4136", x: 0, y: 10, size: 10 },
-      { row: 1, col: 1, value: 3, color: "#2ECC40", x: 10, y: 10, size: 10 },
+      { row: 0, col: 0, value: 0, color: "#000000", x: 0, y: 0, size: 10, selected: false },
+      { row: 0, col: 1, value: 1, color: "#0074D9", x: 10, y: 0, size: 10, selected: false },
+      { row: 1, col: 0, value: 2, color: "#FF4136", x: 0, y: 10, size: 10, selected: false },
+      { row: 1, col: 1, value: 3, color: "#2ECC40", x: 10, y: 10, size: 10, selected: false },
     ]);
+  });
+
+  // ADR-0011/ADR-0012's object-selection mechanism: a step's `selected`
+  // cells (visualizer selection-overlay slice).
+  it("marks only the given cells as selected", () => {
+    const grid = [
+      [0, 1],
+      [2, 3],
+    ];
+    const rects = computeCellRects(grid, 10, [[0, 1], [1, 0]]);
+    const selected = rects.filter((r) => r.selected).map((r) => [r.row, r.col]);
+    expect(selected).toEqual([
+      [0, 1],
+      [1, 0],
+    ]);
+  });
+
+  it("marks nothing selected when selected is null or omitted", () => {
+    const grid = [[0, 1]];
+    expect(computeCellRects(grid, 10, null).every((r) => !r.selected)).toBe(true);
+    expect(computeCellRects(grid, 10).every((r) => !r.selected)).toBe(true);
   });
 });
 

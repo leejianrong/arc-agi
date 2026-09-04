@@ -35,6 +35,10 @@ export interface EpisodeStep {
   // matching the target - exact_match is what actually means "solved".
   // Optional for episodes logged before this field existed.
   exact_match?: boolean;
+  // ADR-0011/ADR-0012's object-selection mechanism: the post-step selected
+  // patch as `[row, col]` pairs, or `null`/absent when nothing is selected
+  // (or the episode predates this field).
+  selected?: [number, number][] | null;
 }
 
 export interface EpisodeEnd {
