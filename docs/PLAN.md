@@ -247,3 +247,37 @@ each now carries what actually happened, appended rather than rewritten.
   next step to try is ADR-0009's opt-in GP-to-PPO warm-start, since GP
   already has a working program for all but one of the tasks PPO currently
   fails outright.
+  **Update (2026-09-05):** Tried against all 8 same-task zero-PPO-success
+  tasks a training pass had surfaced (`0d3d703e`, `1f85a75f`, `23b5c85d`,
+  `5614dbcf`, `b1948b0a`, `c8f0f002`, `d511f180`, `25ff71a9` — the two other
+  zero-PPO tasks, `5bd6f4ac`/`ea32f347`, are excluded since GP fails on
+  those too, so there's no demonstration to warm-start from). A fresh
+  same-task GP run supplied the demonstration for each (100% success in
+  every case), then PPO trained for the identical 25-update budget that
+  produced the original flat-0% baseline, warm-started via
+  `--warm_start_from`. **Result: warm-start helps, but doesn't reliably fix
+  the problem.** Two tasks (`1f85a75f`, `d511f180`) reach ~100% success and
+  hold it. Three more (`23b5c85d`, `5614dbcf`, `b1948b0a`) reach substantial
+  partial success (44-82% depending on how it's measured) but never fully
+  stabilize. The remaining three (`0d3d703e`, `c8f0f002`, `25ff71a9`) end at
+  0% on the literal final-update success rate — though two of those
+  (`c8f0f002` up to 86%, `25ff71a9` up to 45% at some update) show real, if
+  unstable, success mid-training that decays away by the final checkpoint,
+  the same "regressed away from a working policy by final checkpoint"
+  pattern already seen in the un-warm-started 26-task pass (README). Only
+  `0d3d703e` — the longest demonstration (6 steps) and the one with the
+  worst warm-start pretrain fit (final behavior-cloning loss 1.82, versus
+  0.13-0.87 for every other task) — looks like a genuine non-improvement.
+  There's no clean split by whether the task's solution uses the
+  object-selection actions: the cleanest full win (`1f85a75f`) and one of
+  the weakest results (`25ff71a9`) are both selection-based programs;
+  program length and how tightly an action's arguments must be pinned (an
+  exact color pair for `switch`, an exact direction for `move_selected`)
+  look like better predictors of instability than "selection or not."
+  **Still open**: the one-time pretrain phase (ADR-0009's chosen design,
+  versus the continuous BC-auxiliary-loss alternative it explicitly
+  deferred) gets several tasks to a working policy during training but
+  doesn't reliably keep them there — a periodic re-anchoring to the
+  demonstration, or simply selecting the checkpoint with the best observed
+  eval success rather than always the final update, are the next things
+  worth trying before concluding warm-start alone is the wrong lever.
