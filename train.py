@@ -130,6 +130,7 @@ def _write_episode(run_dir: Path, episode_id: str, env: ArcEnv, task_id: str, pa
                 truncated=step["truncated"],
                 valid_action=step["valid_action"],
                 exact_match=step["exact_match"],
+                selected=step["selected"],
             )
         writer.end(n_steps=len(result["steps"]), success=result["success"], total_reward=result["total_reward"])
 
