@@ -26,7 +26,7 @@ ADR-0012, and `execute`'s docstring below for the mechanism.
 This scalar-args-only restriction (plus the selection carve-out) was
 derived by checking, for every ARC-AGI-1 training task with a known-correct
 `arc-dsl` solver, whether that solver only calls primitives from this
-module's action groups below. 29 tasks qualify (14 same-shape, 15
+module's action groups below. 30 tasks qualify (14 same-shape, 16
 variable-shape: see `arc_env/task_loader.py`'s module docstring for the
 full per-ADR breakdown) - `arc_env/task_loader.py`:CURATED_TASK_IDS is the
 curated task subset and also the regression-test fixture set
@@ -75,6 +75,22 @@ single-selection fixture came back empty for these four specifically
 `ea32f347`), so they're verified by direct unit test against hand-
 constructed grids (`tests/test_actions.py`) instead of a curated ARC task,
 the same bar `fill_cell`/`canvas` were already held to above.
+
+ADR-0013 adds two more `dsl.objects(...)` connectivity variants ADR-0011/
+0012 deliberately deferred (both ADRs curate only the single (univalued=
+True, diagonal=True, without_bg=True) triple): `select_largest_no_diag`
+(`(True, False, True)`, argmax by `size`) and `select_tallest` (`(True,
+False, False)`, argmax by `height`). `select_largest_no_diag` has a
+verified curated fixture (`be94b721`); `select_tallest` doesn't -
+`1c786137`'s solver needs a `trim` *after* `subgrid`, but `commit_selection`
+already ends the episode at the `subgrid` step (mirroring `commit`'s own
+crop-and-end-episode semantics), so a further `trim` action can never
+actually execute in the real step-by-step training loop even though a
+bare-function replay outside `ArcEnv` would appear to reproduce the
+expected output - see ADR-0013's Consequences. `select_tallest` is still
+curated (verified by direct unit test, same bar as `select_by_color`/
+`select_unique_color` above) since it's a correct, useful selector in its
+own right, independent of that one fixture task being out of reach.
 """
 
 from collections import Counter
@@ -215,6 +231,30 @@ def _commit_selection(grid: Grid, selected) -> Grid:
     return dsl.subgrid(selected, grid)
 
 
+# ADR-0013: additional `dsl.objects(...)` connectivity variants, beyond the
+# one (univalued=True, diagonal=True, without_bg=True) triple ADR-0011/0012
+# curate above - each a straightforward additional `"select"` action using a
+# different fixed (univalued, diagonal, without_bg) triple and/or compare
+# function, verified against its own fixture task the same way
+# `select_largest`/`select_smallest` were.
+def _objects_no_diag(grid: Grid):
+    return dsl.objects(grid, True, False, True)
+
+
+def _select_largest_no_diag(grid: Grid):
+    objs = _objects_no_diag(grid)
+    return dsl.toindices(dsl.argmax(objs, dsl.size)) if objs else frozenset()
+
+
+def _objects_no_diag_with_bg(grid: Grid):
+    return dsl.objects(grid, True, False, False)
+
+
+def _select_tallest(grid: Grid):
+    objs = _objects_no_diag_with_bg(grid)
+    return dsl.toindices(dsl.argmax(objs, dsl.height)) if objs else frozenset()
+
+
 # ADR-0012: the rest of ADR-0011's deferred menu. Unlike Slice 1's selectors,
 # `select_by_color` takes a `color` argument - `execute()`'s `"select"`
 # branch now passes decoded args through, same as every other action kind
@@ -318,6 +358,13 @@ SELECT = [
     # `fill_cell`/`canvas` (Phase 1) were held to.
     Action("select_by_color", _select_by_color, (COLOR_ARG("color"),), kind="select"),
     Action("select_unique_color", _select_unique_color, kind="select"),
+    # ADR-0013: additional `objects(...)` connectivity variants, deferred by
+    # ADR-0011/0012. `select_largest_no_diag` has a verified curated fixture
+    # (`be94b721`); `select_tallest` doesn't (see that ADR's Consequences for
+    # why `1c786137` stays out of reach) - verified by direct unit test
+    # instead, same bar `select_by_color`/`select_unique_color` were held to.
+    Action("select_largest_no_diag", _select_largest_no_diag, kind="select"),
+    Action("select_tallest", _select_tallest, kind="select"),
 ]
 ACT_ON_SELECTION = [
     Action("commit_selection", _commit_selection, kind="act_on_selection"),
