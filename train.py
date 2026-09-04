@@ -11,12 +11,20 @@ and late-training replay can be compared side by side; GP: the single
 best-found program's execution trace). PPO additionally checkpoints
 (`checkpoints/update_*.pt`) - GP's "checkpoint" is just its best program,
 already captured in the logged episode trace, so there's nothing separate
-to resume from.
+to resume from. PPO also tracks the best-so-far eval checkpoint by the fixed
+eval pair's greedy-policy reward (`checkpoints/best.pt`, `eval_success`/
+`eval_reward` in `metrics.jsonl` - KAN-1177), since that per-update row's
+`success_rate`/`mean_reward` are averaged over the training rollout's own
+noisy, shifting mix of re-arc-generated and native pairs, not this fixed
+pair - a real but short-lived swing in that rollout statistic is not the
+same thing as the policy regressing on the pair eval/replay actually cares
+about.
 """
 
 import argparse
 import json
 import random
+import shutil
 import time
 from pathlib import Path
 
@@ -135,11 +143,39 @@ def _write_episode(run_dir: Path, episode_id: str, env: ArcEnv, task_id: str, pa
         writer.end(n_steps=len(result["steps"]), success=result["success"], total_reward=result["total_reward"])
 
 
-def log_eval_episode(run_dir: Path, env: ArcEnv, network: ActorCritic, task_id: str, update: int) -> None:
+def log_eval_episode(run_dir: Path, env: ArcEnv, network: ActorCritic, task_id: str, update: int) -> dict:
+    """Returns the `evaluate_episode` result dict (`{"steps", "success",
+    "total_reward"}`) in addition to writing the trace, so callers can fold
+    the greedy-policy outcome on the literal held-out pair into `metrics.jsonl`
+    (KAN-1177) - distinct from that row's `success_rate`/`mean_reward`, which
+    are averaged over the *training* rollout's own mix of re-arc-generated
+    and native pairs, not this fixed eval pair."""
+
     task = load_task(task_id)
     pair = task.train[0]
     result = evaluate_episode(env, network, task_id, pair)
     _write_episode(run_dir, f"eval-update{update:05d}", env, task_id, pair, result)
+    return result
+
+
+def is_new_best_eval(eval_reward: float, best_eval_reward: float | None) -> bool:
+    """Whether `eval_reward` (an eval checkpoint's greedy-policy total reward
+    on the fixed held-out pair) beats the best eval reward seen so far in
+    this run. `None` means no eval checkpoint has run yet, so anything
+    counts as a new best.
+
+    KAN-1177: investigating PPO runs that reach a real success rate at some
+    intermediate checkpoint and lose it by the final one. The rollout-based
+    `success_rate` logged every update is noisy (a handful of stochastic-
+    policy episodes over a shifting mix of re-arc-generated + native pairs)
+    and is *not* the same thing as whether the policy still solves the fixed
+    eval pair - reproductions for KAN-1177 found the latter stayed stable
+    even when the former swung from ~80% to 0% between adjacent updates.
+    Tracking the best eval checkpoint (`checkpoints/best.pt`) by this
+    less-noisy, fixed-target signal gives a safety net against genuine
+    eval-pair regression without having to trust a single final checkpoint."""
+
+    return best_eval_reward is None or eval_reward > best_eval_reward
 
 
 def train_ppo(
@@ -200,6 +236,7 @@ def train_ppo(
     ))
 
     collector = RolloutCollector(env, network, make_next_pair_fn(task_id, re_arc_prob, rng))
+    best_eval_reward = None  # KAN-1177: best-so-far fixed-eval-pair reward, not resumed across --resume_from
 
     for update in range(start_update, n_updates):
         buf = collector.collect(rollout_steps)
@@ -207,21 +244,31 @@ def train_ppo(
 
         mean_reward = float(np.mean(buf.episode_returns)) if buf.episode_returns else None
         success_rate = float(np.mean(buf.episode_successes)) if buf.episode_successes else None
+        eval_success = None
+        eval_reward = None
+
+        if update % eval_every == 0 or update == n_updates - 1:
+            eval_result = log_eval_episode(run_dir, eval_env, network, task_id, update)
+            eval_success = eval_result["success"]
+            eval_reward = eval_result["total_reward"]
+            checkpoint_path = save_checkpoint(run_dir, update, network, optimizer)
+            if is_new_best_eval(eval_reward, best_eval_reward):
+                best_eval_reward = eval_reward
+                shutil.copy2(checkpoint_path, checkpoint_path.parent / "best.pt")
+
         append_metrics(run_dir, {
             "update": update,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "n_episodes": len(buf.episode_returns),
             "mean_reward": mean_reward,
             "success_rate": success_rate,
+            "eval_success": eval_success,
+            "eval_reward": eval_reward,
             **stats,
         })
         print(f"update {update:5d} | episodes {len(buf.episode_returns):3d} | "
               f"reward {mean_reward if mean_reward is not None else float('nan'):6.2f} | "
               f"success {success_rate if success_rate is not None else float('nan'):.2f}")
-
-        if update % eval_every == 0 or update == n_updates - 1:
-            log_eval_episode(run_dir, eval_env, network, task_id, update)
-            save_checkpoint(run_dir, update, network, optimizer)
 
 
 def train_gp(task_id: str, run_dir: Path, config: GPConfig, max_steps: int) -> None:
