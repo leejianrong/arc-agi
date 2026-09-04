@@ -209,3 +209,62 @@ class TestExecuteSelectionThreading:
         _, selected_after, _, valid = actions.execute(fill_cell_idx, out_of_bounds_raw, OBJECTS_GRID, selected)
         assert not valid
         assert selected_after == selected
+
+
+# ADR-0012: rest of the object-selection menu.
+UNIQUE_COLOR_GRID = (
+    (0, 0, 0, 0, 0),
+    (0, 2, 0, 2, 0),  # two separate single-cell "2" objects - color 2 is NOT unique
+    (0, 0, 0, 0, 0),
+    (0, 0, 3, 0, 0),  # one "3" object - color 3 IS unique
+    (0, 0, 0, 0, 0),
+)
+
+
+def test_select_by_color_picks_the_object_of_the_given_color():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_by_color"]]
+    assert action.fn(OBJECTS_GRID, 2) == frozenset({(1, 1), (2, 1)})
+    assert action.fn(OBJECTS_GRID, 3) == frozenset({(1, 3)})
+
+
+def test_select_by_color_returns_empty_when_no_object_has_that_color():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_by_color"]]
+    assert action.fn(OBJECTS_GRID, 5) == frozenset()
+
+
+def test_select_unique_color_picks_only_the_singly_occurring_color():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_unique_color"]]
+    assert action.fn(UNIQUE_COLOR_GRID) == frozenset({(3, 2)})
+
+
+def test_delete_selected_covers_the_selection_with_the_background_color():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["delete_selected"]]
+    result = action.fn(OBJECTS_GRID, frozenset({(1, 1), (2, 1)}))
+    assert result == ((0, 0, 0, 0), (0, 0, 0, 3), (0, 0, 0, 0), (0, 0, 0, 0))
+
+
+def test_recolor_selected_fills_the_selection_with_the_given_color():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["recolor_selected"]]
+    result = action.fn(OBJECTS_GRID, frozenset({(1, 3)}), 5)
+    assert result == ((0, 0, 0, 0), (0, 2, 0, 5), (0, 2, 0, 0), (0, 0, 0, 0))
+
+
+def test_move_selected_shifts_the_selection_in_the_given_direction():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["move_selected"]]
+    result = action.fn(OBJECTS_GRID, frozenset({(1, 3)}), 0)  # 0 = DOWN
+    assert result == ((0, 0, 0, 0), (0, 2, 0, 0), (0, 2, 0, 3), (0, 0, 0, 0))
+
+
+def test_paint_selected_at_stamps_the_selection_without_removing_the_original():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["paint_selected_at"]]
+    result = action.fn(OBJECTS_GRID, frozenset({(1, 3)}), 3, 0)
+    assert result == ((0, 0, 0, 0), (0, 2, 0, 3), (0, 2, 0, 0), (3, 0, 0, 0))
+
+
+def test_execute_threads_decoded_args_into_a_select_action():
+    idx = actions.ACTION_BY_NAME["select_by_color"]
+    raw_args = (2,) + (0,) * (actions.MAX_ARITY - 1)
+    _, selected, decoded, valid = actions.execute(idx, raw_args, OBJECTS_GRID, None)
+    assert valid
+    assert selected == frozenset({(1, 1), (2, 1)})
+    assert decoded == {"color": 2}

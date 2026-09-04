@@ -20,7 +20,7 @@ def replay(task_id: str, grid: tuple) -> tuple:
     for primitive_name, args in CURATED_TASK_IDS[task_id]:
         action = actions.ACTIONS[actions.ACTION_BY_NAME[primitive_name]]
         if action.kind == "select":
-            selected = action.fn(grid)
+            selected = action.fn(grid, *args)
         elif action.kind == "act_on_selection":
             grid = action.fn(grid, selected, *args)
         else:
@@ -65,4 +65,4 @@ def _encode(spec: actions.ArgSpec, value: int) -> int:
         return value - 2
     if spec.kind == "dim":
         return value - 1
-    return value  # "coord": decode is the identity
+    return value  # "coord"/"direction": decode is the identity (mod 4 for direction)
