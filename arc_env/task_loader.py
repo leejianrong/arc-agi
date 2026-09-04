@@ -29,8 +29,8 @@ see `arc_env/actions.py`): `1cf80156` needs no new action at all (its
 solver's `objects(I,T,T,T)` → `first` → `subgrid` is already reachable via
 `select_largest`/`select_smallest` + `commit_selection`, since a lone object
 is trivially both the largest and the smallest); `25ff71a9` and `ea32f347`
-newly need `move_selected` and `recolor_selected` respectively - 13
-same-shape + 16 variable-shape = 29 total.
+newly need `move_selected` and `recolor_selected` respectively - 14
+same-shape + 15 variable-shape = 29 total.
 
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does

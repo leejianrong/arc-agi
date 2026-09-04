@@ -26,7 +26,7 @@ ADR-0012, and `execute`'s docstring below for the mechanism.
 This scalar-args-only restriction (plus the selection carve-out) was
 derived by checking, for every ARC-AGI-1 training task with a known-correct
 `arc-dsl` solver, whether that solver only calls primitives from this
-module's action groups below. 29 tasks qualify (13 same-shape, 16
+module's action groups below. 29 tasks qualify (14 same-shape, 15
 variable-shape: see `arc_env/task_loader.py`'s module docstring for the
 full per-ADR breakdown) - `arc_env/task_loader.py`:CURATED_TASK_IDS is the
 curated task subset and also the regression-test fixture set
