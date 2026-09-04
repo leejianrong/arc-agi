@@ -226,5 +226,24 @@ each now carries what actually happened, appended rather than rewritten.
   attempted** (ADR-0008) — solving N tasks means N independent training
   runs, which bounds how large V2/V3's curated task subset can practically
   be on this CPU-only machine. Earliest slice to reveal it: V2.
-  **Confirmed and accepted**: this is why the curated subset is capped at 16
-  tasks (`arc_env/task_loader.py`), not a defect to fix.
+  **Confirmed and accepted**: this is why the curated subset is deliberately
+  capped rather than grown without a design pass each time
+  (`arc_env/task_loader.py`) — 16 tasks at V2/V3, 24 after ADR-0010 Phase 1,
+  29 after ADR-0011/0012's object-selection menu — not a defect to fix.
+- **A new curated action doesn't automatically mean PPO learns to use it.**
+  Not one of the original five (added here since it surfaced only once
+  ADR-0010/0011/0012's task-coverage-scaling work began, past V1-V4).
+  ADR-0011/0012's object-selection mechanism landed cleanly by every design/
+  verification measure (a solvers.py audit, unit tests, curated-task
+  regression tests), but a full 26-task training pass (2026-08-31, README
+  `What actually works right now`) shows PPO scoring a flat 0% on both of
+  ADR-0011's new object-selection tasks across the whole run, and ADR-0012's
+  own small validation runs reproduce the same pattern on its new fixture
+  tasks (`25ff71a9`, `ea32f347`) — GP finds a working program instantly in
+  every case. **Open**: whether this is a training-budget problem (these
+  runs use the same short update budget as every other task, not tuned per-
+  task) or something more structural about how a freshly-added, rarely-
+  successful action gets discovered by on-policy exploration. The concrete
+  next step to try is ADR-0009's opt-in GP-to-PPO warm-start, since GP
+  already has a working program for all but one of the tasks PPO currently
+  fails outright.

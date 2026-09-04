@@ -13,7 +13,7 @@ Requires Python 3.10+, [uv](https://docs.astral.sh/uv/), and Node 20+.
 ```bash
 make            # no target: lists every available command
 make install    # uv sync (Python) + npm ci (frontend)
-make rollout    # random-policy episodes across all 26 curated tasks
+make rollout    # random-policy episodes across all 29 curated tasks
 make train      # trains a PPO policy on one task (~90s)
 make viz        # builds the frontend, serves the dashboard + replay UI at :8000 (override with PORT=)
 make demo       # train + viz in one command - trains, then opens the visualizer on that run
@@ -32,11 +32,11 @@ uv run python -m viz.backend.server   # http://127.0.0.1:8000, reads runs/
 
 ## How it works
 
-**The environment.** `arc_env/` wraps a curated slice of Michael Hodel's [arc-dsl](https://github.com/michaelhodel/arc-dsl) as a discrete, factored action space: 30 actions in total, from simple zero-argument transforms like `rot90` and `vmirror` up to `commit`, a four-argument action that crops the working grid to a chosen region and ends the episode there. Higher-order primitives (`compose`, `chain`, `fork`, and friends) are excluded on purpose. They build closures rather than transforming a grid directly, and a flat "pick one action per step" space has no way to represent that. Picking an action that needs an argument the DSL can't express as a plain color, coordinate, or size (an arbitrary object, say) is out of scope for the same reason; see [`docs/adr/0001`](docs/adr/0001-arc-dsl-as-action-space.md) for the full reasoning. ADR-0010's Phase 1 (2026-08-29) added 4 self-concatenation actions (`hconcat_self` and friends) on the same basis, growing the curated task subset from 16 to 24. ADR-0011 (2026-08-31) added one deliberate exception: a small "select an object, then act on it" mechanism (`select_largest`/`select_smallest`/`commit_selection`) that threads a currently-selected patch alongside the grid, informed by an audit showing most object-manipulation solvers pick an object by a fixed criterion (largest, smallest, ...) rather than an arbitrary index - growing the curated task subset to 26.
+**The environment.** `arc_env/` wraps a curated slice of Michael Hodel's [arc-dsl](https://github.com/michaelhodel/arc-dsl) as a discrete, factored action space: 36 actions in total, from simple zero-argument transforms like `rot90` and `vmirror` up to `commit`, a four-argument action that crops the working grid to a chosen region and ends the episode there. Higher-order primitives (`compose`, `chain`, `fork`, and friends) are excluded on purpose. They build closures rather than transforming a grid directly, and a flat "pick one action per step" space has no way to represent that. Picking an action that needs an argument the DSL can't express as a plain color, coordinate, or size (an arbitrary object, say) is out of scope for the same reason; see [`docs/adr/0001`](docs/adr/0001-arc-dsl-as-action-space.md) for the full reasoning. ADR-0010's Phase 1 (2026-08-29) added 4 self-concatenation actions (`hconcat_self` and friends) on the same basis, growing the curated task subset from 16 to 24. ADR-0011 (2026-08-31) added one deliberate exception: a small "select an object, then act on it" mechanism (`select_largest`/`select_smallest`/`commit_selection`) that threads a currently-selected patch alongside the grid, informed by an audit showing most object-manipulation solvers pick an object by a fixed criterion (largest, smallest, ...) rather than an arbitrary index - growing the curated task subset to 26. ADR-0012 (2026-09-04) landed the rest of that menu - `select_by_color`/`select_unique_color`, and the act-on-selection actions `delete_selected`/`recolor_selected`/`move_selected`/`paint_selected_at` - taking the curated set to 29. Episode replay shows the current selection as an amber outline over the grid, closing the one visualizer gap ADR-0011 had left open.
 
 Reward is dense, not sparse: at each step it's the change in how many of the "should differ" cells now match the target, minus a small per-step cost, plus a bonus on an exact match. A purely terminal reward starves both trainers of signal on anything but the most trivial task, which is exactly what happened in the one prior ARC RL paper we could find.
 
-**The task set.** Not every ARC-1 task is solvable with this action space, and rather than guess which ones are, we checked. Of the 400 training tasks with a known-correct `arc-dsl` solver, 26 can be solved using only the curated actions: 12 where the output is the same shape as the input, 14 where it isn't. That list lives in `arc_env/task_loader.py`, derived by parsing every solver program and testing it against the action whitelist, not picked by hand.
+**The task set.** Not every ARC-1 task is solvable with this action space, and rather than guess which ones are, we checked. Of the 400 training tasks with a known-correct `arc-dsl` solver, 29 can be solved using only the curated actions: 14 where the output is the same shape as the input, 15 where it isn't. That list lives in `arc_env/task_loader.py`, derived by parsing every solver program and testing it against the action whitelist, not picked by hand.
 
 **PPO** (`trainers/ppo/`). A small network, about 178K parameters: a learned embedding per color over the padded 30x30 grid, a couple of residual conv blocks, one self-attention layer so it can notice relations a local convolution would miss (symmetry, "the other object like this one"), and a factored action head that picks a primitive first and its arguments second. No pretraining. The encoder learns end-to-end from the PPO signal on that one task's handful of instances, which is a narrow enough job that a general-purpose pretrained representation wouldn't obviously help.
 
@@ -48,9 +48,18 @@ Reward is dense, not sparse: at each step it's the change in how many of the "sh
 
 ## What actually works right now
 
-PPO and GP both solve the easy end of the task set reliably and fast: single-action tasks converge in well under two minutes of wall-clock training, GP faster still since there's no network to optimize. The reward used to score a flat zero for any output of the wrong shape, so there was no gradient at all toward `commit`'s exact four-argument combination until an agent stumbled onto the right dimensions by chance. Fixed 2026-08-29 (`docs/adr/0005-dense-delta-shaped-reward.md`'s amendment): `similarity` now gives partial credit for how close the shape is before falling back to content-matching once it's exact. PPO's success rate on the `commit`-requiring fixture task went from 0% to 20-25% within a single ~3.5-minute training run after the fix.
+PPO and GP both solve the easy end of the task set reliably and fast: single-action tasks converge in well under two minutes of wall-clock training, GP faster still since there's no network to optimize. The reward used to score a flat zero for any output of the wrong shape, so there was no gradient at all toward `commit`'s exact four-argument combination until an agent stumbled onto the right dimensions by chance. Fixed 2026-08-29 (`docs/adr/0005-dense-delta-shaped-reward.md`'s amendment): `similarity` now gives partial credit for how close the shape is before falling back to content-matching once it's exact.
 
-Scaling past the original 16-task set needed a real decision first, not just more compute (`docs/adr/0010-task-coverage-scaling.md`): over half of the 400 training tasks need the higher-order primitives this action space deliberately excludes, and most of the rest need selecting or manipulating a specific object, which has no clean way to be a small categorical action yet (a scoped-but-not-yet-designed fast-follow). What's already landed (2026-08-29): broadening the curated actions with 4 self-concatenation primitives, taking the task set from 16 to 24 with no new representational mechanism.
+Scaling past the original 16-task set needed a real decision first, not just more compute (`docs/adr/0010-task-coverage-scaling.md`): over half of the 400 training tasks need the higher-order primitives this action space deliberately excludes, and most of the rest need selecting or manipulating a specific object. That fast-follow is now fully landed: ADR-0011 (2026-08-31) proved the object-selection mechanism end-to-end with a minimal 3-action menu, and ADR-0012 (2026-09-04) filled in the rest (`select_by_color`, `select_unique_color`, `delete_selected`, `recolor_selected`, `move_selected`, `paint_selected_at`) - 16 → 24 → 26 → 29 curated tasks across the three passes.
+
+**A full 26-task training pass (2026-08-31, one PPO run + one GP run per task) is the clearest read on where the two trainers actually stand:**
+
+| Trainer | Fully solved (final checkpoint) | Notes |
+|---|---|---|
+| GP | 25/26 (96%) | The lone failure, `5bd6f4ac`, is a `commit`-only task neither trainer solves |
+| PPO | 14/26 (54%) | 18/26 hit 100% success at *some* point in training - 4 regressed away from a working policy by the final checkpoint |
+
+The gap that stands out: **PPO scored a flat 0% on both of ADR-0011's brand-new object-selection tasks** (`1f85a75f`, `23b5c85d`) across that whole run - GP finds the trivial `[select_largest, commit_selection]` program instantly, but PPO never learned to use the new selection actions in that pass. Small validation runs against ADR-0012's three new fixture tasks show the same pattern holding: `1cf80156` (no new action needed) went GP 100% / PPO 99%, but `25ff71a9` (needs `move_selected`) went GP 100% / PPO 0%, and `ea32f347` (needs `recolor_selected`, a 5-step program) went GP 0% / PPO 0% - the hardest task found so far for either trainer. **Learning to use newly-added actions within a short training budget is PPO's open problem, not raw task difficulty** - the next thing worth trying is the existing opt-in GP-to-PPO warm-start (ADR-0009) targeted at exactly these zero-success tasks, since GP already has working programs for all but one of them.
 
 ## Repo layout
 
@@ -80,7 +89,7 @@ research/arc-ngps/         a superseded supervised program-synthesis scaffold, n
 ## Testing
 
 ```bash
-make test           # the fast layer: 264 tests, ~4 seconds, no GPU or training runs involved
+make test           # the fast layer: 364 tests, ~10 seconds, no GPU or training runs involved
 make test-py-slow   # adds the PPO convergence check (~90s): does reward actually improve over training?
 ```
 

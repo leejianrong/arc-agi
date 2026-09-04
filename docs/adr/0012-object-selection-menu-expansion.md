@@ -89,7 +89,7 @@ primitives against `grid`/`selected`:
 
 ### Curated tasks added this pass
 
-`CURATED_TASK_IDS` grows 26 → 29 (13 same-shape + 16 variable-shape):
+`CURATED_TASK_IDS` grows 26 → 29 (14 same-shape + 15 variable-shape):
 
 - `1cf80156` (variable-shape) - no new action, see audit finding above.
 - `25ff71a9` (same-shape) - `[select_largest, move_selected(DOWN)]`.

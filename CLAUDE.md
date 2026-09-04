@@ -25,15 +25,17 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 30 actions as of
-  ADR-0011: structural transforms including the 4 self-concatenation
-  actions, `fill_cell`, `canvas`, `commit`, plus ADR-0011's 3 object-
-  selection actions (`select_largest`/`select_smallest`/`commit_selection`)
+  `arc-dsl`-primitive action space (`actions.py` — 36 actions as of
+  ADR-0012: structural transforms including the 4 self-concatenation
+  actions, `fill_cell`, `canvas`, `commit`, plus the object-selection
+  mechanism's 9 actions (`select_largest`/`select_smallest`/
+  `select_by_color`/`select_unique_color`/`commit_selection`/
+  `delete_selected`/`recolor_selected`/`move_selected`/`paint_selected_at`)
   threading a "currently selected patch" side-channel, ADR-0002/ADR-0010/
-  ADR-0011), the task loader (`task_loader.py` — 26 curated tasks, 12
-  same-shape + 14 variable-shape), `env.py` (2-channel observation as of
-  ADR-0011: grid + selection mask), ADR-0005's dense reward
-  (`reward.py`), extra
+  ADR-0011/ADR-0012), the task loader (`task_loader.py` — 29 curated tasks,
+  14 same-shape + 15 variable-shape), `env.py` (2-channel observation:
+  grid + selection mask; `get_selected()` exposes the selection for episode
+  logging), ADR-0005's dense reward (`reward.py`), extra
   practice-instance generation via `re-arc` (`re_arc.py`), and the JSONL
   trajectory/run-meta writers (`episode_log.py`), per ADR-0004/ADR-0006.
   `info["exact_match"]`, not the broader `terminated`, is what "solved"
@@ -59,7 +61,9 @@ Planning artifacts (read these before making architectural changes):
   so one process runs the whole visualizer.
 - `viz/frontend/` — TypeScript + Canvas replay UI: training dashboard
   (reward/success-rate curves) and dual side-by-side episode replay for
-  early- vs. late-training comparison (Vite + Vitest), per ADR-0007.
+  early- vs. late-training comparison (Vite + Vitest), per ADR-0007. Replay
+  renders the current object-selection (an amber outline over selected
+  cells, `grid.ts`'s `computeCellRects`/`drawGrid`).
 - `legacy/` — the original geometric-transform + color-bijection baseline
   (`baseline.py`, `evaluate.py`, `arc_io.py`). Kept as a reference/sanity-check
   baseline, not part of the new agent.
@@ -72,7 +76,7 @@ Planning artifacts (read these before making architectural changes):
 
 - `make` (no target) — lists every available command; it is not `install` (that's just the first target in the Makefile, not the default goal).
 - `make install` — `uv sync --group dev` (Python, includes `ruff`/`pytest`/`pip-audit`) + `npm ci` (frontend).
-- `make test` (or `uv run pytest -m "not slow"` / `cd viz/frontend && npm run typecheck && npm test`) — the fast layer, no external services needed, ~4s. `make test-py-slow` (or `uv run pytest`) also runs the ~90s PPO-sanity e2e test (`tests/test_train_ppo.py`, marked `slow`).
+- `make test` (or `uv run pytest -m "not slow"` / `cd viz/frontend && npm run typecheck && npm test`) — the fast layer, no external services needed, ~10s (364 Python tests + 33 frontend). `make test-py-slow` (or `uv run pytest`) also runs the ~90s PPO-sanity e2e test (`tests/test_train_ppo.py`, marked `slow`; `test_train_gp.py`'s own e2e check is fast enough to already be in the default layer).
 - `uv run ruff check .` — lint (config in `pyproject.toml`'s `[tool.ruff]`; excludes `third_party/`, `legacy/`, `research/` — only the shipped agent's own code is linted).
 - `make rollout` — random-policy rollout over all curated tasks, writes `runs/demo/`.
 - `make train` — `train.py --algo ppo --task_id 67a3c6ac --run_id demo` (edit the task_id, or pass `--algo gp`, for a different run).
