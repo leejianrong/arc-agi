@@ -281,3 +281,49 @@ each now carries what actually happened, appended rather than rewritten.
   demonstration, or simply selecting the checkpoint with the best observed
   eval success rather than always the final update, are the next things
   worth trying before concluding warm-start alone is the wrong lever.
+  **KAN-1177 update (2026-09-05):** investigated the "regressed away from a
+  working policy by final checkpoint" pattern directly (`6fa7a44f`,
+  `9172f3a0`, `a416b8f3`, `d10ecb37` un-warm-started; `c8f0f002`, `25ff71a9`
+  warm-started, all reaching 17-86% at some intermediate update then 0% by
+  the last one). Reproduced 3 of the 6 (`6fa7a44f`, `a416b8f3` un-warm-
+  started; `c8f0f002` warm-started) at the standard config (`--n_updates 25
+  --rollout_steps 128 --eval_every 5 --re_arc_prob 0.5 --max_steps 25
+  --seed 0`). **Finding: this is largely a metric-definition artifact, not
+  policy collapse.** Every one of those percentages comes from
+  `metrics.jsonl`'s `success_rate` field, which is `train.py`'s mean of
+  `RolloutBuffer.episode_successes` — a handful of stochastic-policy
+  episodes (`n_episodes` ranged 5-30 across the reproductions) drawn from
+  that update's own shifting mix of re-arc-generated instances (a random
+  difficulty band *per episode*, `make_next_pair_fn`) and native train
+  pairs. It is not a measurement of the policy's competence on the fixed
+  pair `log_eval_episode` actually replays with the *greedy* policy every
+  `eval_every` updates. Checking that fixed-pair outcome separately (the
+  `episodes/eval-update*.jsonl` traces) across all 3 reproductions, it
+  never regressed — e.g. `c8f0f002`'s eval pair was solved (`success=True`)
+  at every logged checkpoint (updates 0, 5, 10, 15, 20, 24) even as its
+  rollout `success_rate` swung from 0.80 (update 23, `n_episodes=25`) to
+  0.00 (update 24, `n_episodes=5`) one update later. `entropy`/`approx_kl`/
+  `clip_frac` at that exact swing were unremarkable (entropy 1.49→1.56,
+  approx_kl 0.005→0.006, clip_frac 0.02→0.04) — no destructive update, no
+  entropy collapse — ruling out the policy-collapse and destructive-update
+  hypotheses for these 3 cases. Nor did training on generated variants pull
+  the policy away from the literal eval pair: it stayed solved throughout.
+  **Caveat**: only 3 of the 6 originally-cited tasks were reproduced, and
+  this doesn't rule out genuine fixed-pair eval regression elsewhere — the
+  three still-unstable warm-start tasks above (`23b5c85d`, `5614dbcf`,
+  `b1948b0a`) and non-improving `0d3d703e` remain open questions this
+  investigation didn't re-examine. **Fix applied (low risk, additive,
+  `train.py`)**: `metrics.jsonl` rows now also carry `eval_success`/
+  `eval_reward` — the fixed-pair greedy-policy outcome, previously only
+  visible by opening the separate per-checkpoint episode trace — so this
+  metric confusion is easier to catch by eyeballing `metrics.jsonl` alone
+  next time. `train_ppo` also now tracks a best-eval-reward-so-far
+  checkpoint (`checkpoints/best.pt`, selection logic in
+  `is_new_best_eval`, unit-tested in `tests/test_train.py`) as a safety net
+  for cases where the fixed-pair eval genuinely does regress — on these 3
+  reproductions `best.pt` ended up identical to the final checkpoint every
+  time (since none of them actually regressed on the fixed pair), so there
+  is no before/after improvement to show here; it's a diagnostic and
+  safety-net change validated end-to-end
+  (`tests/test_train_ppo.py::test_best_eval_checkpoint_is_tracked_separately_from_the_noisy_rollout_stat`),
+  not a demonstrated fix for the three still-unstable warm-start tasks.

@@ -83,6 +83,7 @@ def test_metrics_jsonl_rows_match_expected_schema_and_are_monotonically_timestam
 
     expected_keys = {
         "update", "timestamp", "n_episodes", "mean_reward", "success_rate",
+        "eval_success", "eval_reward",
         "policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac",
     }
     for row in metrics:
@@ -93,6 +94,33 @@ def test_metrics_jsonl_rows_match_expected_schema_and_are_monotonically_timestam
     assert updates == sorted(updates)
     timestamps = [row["timestamp"] for row in metrics]
     assert timestamps == sorted(timestamps)
+
+
+def test_best_eval_checkpoint_is_tracked_separately_from_the_noisy_rollout_stat(trained_run):
+    """KAN-1177: `success_rate`/`mean_reward` are averaged over the training
+    rollout's own noisy, shifting mix of re-arc-generated + native pairs, not
+    the fixed eval pair `log_eval_episode` replays each `eval_every` updates
+    - `eval_success`/`eval_reward` (and `checkpoints/best.pt`) are the
+    less-noisy, fixed-target signal meant to stand in for it."""
+
+    metrics = [json.loads(line) for line in (trained_run / "metrics.jsonl").read_text().splitlines()]
+    eval_rows = [m for m in metrics if m["eval_reward"] is not None]
+    non_eval_rows = [m for m in metrics if m["eval_reward"] is None]
+
+    assert eval_rows, "expected at least one eval checkpoint in this run"
+    for row in eval_rows:
+        assert isinstance(row["eval_success"], bool)
+        assert isinstance(row["eval_reward"], float)
+    for row in non_eval_rows:
+        assert row["eval_success"] is None
+
+    best_path = trained_run / "checkpoints" / "best.pt"
+    assert best_path.is_file()
+
+    best_reward = max(row["eval_reward"] for row in eval_rows)
+    checkpoint = torch.load(best_path, weights_only=True)
+    matching_row = next(row for row in eval_rows if row["update"] == checkpoint["update"])
+    assert matching_row["eval_reward"] == best_reward
 
 
 def test_periodic_checkpoint_loads_and_resumes_training_without_error(trained_run):

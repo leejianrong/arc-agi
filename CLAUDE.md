@@ -53,7 +53,17 @@ Planning artifacts (read these before making architectural changes):
 - `train.py` — `train.py --algo ppo|gp --task_id <id>`: trains one
   dedicated PPO policy (ADR-0008) or evolves one dedicated GP population
   (ADR-0003) per task, logging to `runs/<run_id>/` in the same shape either
-  way.
+  way. PPO's `metrics.jsonl` rows carry two distinct signals per update:
+  `success_rate`/`mean_reward` (noisy — averaged over that update's own
+  small, shifting mix of re-arc-generated + native training-rollout
+  episodes) and `eval_success`/`eval_reward` (the fixed held-out pair's
+  greedy-policy outcome, only set on `eval_every` update rows) — don't read
+  a `success_rate` swing as the policy regressing on the task without also
+  checking `eval_success` (KAN-1177: a `success_rate` crash to 0% between
+  adjacent updates was often just a small-sample artifact, `eval_success`
+  unaffected). PPO also keeps a `checkpoints/best.pt` — the checkpoint with
+  the best `eval_reward` seen so far in the run, not necessarily the last
+  one (`is_new_best_eval` in `train.py`).
 - `scripts/rollout_random.py` — random-policy rollout script (no training);
   writes `runs/<run_id>/` (gitignored, generated locally).
 - `viz/backend/` — read-only local HTTP server exposing `runs/` as JSON,
