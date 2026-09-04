@@ -12,22 +12,25 @@ directly on the single grid the agent is editing, with typed scalar
 arguments (a color, a scale factor, a coordinate, a dimension) rather than a
 `Callable` argument that would require other, unpicked primitives to
 construct. This is what makes the action space "directly steppable": every
-action maps one grid to the next. ADR-0011 (ADR-0010 Phase 2) is the one
-deliberate carve-out from "no `Object`/`Indices` argument": a small set of
+action maps one grid to the next. ADR-0011 (ADR-0010 Phase 2 Slice 1) and
+ADR-0012 (Slices A/B, the rest of that menu) are the one deliberate
+carve-out from "no `Object`/`Indices` argument": a small set of
 `"select"`/`"act_on_selection"` actions thread one extra piece of state (the
 currently selected patch, an `Indices`) alongside the grid - never a
-`Callable`, and never exposed as a raw agent-chosen argument (the criterion
-a `"select"` action uses is always fixed internally, e.g. `select_largest`
-always means "argmax by size"). See that ADR and `execute`'s docstring
-below for the mechanism.
+`Callable`. Unlike ADR-0011's original two selectors, ADR-0012's
+`select_by_color` *does* take a scalar `color` argument - the criterion
+itself (e.g. "argmax by size", "cells of color K") is still always fixed
+internally per action, never an agent-chosen `Callable`. See ADR-0011,
+ADR-0012, and `execute`'s docstring below for the mechanism.
 
-This scalar-args-only restriction (plus ADR-0011's selection carve-out) was
+This scalar-args-only restriction (plus the selection carve-out) was
 derived by checking, for every ARC-AGI-1 training task with a known-correct
 `arc-dsl` solver, whether that solver only calls primitives from this
-module's action groups below. 26 tasks qualify (11 same-shape, from V1; 15
-variable-shape: 5 from V3, 8 from ADR-0010 Phase 1, 2 from ADR-0011) - see
-`arc_env/task_loader.py`:CURATED_TASK_IDS - which is the curated task subset
-and also the regression-test fixture set (`tests/test_dsl_regression.py`).
+module's action groups below. 29 tasks qualify (13 same-shape, 16
+variable-shape: see `arc_env/task_loader.py`'s module docstring for the
+full per-ADR breakdown) - `arc_env/task_loader.py`:CURATED_TASK_IDS is the
+curated task subset and also the regression-test fixture set
+(`tests/test_dsl_regression.py`).
 
 ADR-0010 Phase 1 (2026-08-29) added `hconcat_self`, `hconcat_self_vmirror`,
 `vconcat_self_hmirror_top`, and `vconcat_self_hmirror_bottom` - a repo-audit
@@ -63,12 +66,22 @@ task that needs localized recoloring). `canvas` is included per ADR-0002's
 decision even though none of the 5 new V3 fixture tasks happens to call it
 directly - the general "build from scratch" escape hatch is the point of
 the primitive, not any one task in this small a subset.
+
+ADR-0012's `select_by_color`, `select_unique_color`, `delete_selected`, and
+`paint_selected_at` are the same kind of not-drawn-from-a-solver-1:1
+addition: a `solvers.py` audit for a literal (no `mapply`/`compose`/lambda)
+single-selection fixture came back empty for these four specifically
+(unlike `move_selected`/`recolor_selected`, which do have one - `25ff71a9`/
+`ea32f347`), so they're verified by direct unit test against hand-
+constructed grids (`tests/test_actions.py`) instead of a curated ARC task,
+the same bar `fill_cell`/`canvas` were already held to above.
 """
 
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from arc_env._dsl import dsl
+from arc_env._dsl import constants, dsl
 
 Grid = tuple
 
@@ -103,10 +116,22 @@ def _decode_dim(raw: int) -> int:
     return raw + 1  # {1, ..., 30} - RAW_ARG_RANGE is 30, so this covers the full canvas
 
 
+def _decode_direction(raw: int) -> int:
+    return raw % 4  # index into _DIRECTIONS below
+
+
 COLOR_ARG = lambda name: ArgSpec(name, "color", _decode_color)
 FACTOR_ARG = lambda name: ArgSpec(name, "factor", _decode_factor)
 COORD_ARG = lambda name: ArgSpec(name, "coord", _decode_coord)
 DIM_ARG = lambda name: ArgSpec(name, "dim", _decode_dim)
+DIRECTION_ARG = lambda name: ArgSpec(name, "direction", _decode_direction)
+
+# ADR-0012: a small fixed menu of cardinal directions for `move_selected`,
+# mirroring `arc-dsl`'s own DOWN/UP/LEFT/RIGHT constants - kept as a curated
+# discrete choice (like FACTOR_ARG's {2,3,4}) rather than a raw signed
+# offset, since the audit fixture (`25ff71a9`) only ever needs one of these
+# four and an unconstrained signed offset would blow up the raw-arg range.
+_DIRECTIONS = (constants.DOWN, constants.UP, constants.LEFT, constants.RIGHT)
 
 
 @dataclass(frozen=True)
@@ -190,6 +215,41 @@ def _commit_selection(grid: Grid, selected) -> Grid:
     return dsl.subgrid(selected, grid)
 
 
+# ADR-0012: the rest of ADR-0011's deferred menu. Unlike Slice 1's selectors,
+# `select_by_color` takes a `color` argument - `execute()`'s `"select"`
+# branch now passes decoded args through, same as every other action kind
+# already does.
+def _select_by_color(grid: Grid, color: int):
+    matches = dsl.colorfilter(_objects(grid), color)
+    return dsl.toindices(dsl.merge(matches)) if matches else frozenset()
+
+
+def _select_unique_color(grid: Grid):
+    objs = _objects(grid)
+    counts = Counter(dsl.color(obj) for obj in objs)
+    unique_objs = frozenset(obj for obj in objs if counts[dsl.color(obj)] == 1)
+    return dsl.toindices(dsl.merge(unique_objs)) if unique_objs else frozenset()
+
+
+def _delete_selected(grid: Grid, selected) -> Grid:
+    return dsl.cover(grid, selected)
+
+
+def _recolor_selected(grid: Grid, selected, color: int) -> Grid:
+    return dsl.fill(grid, color, selected)
+
+
+def _move_selected(grid: Grid, selected, direction_index: int) -> Grid:
+    obj = dsl.toobject(selected, grid)
+    return dsl.move(grid, obj, _DIRECTIONS[direction_index])
+
+
+def _paint_selected_at(grid: Grid, selected, row: int, col: int) -> Grid:
+    obj = dsl.toobject(selected, grid)
+    ul_row, ul_col = dsl.ulcorner(selected)
+    return dsl.paint(grid, dsl.shift(obj, (row - ul_row, col - ul_col)))
+
+
 # Zero-arg grid transforms.
 ZERO_ARG = [
     Action("identity", dsl.identity),
@@ -251,9 +311,29 @@ FOUR_ARG = [
 SELECT = [
     Action("select_largest", _select_largest, kind="select"),
     Action("select_smallest", _select_smallest, kind="select"),
+    # ADR-0012: rest of the deferred selection-criteria menu. No literal
+    # single-selection fixture solver was found for either in the
+    # `solvers.py` audit (see that ADR's Consequences) - verified by direct
+    # unit test against hand-constructed grids instead, the same bar
+    # `fill_cell`/`canvas` (Phase 1) were held to.
+    Action("select_by_color", _select_by_color, (COLOR_ARG("color"),), kind="select"),
+    Action("select_unique_color", _select_unique_color, kind="select"),
 ]
 ACT_ON_SELECTION = [
     Action("commit_selection", _commit_selection, kind="act_on_selection"),
+    # ADR-0012: `recolor_selected` and `move_selected` each have a verified
+    # curated fixture task (`ea32f347`, `25ff71a9`); `delete_selected` and
+    # `paint_selected_at` don't (same audit-negative-result caveat as
+    # `select_by_color`/`select_unique_color` above).
+    Action("delete_selected", _delete_selected, kind="act_on_selection"),
+    Action("recolor_selected", _recolor_selected, (COLOR_ARG("color"),), kind="act_on_selection"),
+    Action("move_selected", _move_selected, (DIRECTION_ARG("direction"),), kind="act_on_selection"),
+    Action(
+        "paint_selected_at",
+        _paint_selected_at,
+        (COORD_ARG("row"), COORD_ARG("col")),
+        kind="act_on_selection",
+    ),
 ]
 
 ACTIONS: list = ZERO_ARG + ONE_ARG + TWO_ARG + THREE_ARG + FOUR_ARG + SELECT + ACT_ON_SELECTION
@@ -271,6 +351,10 @@ def _grid_shape(grid: Grid) -> tuple:
 def execute(primitive_index: int, raw_args: tuple, grid: Grid, selected=None) -> tuple:
     """Execute one action against `grid` (and, per ADR-0011, the current
     object `selected`, if any).
+
+    A `"select"` action's `fn` now also receives any decoded args (ADR-0012:
+    `select_by_color`'s `color`), same as `"transform"`/`"act_on_selection"`
+    already did - a no-op for ADR-0011's original zero-arg selectors.
 
     Returns `(new_grid, new_selected, decoded_args, valid)`. `decoded_args`
     is a dict of the actual (post-`decode`) argument values, present even
@@ -293,7 +377,7 @@ def execute(primitive_index: int, raw_args: tuple, grid: Grid, selected=None) ->
     }
 
     if action.kind == "select":
-        new_selected = action.fn(grid)
+        new_selected = action.fn(grid, *decoded.values())
         if not new_selected:
             return grid, selected, decoded, False
         return grid, new_selected, decoded, True

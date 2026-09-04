@@ -22,7 +22,15 @@ change - 12 same-shape + 12 variable-shape = 24 total. ADR-0011 (ADR-0010
 Phase 2 Slice 1, 2026-08-31) adds 2 more variable-shape tasks reachable via
 the new object-selection mechanism (`select_largest`/`select_smallest` +
 `commit_selection`, see `arc_env/actions.py`) - 12 same-shape + 14
-variable-shape = 26 total.
+variable-shape = 26 total. ADR-0012 (2026-09-04) adds 3 more via the rest of
+the object-selection menu (`select_by_color`/`select_unique_color`,
+`delete_selected`/`recolor_selected`/`move_selected`/`paint_selected_at`,
+see `arc_env/actions.py`): `1cf80156` needs no new action at all (its
+solver's `objects(I,T,T,T)` → `first` → `subgrid` is already reachable via
+`select_largest`/`select_smallest` + `commit_selection`, since a lone object
+is trivially both the largest and the smallest); `25ff71a9` and `ea32f347`
+newly need `move_selected` and `recolor_selected` respectively - 13
+same-shape + 16 variable-shape = 29 total.
 
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
@@ -94,6 +102,20 @@ CURATED_TASK_IDS = {
     # size), I)` / `subgrid(argmin(objects(I,T,T,T), size), I)`.
     "1f85a75f": [("select_largest", ()), ("commit_selection", ())],
     "23b5c85d": [("select_smallest", ()), ("commit_selection", ())],
+    # ADR-0012: rest of the object-selection menu. Solvers:
+    # `subgrid(first(objects(I,T,T,T)), I)` (a lone object - `first` ==
+    # `argmax`/`argmin` by any criterion, so the existing selectors suffice);
+    # `move(I, first(objects(I,T,T,T)), DOWN)`; and `replace`+argmax/argmin
+    # `size`-select+`fill` twice.
+    "1cf80156": [("select_largest", ()), ("commit_selection", ())],
+    "25ff71a9": [("select_largest", ()), ("move_selected", (0,))],  # 0 = DOWN, see actions._DIRECTIONS
+    "ea32f347": [
+        ("replace", (5, 4)),
+        ("select_largest", ()),
+        ("recolor_selected", (1,)),
+        ("select_smallest", ()),
+        ("recolor_selected", (2,)),
+    ],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -102,7 +124,7 @@ CURATED_TASK_IDS = {
 VARIABLE_SHAPE_TASK_IDS = {
     "d10ecb37", "c59eb873", "9172f3a0", "5614dbcf", "46f33fce",
     "a416b8f3", "6d0aefbc", "c9e6f938", "4c4377d9", "6fa7a44f", "8be77c9e", "5bd6f4ac",
-    "1f85a75f", "23b5c85d",
+    "1f85a75f", "23b5c85d", "1cf80156",
 }
 
 
