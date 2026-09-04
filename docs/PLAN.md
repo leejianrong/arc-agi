@@ -209,6 +209,35 @@ each now carries what actually happened, appended rather than rewritten.
   gradient until the agent stumbles onto the right dimensions by chance
   (README). Getting the shape right first is the concrete open problem, not
   addressed by any slice yet.
+  **Shape half fixed, position half still open (KAN-1178, 2026-09-05)**:
+  `arc_env/reward.py`'s `SHAPE_MATCH_CREDIT` amendment (2026-08-29) gave
+  `commit`'s `height`/`width` args a real gradient — Manhattan distance
+  between current and target shape, smooth and separable per argument — so
+  GP/PPO can now hill-climb those two dimensions. `row`/`col` never got the
+  same treatment: once shape matches, `similarity` falls back to raw
+  cell-for-cell content match, which is flat/noisy across wrong positions
+  for an arbitrary ARC grid (no reason a 3x3 crop one cell off should share
+  more pixels with the target than one five cells off) — confirmed
+  empirically on `5bd6f4ac` (`crop(I, (0, 6), (3, 3))`, the one curated task
+  neither trainer has ever solved): sampling every valid `(row, col)` with
+  `height`/`width` pinned at the correct 3x3 gives similarity in a flat
+  0.44-0.61 band everywhere except the single correct cell, which spikes to
+  1.0. That makes `(row, col)` a genuine needle in a ~900-combination
+  haystack (`RAW_ARG_RANGE=30` per axis) with no partial credit to search
+  on. `trainers/gp/genome.py`'s `mutate` already resamples one gene
+  argument at a time (not all four at once) — this was already the design
+  from GP's first commit, not a gap KAN-1178 found — and it doesn't help
+  here: a lucky correct `row` isn't fitter than an incorrect one on its own
+  (flat landscape), so selection can't lock it in independently of `col`.
+  A 25x larger search budget (`population_size=1000, n_generations=500` vs.
+  the standard `200`/`100`, 3 seeds) still found 0% exact matches, plateauing
+  at 0.71-0.73 similarity — evidence this is a genuine search-space-size
+  problem given the current reward signal, not something a bigger budget or
+  a finer-grained mutation operator fixes on its own. A real fix would need
+  a smarter reward/search signal for spatial position specifically (e.g.
+  cross-correlation-style partial credit, or seeding candidate crop
+  windows from the input directly) — out of scope for a "does the search
+  operator need tweaking" investigation, and not attempted here.
 - **Genetic programming over ~150 primitives may need real constraint/typing
   enforcement to avoid combinatorial explosion**, since there's no existing
   benchmark to calibrate population size/generation budget against. Earliest

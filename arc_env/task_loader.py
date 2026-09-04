@@ -41,6 +41,29 @@ name, not `"crop"`. `5bd6f4ac`'s solver is `crop(I, tojvec(SIX), THREE_BY_THREE)
 building sugar, not grid-dependent, so this is exactly `commit(0, 6, 3, 3)`,
 the same pattern as `d10ecb37`.
 
+`5bd6f4ac` is the one curated task neither trainer has ever solved (KAN-1178,
+2026-09-05 investigation). The known-correct program above is confirmed
+reachable and correct (`tests/test_dsl_regression.py` replays it against
+every train/test pair), so the failure is search difficulty, not
+unreachability - and it's a search-space-size problem, not a fixable
+mutation-operator gap. `commit`'s `height`/`width` args have a real gradient
+toward the right value (`arc_env/reward.py`'s `SHAPE_MATCH_CREDIT`, scored by
+Manhattan distance to the target shape), but `row`/`col` don't: once shape
+matches, similarity falls back to raw content match, which is flat/noisy
+across wrong crop positions (empirically: sampling every valid `(row, col)`
+with `height`/`width` pinned at 5bd6f4ac's correct 3x3 gives similarity in a
+flat 0.44-0.61 band everywhere except the one correct cell, which spikes to
+1.0) - a ~900-combination needle with no partial credit to hill-climb on.
+`trainers/gp/genome.py`'s `mutate` already resamples one gene argument at a
+time rather than all four at once (present since GP's first commit, not
+something this investigation added), but that doesn't help when a correct
+`row` alone isn't fitter than an incorrect one. A 25x larger GP budget
+(`population_size=1000, n_generations=500` vs. the standard `200`/`100`, 3
+seeds) still found 0% exact matches on this task, plateauing at 0.71-0.73
+similarity - see `docs/PLAN.md`'s Open risks for the full writeup and
+combinatorics. No code change made; a real fix needs a smarter
+spatial-position reward/search signal, not a search-operator tweak.
+
 This is also exactly the regression-test fixture set
 (`tests/test_dsl_regression.py`): each task's solver program, replayed
 through `arc_env.actions.execute`, must reproduce the task's expected output
