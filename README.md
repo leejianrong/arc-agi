@@ -52,14 +52,61 @@ PPO and GP both solve the easy end of the task set reliably and fast: single-act
 
 Scaling past the original 16-task set needed a real decision first, not just more compute (`docs/adr/0010-task-coverage-scaling.md`): over half of the 400 training tasks need the higher-order primitives this action space deliberately excludes, and most of the rest need selecting or manipulating a specific object. That fast-follow is now fully landed: ADR-0011 (2026-08-31) proved the object-selection mechanism end-to-end with a minimal 3-action menu, ADR-0012 (2026-09-04) filled in the rest (`select_by_color`, `select_unique_color`, `delete_selected`, `recolor_selected`, `move_selected`, `paint_selected_at`), and ADR-0013 (2026-09-05) added two more `objects(...)` connectivity variants (`select_largest_no_diag`, `select_tallest`) - 16 → 24 → 26 → 29 → 30 curated tasks across the four passes.
 
-**A full 26-task training pass (2026-08-31, one PPO run + one GP run per task) is the clearest read on where the two trainers actually stand:**
+**A full 30-task training pass (2026-09-05, one PPO run + one GP run per task, both `--seed 0`, KAN-1183) supersedes the earlier 26-task pass below as the current, comprehensive read on where the two trainers stand** (config: GP `--max_steps 25 --population_size 200 --n_generations 100 --max_program_length 6 --tournament_size 3 --crossover_rate 0.7 --mutation_rate 0.3 --elitism 2`; PPO `--n_updates 25 --rollout_steps 128 --eval_every 5 --re_arc_prob 0.5 --max_steps 25`, no warm-start):
+
+| Trainer | Fully solved | Notes |
+|---|---|---|
+| GP | 26/30 (87%) | Two total failures - `5bd6f4ac` (crop-position needle-in-haystack, no partial-credit gradient) and `ea32f347` (deceptive local optimum, KAN-1179) - plus two tasks stuck on partial credit across train pairs (`46f33fce` 33%, `d10ecb37` 67%) |
+| PPO | 12/30 (40%) by `eval_success` | The fixed held-out-pair, greedy-policy signal KAN-1177 found trustworthy. The older `success_rate` (mean over each update's own small, shifting mix of episodes) never once hits literal 100% in this whole pass, for any task, at any logged update - reinforcing KAN-1177's point that it's a noisy multi-episode average, not a pass/fail signal, and that `eval_success` is the number to read |
+
+Per-task detail (GP's `success_rate` is the fraction of that task's training pairs solved exactly; PPO's `eval_success` is the fixed-pair greedy outcome at the final logged update, identical to the best-ever value logged at any `eval_every` checkpoint for every single task in this pass - no task regressed away from a working eval-pair policy, the cleanest evidence yet for KAN-1177's finding):
+
+| Task | GP | PPO `eval_success` | PPO `success_rate` |
+|---|---|---|---|
+| `0d3d703e` | 100% | no | 0% |
+| `1cf80156` | 100% | yes | 81% |
+| `1f85a75f` | 100% | no | 67% |
+| `23b5c85d` | 100% | no | 28% |
+| `25ff71a9` | 100% | no | 0% |
+| `3c9b0459` | 100% | yes | 93% |
+| `46f33fce` | 33% | no | 0% |
+| `4c4377d9` | 100% | yes | 86% |
+| `5614dbcf` | 100% | no | 0% |
+| `5bd6f4ac` | 0% | no | 0% |
+| `6150a2bd` | 100% | yes | 97% |
+| `67a3c6ac` | 100% | yes | 95% |
+| `68b16354` | 100% | yes | 96% |
+| `6d0aefbc` | 100% | yes | 92% |
+| `6fa7a44f` | 100% | yes | 78% |
+| `74dd1130` | 100% | yes | 92% |
+| `8be77c9e` | 100% | no | 20% |
+| `9172f3a0` | 100% | no | 33% |
+| `9dfd6313` | 100% | yes | 42% |
+| `a416b8f3` | 100% | no | 0% |
+| `b1948b0a` | 100% | no | 0% |
+| `be94b721` | 100% | no | 50% |
+| `c59eb873` | 100% | no | 7% |
+| `c8f0f002` | 100% | no | 0% |
+| `c9e6f938` | 100% | yes | 92% |
+| `d10ecb37` | 67% | no | 0% |
+| `d511f180` | 100% | no | 0% |
+| `ea32f347` | 0% | no | 0% |
+| `ed36ccf7` | 100% | yes | 97% |
+| `f25ffba3` | 100% | no | 0% |
+
+The gap that stands out is still the same shape as before, just with different specific tasks now that `success_rate` is no longer the metric of record: PPO's 18 `eval_success`-failing tasks include both of ADR-0011's original object-selection tasks (`1f85a75f`, `23b5c85d`) - still unsolved by plain, non-warm-started PPO in this pass, consistent with the open finding below - plus most of ADR-0012's newer selection/canvas tasks and `be94b721` (ADR-0013). One nuance this pass surfaces that the 26-task pass didn't: `1f85a75f` and `23b5c85d` are no longer *flat* 0% - their rollout `success_rate` is 67% and 28% respectively - but neither clears the `eval_success` bar, so by KAN-1177's stricter standard they're still unsolved, just with more visible partial progress along the way. **Learning to use newly-added actions within a short training budget remains PPO's open problem, not raw task difficulty** - GP fully solves 14 of PPO's 18 `eval_success` failures (the other 4 - `46f33fce`, `5bd6f4ac`, `d10ecb37`, `ea32f347` - are also GP's own partial/total failures above, so there's no GP demonstration to warm-start from on those). That 14-task gap is exactly what the existing opt-in GP-to-PPO warm-start (ADR-0009) targets; see `docs/PLAN.md`'s Open risks for that experiment's mixed results.
+
+<details>
+<summary>Earlier 26-task pass (2026-08-31), kept for history</summary>
 
 | Trainer | Fully solved (final checkpoint) | Notes |
 |---|---|---|
 | GP | 25/26 (96%) | The lone failure, `5bd6f4ac`, is a `commit`-only task neither trainer solves |
 | PPO | 14/26 (54%) | 18/26 hit 100% success at *some* point in training - 4 regressed away from a working policy by the final checkpoint |
 
-The gap that stands out: **PPO scored a flat 0% on both of ADR-0011's brand-new object-selection tasks** (`1f85a75f`, `23b5c85d`) across that whole run - GP finds the trivial `[select_largest, commit_selection]` program instantly, but PPO never learned to use the new selection actions in that pass. Small validation runs against ADR-0012's three new fixture tasks show the same pattern holding: `1cf80156` (no new action needed) went GP 100% / PPO 99%, but `25ff71a9` (needs `move_selected`) went GP 100% / PPO 0%, and `ea32f347` (needs `recolor_selected`, a 5-step program) went GP 0% / PPO 0% - the hardest task found so far for either trainer. **Learning to use newly-added actions within a short training budget is PPO's open problem, not raw task difficulty** - the next thing worth trying is the existing opt-in GP-to-PPO warm-start (ADR-0009) targeted at exactly these zero-success tasks, since GP already has working programs for all but one of them.
+The gap that stood out: **PPO scored a flat 0% on both of ADR-0011's brand-new object-selection tasks** (`1f85a75f`, `23b5c85d`) across that whole run - GP finds the trivial `[select_largest, commit_selection]` program instantly, but PPO never learned to use the new selection actions in that pass. Small validation runs against ADR-0012's three new fixture tasks show the same pattern holding: `1cf80156` (no new action needed) went GP 100% / PPO 99%, but `25ff71a9` (needs `move_selected`) went GP 100% / PPO 0%, and `ea32f347` (needs `recolor_selected`, a 5-step program) went GP 0% / PPO 0% - the hardest task found so far for either trainer.
+
+</details>
 
 ## Repo layout
 

@@ -276,8 +276,9 @@ each now carries what actually happened, appended rather than rewritten.
   in 2 of 3 seeds (generations 67 and 140) but the third plateaus at 0.79
   for the full 500 generations — meaningfully better than the standard
   budget's 0%, but not reliable, and not adopted as a new default (it would
-  5-25x compute cost across all 29 curated tasks, 28 of which already solve
-  in single-digit milliseconds at the standard budget). Isolating the
+  5-25x compute cost across all 30 curated tasks, 26 of which already solve
+  in single-digit milliseconds at the standard budget — KAN-1183's full-pass
+  numbers below). Isolating the
   selection-pressure lever alone (`tournament_size` 3 → 2, population still
   200) reaches the 0.79 plateau more often (2/3 seeds vs. 0/3) but never
   exact match even with 3x more generations (300) — population breadth, not
@@ -306,7 +307,8 @@ each now carries what actually happened, appended rather than rewritten.
   **Confirmed and accepted**: this is why the curated subset is deliberately
   capped rather than grown without a design pass each time
   (`arc_env/task_loader.py`) — 16 tasks at V2/V3, 24 after ADR-0010 Phase 1,
-  29 after ADR-0011/0012's object-selection menu — not a defect to fix.
+  29 after ADR-0011/0012's object-selection menu, 30 after ADR-0013's two
+  more `objects(...)` connectivity variants — not a defect to fix.
 - **A new curated action doesn't automatically mean PPO learns to use it.**
   Not one of the original five (added here since it surfaced only once
   ADR-0010/0011/0012's task-coverage-scaling work began, past V1-V4).
@@ -405,3 +407,49 @@ each now carries what actually happened, appended rather than rewritten.
   safety-net change validated end-to-end
   (`tests/test_train_ppo.py::test_best_eval_checkpoint_is_tracked_separately_from_the_noisy_rollout_stat`),
   not a demonstrated fix for the three still-unstable warm-start tasks.
+  **KAN-1183 update (2026-09-05): first comprehensive, current-config,
+  all-30-task pass since this whole thread of investigation started** (one
+  plain, non-warm-started PPO run + one GP run per task, `--seed 0` on both,
+  the standard budgets documented in README's `What actually works right
+  now`). **Aggregate numbers**: GP fully solves 26/30 (87%) — the same two
+  total failures as before (`5bd6f4ac`, `ea32f347`, see above) plus two
+  tasks — `46f33fce` and `d10ecb37`, both already part of the original
+  26-task set and reported solved there — now landing on partial credit
+  across their own train pairs at this run's `--seed 0` (33% and 67%
+  respectively) instead of the 100% the 2026-08-31 pass recorded. No
+  `trainers/gp/` code changed between the two passes (KAN-1178/KAN-1179
+  were docs-only investigations, no fix applied), so this reads as GP's
+  stochastic search landing in a worse local optimum at this particular
+  seed rather than a regression — plausible given the standard budget
+  (`population_size=200, n_generations=100`) is exactly the scale KAN-1178
+  showed can plateau below 100% on a hard fitness landscape — but not
+  separately re-investigated here; worth a multi-seed rerun if GP
+  reliability at the standard budget becomes its own question. PPO fully
+  solves 12/30 (40%) by `eval_success` — and,
+  notably, `eval_success` was identical at the final logged update and at
+  the best-ever logged update for all 30 tasks with no exception, the
+  cleanest evidence yet for this section's KAN-1177 finding that the
+  earlier "regressed away from a working policy by the final checkpoint"
+  pattern was a `success_rate` sampling artifact, not real policy collapse:
+  in a full run at this scale, zero tasks show real eval-pair regression.
+  Reinforcing that same point from the other direction, the older
+  `success_rate` metric never once hit literal 100% for any of the 30
+  tasks at any logged update in this pass, which would read as "PPO fully
+  solved 0/30" if `success_rate` were still (wrongly) treated as the
+  solved/not-solved signal — exactly the metric-definition trap KAN-1177
+  fixed `eval_success` to avoid. **Both of ADR-0011's original
+  object-selection tasks remain unsolved by plain PPO** (`1f85a75f`,
+  `23b5c85d`, `eval_success` false for both) — still consistent with this
+  bullet's original finding — **but with a wrinkle**: neither is *flat*
+  0% this time the way the 26-task pass reported (`1f85a75f`'s
+  `success_rate` is 67%, `23b5c85d`'s is 28%), i.e. partial rollout success
+  now shows up along the way even though the fixed-pair eval still never
+  locks in. Of PPO's 18 `eval_success` failures, GP fully solves 14 of them
+  (everything except its own four non-100% tasks above) — the same
+  warm-start target list as before, just re-confirmed at the current
+  30-task scale; the three still-unstable warm-start tasks (`23b5c85d`,
+  `5614dbcf`, `b1948b0a`) and non-improving `0d3d703e` are all present
+  again in this plain (non-warm-started) baseline's failure list, consistent
+  with warm-start being the open, not-yet-reliable mitigation for them
+  rather than something this baseline pass would fix on its own. Full
+  per-task table in README's `What actually works right now`.
