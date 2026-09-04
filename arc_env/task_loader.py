@@ -30,7 +30,20 @@ solver's `objects(I,T,T,T)` → `first` → `subgrid` is already reachable via
 `select_largest`/`select_smallest` + `commit_selection`, since a lone object
 is trivially both the largest and the smallest); `25ff71a9` and `ea32f347`
 newly need `move_selected` and `recolor_selected` respectively - 14
-same-shape + 15 variable-shape = 29 total.
+same-shape + 15 variable-shape = 29 total. ADR-0013 (2026-09-05) adds 1 more
+via a new `objects(...)` connectivity variant (`select_largest_no_diag`, see
+`arc_env/actions.py`): `be94b721` (solver: `subgrid(argmax(objects(I,T,F,T),
+size), I)`) - 14 same-shape + 16 variable-shape = 30 total. `1c786137`
+(solver: `trim(subgrid(argmax(objects(I,T,F,F), height), I))`) is
+*confirmed reachable at the DSL level* (`select_tallest` + `commit_selection`
++ `trim` reproduces every train/test pair exactly when replayed as bare
+function calls) but deliberately **not** added here: `commit_selection`
+ends the episode at the `subgrid` step (same as `commit`), so the `trim`
+step can never actually run inside `ArcEnv`'s real step-by-step loop - a
+curated entry here would pass `tests/test_dsl_regression.py`'s replay (which
+doesn't model episode termination) while being unreachable by any trainer.
+See ADR-0013's Consequences for the full writeup and why fixing this would
+need a new fused act-on-selection primitive, out of scope for this pass.
 
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
@@ -189,6 +202,10 @@ CURATED_TASK_IDS = {
         ("select_smallest", ()),
         ("recolor_selected", (2,)),
     ],
+    # ADR-0013: a new `objects(...)` connectivity variant (`diagonal=False`,
+    # rather than ADR-0011/0012's curated `diagonal=True`). Solver:
+    # `subgrid(argmax(objects(I,T,F,T), size), I)`.
+    "be94b721": [("select_largest_no_diag", ()), ("commit_selection", ())],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -197,7 +214,7 @@ CURATED_TASK_IDS = {
 VARIABLE_SHAPE_TASK_IDS = {
     "d10ecb37", "c59eb873", "9172f3a0", "5614dbcf", "46f33fce",
     "a416b8f3", "6d0aefbc", "c9e6f938", "4c4377d9", "6fa7a44f", "8be77c9e", "5bd6f4ac",
-    "1f85a75f", "23b5c85d", "1cf80156",
+    "1f85a75f", "23b5c85d", "1cf80156", "be94b721",
 }
 
 

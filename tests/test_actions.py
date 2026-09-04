@@ -268,3 +268,82 @@ def test_execute_threads_decoded_args_into_a_select_action():
     assert valid
     assert selected == frozenset({(1, 1), (2, 1)})
     assert decoded == {"color": 2}
+
+
+# ADR-0013: additional `dsl.objects(...)` connectivity variants, beyond the
+# single (univalued=True, diagonal=True, without_bg=True) triple ADR-0011/
+# 0012 curate above.
+
+# Four cells of color 2 form a diagonal staircase - (0,0)-(1,1)-(2,2)-(3,3) -
+# each pair only diagonally adjacent, never sharing an edge. Color 3's two
+# cells ARE edge-adjacent, so they stay one object under either connectivity
+# variant. Under diagonal=True (existing `select_largest`), the staircase
+# merges into one 4-cell object, bigger than the 3-object's 2 cells - it
+# wins. Under diagonal=False (`select_largest_no_diag`), the staircase
+# splits into four separate 1-cell objects, so the 3-object's 2 cells win
+# instead - a real, different segmentation, not just a different pick.
+DIAGONAL_CHAIN_GRID = (
+    (2, 0, 0, 0, 3),
+    (0, 2, 0, 0, 3),
+    (0, 0, 2, 0, 0),
+    (0, 0, 0, 2, 0),
+)
+
+
+def test_select_largest_merges_diagonally_adjacent_cells_into_one_object():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest"]]
+    selected = action.fn(DIAGONAL_CHAIN_GRID)
+    assert selected == frozenset({(0, 0), (1, 1), (2, 2), (3, 3)})
+
+
+def test_select_largest_no_diag_treats_diagonally_adjacent_cells_as_separate_objects():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest_no_diag"]]
+    selected = action.fn(DIAGONAL_CHAIN_GRID)
+    # The diagonal staircase splits into four 1-cell objects; the edge-
+    # adjacent pair of "3"s (2 cells) is now the largest.
+    assert selected == frozenset({(0, 4), (1, 4)})
+
+
+# A short-but-wide object (color 4, size 4, height 1), a tall-but-narrow
+# object (color 5, size 3, height 3), and the background (color 0) which -
+# because `select_tallest` uses without_bg=False - is itself a segmented
+# object spanning the full grid height (4). `select_largest` (size,
+# without_bg=True) picks color 4 (the biggest of the two non-background
+# objects); `select_tallest` (height, without_bg=False) picks the background
+# patch instead, since it's taller than both and only visible at all because
+# background isn't excluded.
+TALLEST_GRID = (
+    (4, 4, 4, 4, 5, 0),
+    (0, 0, 0, 0, 5, 0),
+    (0, 0, 0, 0, 5, 0),
+    (0, 0, 0, 0, 0, 0),
+)
+
+
+def test_select_largest_picks_the_biggest_non_background_object_by_size():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest"]]
+    selected = action.fn(TALLEST_GRID)
+    assert selected == frozenset({(0, 0), (0, 1), (0, 2), (0, 3)})  # color 4, size 4
+
+
+def test_select_tallest_picks_the_tallest_object_including_background():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_tallest"]]
+    selected = action.fn(TALLEST_GRID)
+    expected_background = frozenset(
+        {
+            (0, 5),
+            (1, 0), (1, 1), (1, 2), (1, 3), (1, 5),
+            (2, 0), (2, 1), (2, 2), (2, 3), (2, 5),
+            (3, 0), (3, 1), (3, 2), (3, 3), (3, 4), (3, 5),
+        }
+    )
+    assert selected == expected_background
+
+
+def test_select_no_diag_variants_return_empty_for_a_zero_size_grid_edge_case():
+    # Sanity check mirroring `test_select_returns_empty_for_a_grid_with_no_objects`:
+    # a uniform (all-background) grid has no non-background objects at all
+    # under `select_largest_no_diag`.
+    blank = ((0, 0), (0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest_no_diag"]]
+    assert action.fn(blank) == frozenset()

@@ -25,15 +25,16 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 36 actions as of
-  ADR-0012: structural transforms including the 4 self-concatenation
+  `arc-dsl`-primitive action space (`actions.py` — 38 actions as of
+  ADR-0013: structural transforms including the 4 self-concatenation
   actions, `fill_cell`, `canvas`, `commit`, plus the object-selection
-  mechanism's 9 actions (`select_largest`/`select_smallest`/
-  `select_by_color`/`select_unique_color`/`commit_selection`/
-  `delete_selected`/`recolor_selected`/`move_selected`/`paint_selected_at`)
-  threading a "currently selected patch" side-channel, ADR-0002/ADR-0010/
-  ADR-0011/ADR-0012), the task loader (`task_loader.py` — 29 curated tasks,
-  14 same-shape + 15 variable-shape), `env.py` (2-channel observation:
+  mechanism's 11 actions (`select_largest`/`select_smallest`/
+  `select_by_color`/`select_unique_color`/`select_largest_no_diag`/
+  `select_tallest`/`commit_selection`/`delete_selected`/`recolor_selected`/
+  `move_selected`/`paint_selected_at`) threading a "currently selected
+  patch" side-channel, ADR-0002/ADR-0010/ADR-0011/ADR-0012/ADR-0013), the
+  task loader (`task_loader.py` — 30 curated tasks, 14 same-shape + 16
+  variable-shape), `env.py` (2-channel observation:
   grid + selection mask; `get_selected()` exposes the selection for episode
   logging), ADR-0005's dense reward (`reward.py`), extra
   practice-instance generation via `re-arc` (`re_arc.py`), and the JSONL
