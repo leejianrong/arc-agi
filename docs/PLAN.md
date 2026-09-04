@@ -238,6 +238,54 @@ each now carries what actually happened, appended rather than rewritten.
   cross-correlation-style partial credit, or seeding candidate crop
   windows from the input directly) — out of scope for a "does the search
   operator need tweaking" investigation, and not attempted here.
+  **A different GP zero-success task, `ea32f347`, turned out to be a
+  different failure mode (KAN-1179, 2026-09-05)**: its known-correct 5-step
+  program (`replace(5,4)`, `select_largest`, `recolor_selected(1)`,
+  `select_smallest`, `recolor_selected(2)`) *does* have a real, monotonic
+  partial-credit gradient — replaying successive prefixes gives similarity
+  0.0 → 0.34 → 0.34 (unchanged; selecting doesn't touch the grid) → 0.79 →
+  0.79 → 1.0 — so this is not `5bd6f4ac`'s flat-landscape problem. The
+  actual cause is a deceptive local optimum: a structurally unrelated,
+  easier-to-find single action, `replace(5,1)` (equivalently `switch(1,5)`),
+  scores a *higher* immediate similarity (0.4486) than the true program's
+  own first step (0.34), purely by coincidence of which raw colors happen to
+  overlap this task's diff cells — sampling 2000 random programs found only
+  0.15% beating 0.34 at all, and the single best score among them belonged
+  to this decoy, not any prefix of the real solution. Because the decoy is
+  reachable in one gene (no select+color combo needed) and higher-scoring,
+  tournament selection converges the whole population onto decoy lineages
+  (`replace`/`switch` plus opportunistic `fill_cell` patchwork) within the
+  first ~5 generations — the actual baseline run's `best_similarity` jumps
+  to 0.45 by generation 5, then creeps to only 0.53 over the remaining 95.
+  From then on the true program's lower early partial fitness can't win a
+  tournament against the incumbent decoy lineage, so no selection pressure
+  ever favors rebuilding the correct sequence from scratch — "premature
+  convergence to a deceptive local optimum," not a missing gradient. (The
+  decoy is also a genuine dead end on its own terms: each train pair's diff
+  mask is only 12-16 cells out of 100, but `max_program_length=6` caps a
+  `fill_cell`-patchwork strategy to retargeting at most ~6 cells directly,
+  so it can never reach exact match that way.) A secondary, compounding risk
+  is real but not the root cause: a successful ordinary `"transform"` action
+  clears the current selection (`arc_env/actions.py`'s `execute()`, ADR-0011)
+  — confirmed directly by inserting `identity` between `select_largest` and
+  `recolor_selected(1)` and observing the latter turn invalid — so a stray
+  mutation/crossover-inserted transform between a `select_*` and its paired
+  `recolor_selected` silently breaks that segment, whenever a correct-path
+  lineage does get a foothold. A 25x larger GP budget
+  (`population_size=1000, n_generations=500`, 3 seeds) reaches exact match
+  in 2 of 3 seeds (generations 67 and 140) but the third plateaus at 0.79
+  for the full 500 generations — meaningfully better than the standard
+  budget's 0%, but not reliable, and not adopted as a new default (it would
+  5-25x compute cost across all 29 curated tasks, 28 of which already solve
+  in single-digit milliseconds at the standard budget). Isolating the
+  selection-pressure lever alone (`tournament_size` 3 → 2, population still
+  200) reaches the 0.79 plateau more often (2/3 seeds vs. 0/3) but never
+  exact match even with 3x more generations (300) — population breadth, not
+  generation count or selection pressure alone, is the effective lever. No
+  code change made; a real fix needs a search mechanism that doesn't let a
+  single scalar similarity score be dominated by a same-shape decoy (e.g.
+  novelty search or explicit diversity preservation), not a budget or
+  selection-pressure tweak.
 - **Genetic programming over ~150 primitives may need real constraint/typing
   enforcement to avoid combinatorial explosion**, since there's no existing
   benchmark to calibrate population size/generation budget against. Earliest
@@ -268,8 +316,9 @@ each now carries what actually happened, appended rather than rewritten.
   `What actually works right now`) shows PPO scoring a flat 0% on both of
   ADR-0011's new object-selection tasks across the whole run, and ADR-0012's
   own small validation runs reproduce the same pattern on its new fixture
-  tasks (`25ff71a9`, `ea32f347`) — GP finds a working program instantly in
-  every case. **Open**: whether this is a training-budget problem (these
+  tasks (`25ff71a9`, `ea32f347`) — GP finds a working program instantly for
+  `25ff71a9`, but not for `ea32f347` (GP 0%, see KAN-1179 below). **Open**:
+  whether this is a training-budget problem (these
   runs use the same short update budget as every other task, not tuned per-
   task) or something more structural about how a freshly-added, rarely-
   successful action gets discovered by on-policy exploration. The concrete
