@@ -118,7 +118,10 @@ def test_compute_reward_adds_terminal_bonus_on_exact_match():
     assert result.reward == pytest.approx((1.0 - 0.0) - STEP_COST + TERMINAL_BONUS)
 
 
-def test_compute_reward_subtracts_invalid_action_penalty():
+def test_compute_reward_invalid_action_costs_exactly_the_invalid_action_penalty():
+    # 2026-09-05 fix (ADR-0005 amendment): INVALID_ACTION_PENALTY replaces
+    # step_cost rather than stacking with it - an invalid action costs
+    # exactly INVALID_ACTION_PENALTY, not STEP_COST + INVALID_ACTION_PENALTY.
     input_grid = ((0, 0), (0, 0))
     target_grid = ((1, 1), (0, 0))
     diff_mask = compute_diff_mask(input_grid, target_grid)
@@ -126,7 +129,48 @@ def test_compute_reward_subtracts_invalid_action_penalty():
     # No-op: grid unchanged by an invalid action.
     result = compute_reward(input_grid, input_grid, target_grid, diff_mask, valid_action=False, exact_match=False)
 
-    assert result.reward == pytest.approx(0.0 - STEP_COST - INVALID_ACTION_PENALTY)
+    assert result.reward == pytest.approx(0.0 - INVALID_ACTION_PENALTY)
+
+
+def test_compute_reward_valid_no_progress_action_costs_exactly_step_cost():
+    # A valid action that makes no progress (e.g. identity) still costs just
+    # STEP_COST, unchanged by the invalid-action-penalty fix above.
+    input_grid = ((0, 0), (0, 0))
+    target_grid = ((1, 1), (0, 0))
+    diff_mask = compute_diff_mask(input_grid, target_grid)
+
+    result = compute_reward(input_grid, input_grid, target_grid, diff_mask, valid_action=True, exact_match=False)
+
+    assert result.reward == pytest.approx(0.0 - STEP_COST)
+
+
+def test_compute_reward_invalid_action_penalty_is_strictly_cheaper_than_the_old_stacked_cost():
+    # Pins the actual bug this fixes: an invalid action must never cost more
+    # than STEP_COST + INVALID_ACTION_PENALTY (the old, stacked behavior),
+    # and should cost strictly less than a valid no-op stacked with the
+    # penalty would have.
+    input_grid = ((0, 0), (0, 0))
+    target_grid = ((1, 1), (0, 0))
+    diff_mask = compute_diff_mask(input_grid, target_grid)
+
+    result = compute_reward(input_grid, input_grid, target_grid, diff_mask, valid_action=False, exact_match=False)
+
+    assert result.reward == pytest.approx(-INVALID_ACTION_PENALTY)
+    assert result.reward > -(STEP_COST + INVALID_ACTION_PENALTY)
+
+
+def test_compute_reward_invalid_action_penalty_composes_with_terminal_bonus():
+    # Edge case: an invalid action never changes the grid, so exact_match can
+    # only be True alongside valid_action=False if the grid already matched
+    # the target before this step (a degenerate already-solved input/output
+    # pair) - checked against arc_env/env.py's step(), not assumed. Even in
+    # that case, the penalty and bonus should simply compose additively.
+    target_grid = ((1, 1), (0, 0))
+    diff_mask = compute_diff_mask(((0, 0), (0, 0)), target_grid)
+
+    result = compute_reward(target_grid, target_grid, target_grid, diff_mask, valid_action=False, exact_match=True)
+
+    assert result.reward == pytest.approx(0.0 - INVALID_ACTION_PENALTY + TERMINAL_BONUS)
 
 
 def test_compute_reward_penalizes_regressing_a_previously_matched_cell():

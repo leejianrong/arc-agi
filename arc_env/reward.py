@@ -24,6 +24,12 @@ current grid reaches the target's shape - a coarser signal (no credit for
 "getting the shape right" itself), but still dense once shape is achieved,
 and exact everywhere else.
 
+Invalid-action cost (2026-09-05 fix, see ADR-0005's amendment): an invalid
+action's `INVALID_ACTION_PENALTY` no longer stacks with `step_cost` - it
+replaces it, so an invalid action costs exactly `INVALID_ACTION_PENALTY`
+(not `step_cost + INVALID_ACTION_PENALTY`) while a valid action that makes
+no progress (e.g. `identity`) still costs exactly `step_cost`, as before.
+
 Shape gradient (2026-08-29 fix, see ADR-0005's amendment): before that
 shape is achieved, `similarity` used to return a flat 0.0 regardless of how
 close the current grid's shape was to the target's - a dead zone with no
@@ -146,8 +152,10 @@ def compute_reward(
 
     prev_sim = similarity(prev_grid, target_grid, diff_mask)
     cur_sim = similarity(grid, target_grid, diff_mask)
-    reward = (cur_sim - prev_sim) - STEP_COST
-    if not valid_action:
+    reward = cur_sim - prev_sim
+    if valid_action:
+        reward -= STEP_COST
+    else:
         reward -= INVALID_ACTION_PENALTY
     if exact_match:
         reward += TERMINAL_BONUS
