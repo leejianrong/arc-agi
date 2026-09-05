@@ -49,12 +49,21 @@ Planning artifacts (read these before making architectural changes):
 - `trainers/gp/` — the ADR-0003 evolutionary trainer: DSL-program genomes
   as flat gene lists (`genome.py` — no separate AST, same non-compositional
   action space PPO uses), fitness evaluation reusing `arc_env`'s executor
-  and reward similarity (`fitness.py`), the generational loop (`evolve.py`),
-  and best-program replay for logging (`replay.py`).
+  and reward similarity (`fitness.py`), the generational loop (`evolve.py` —
+  per ADR-0014, also snapshots each generation's own best program at
+  `GPConfig.snapshot_interval`, not just the final one), and program replay
+  for logging (`replay.py`).
 - `train.py` — `train.py --algo ppo|gp --task_id <id>`: trains one
   dedicated PPO policy (ADR-0008) or evolves one dedicated GP population
   (ADR-0003) per task, logging to `runs/<run_id>/` in the same shape either
-  way. PPO's `metrics.jsonl` rows carry two distinct signals per update:
+  way. GP now logs one `episodes/<id>.jsonl` per snapshotted generation
+  (`00000-gen`, `00010-gen`, ... — zero-padded so they sort chronologically
+  and, deliberately, before `best-program`) plus `best-program` itself
+  (ADR-0014) — the visualizer's existing multi-episode picker shows this as
+  an early-vs-late comparison with no GP-specific UI. `best-program` keeps
+  its exact historical name/content unchanged, since `trainers/ppo/
+  warm_start.py`'s `--warm_start_from` (ADR-0009) hardcodes that episode ID.
+  PPO's `metrics.jsonl` rows carry two distinct signals per update:
   `success_rate`/`mean_reward` (noisy — averaged over that update's own
   small, shifting mix of re-arc-generated + native training-rollout
   episodes) and `eval_success`/`eval_reward` (the fixed held-out pair's

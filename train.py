@@ -297,6 +297,23 @@ def train_gp(task_id: str, run_dir: Path, config: GPConfig, max_steps: int) -> N
         print(f"generation {record.generation:5d} | best_fitness {record.best_fitness:.2f} | "
               f"best_similarity {record.best_similarity:.2f} | pop_mean {record.population_mean_fitness:.3f}")
 
+    # ADR-0014: one replay per snapshotted generation, so the visualizer's
+    # existing multi-episode picker can show evolution across the run - not
+    # just the final winner. Named with a zero-padded numeric prefix so it
+    # sorts chronologically *and* before "best-program" below (digits sort
+    # before letters), which matters because `main.ts` picks the
+    # alphabetically-first/last episode IDs for its early-vs-late comparison
+    # panels.
+    for generation, program in result.snapshots:
+        trace = program_to_episode_trace(env, program, task_id, task.train[0])
+        _write_episode(run_dir, f"{generation:05d}-gen", env, task_id, task.train[0], trace)
+
+    # Kept as its own, unchanged-name episode (not just the last snapshot
+    # above, even though they're equivalent by construction - see
+    # `GPResult.snapshots`'s docstring) because ADR-0009's warm-start path
+    # (`trainers/ppo/warm_start.py`'s `load_demonstration`) hardcodes
+    # `episode_id="best-program"` - renaming or dropping this would silently
+    # break `--warm_start_from`.
     trace = program_to_episode_trace(env, result.best_program, task_id, task.train[0])
     _write_episode(run_dir, "best-program", env, task_id, task.train[0], trace)
 
@@ -339,6 +356,7 @@ def main() -> None:
     gp_group.add_argument("--crossover_rate", type=float, default=0.7)
     gp_group.add_argument("--mutation_rate", type=float, default=0.3)
     gp_group.add_argument("--elitism", type=int, default=2)
+    gp_group.add_argument("--snapshot_interval", type=int, default=10)
 
     args = parser.parse_args()
 
@@ -360,7 +378,7 @@ def main() -> None:
             population_size=args.population_size, n_generations=args.n_generations,
             max_program_length=args.max_program_length, tournament_size=args.tournament_size,
             crossover_rate=args.crossover_rate, mutation_rate=args.mutation_rate,
-            elitism=args.elitism, seed=args.seed,
+            elitism=args.elitism, seed=args.seed, snapshot_interval=args.snapshot_interval,
         )
         train_gp(task_id=args.task_id, run_dir=run_dir, config=config, max_steps=args.max_steps)
     else:
