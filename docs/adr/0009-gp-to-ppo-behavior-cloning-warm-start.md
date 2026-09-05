@@ -120,3 +120,28 @@ Landed as designed: `trainers/ppo/warm_start.py` (`load_demonstration`,
   a handful of generations and sufficient to demonstrate the mechanism; across 3
   seeds, 5-update BC-pretrained PPO reached mean eval success rate 1.0 vs.
   cold-start's ~0.0-0.1 on the identical budget.
+
+### Selection-channel fix (2026-09-05)
+
+The implementation above landed with a known, documented gap: `_pad_grid`'s
+selection channel (channel 1 of `ArcEnv`'s ADR-0011 observation) was always
+zero, because the logged trajectory only carries `grid_before`/`grid_after`,
+not the env's selection state. At the time, no curated task's solver used
+`select_*`/`commit_selection` together with `--warm_start_from`, so this was
+inert rather than silently wrong. `docs/PLAN.md`'s 2026-09-05 warm-start
+experiment made it live: `1f85a75f` (`select_by_color` + `commit_selection`)
+and `23b5c85d` are both selection-based programs used as real
+`--warm_start_from` demonstrations.
+
+Fixed by threading the previous step's logged `"selected"` field
+(`arc_env.episode_log.EpisodeWriter.step`'s `"selected"` - the *post*-step
+selection state) through `load_demonstration`'s loop over
+`episode["steps"]`, so each step's reconstructed observation carries the
+selection state as it actually was *before* that step ran: the prior step's
+`"selected"` value, or `None`/empty for the first step (episodes always
+start with nothing selected, `ArcEnv.reset`'s `self._selected = None`).
+`_pad_grid` now takes that selection list and renders it into the mask the
+same way `arc_env.env`'s private `_selected_mask` does, duplicated locally
+per this module's existing convention rather than imported across modules.
+No change to `pretrain_from_demonstration`, `_encode_action`, or the
+public `load_demonstration` signature.
