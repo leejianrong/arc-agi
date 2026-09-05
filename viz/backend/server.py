@@ -12,6 +12,7 @@ Routes:
     GET /api/runs/<run_id>/metrics              -> [metrics.jsonl row, ...] (ADR-0006, V2 training dashboard)
     GET /api/runs/<run_id>/episodes             -> [episode_id, ...]
     GET /api/runs/<run_id>/episodes/<episode_id> -> {start, steps: [...], end}
+    GET /api/runs/<run_id>/thumbnail            -> {task_id, input, output} (run picker thumbnails)
     GET /* (anything else)                      -> static files from frontend/dist, index.html for unknown paths
 """
 
@@ -21,6 +22,8 @@ import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from arc_env.task_loader import load_task
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_RUNS_DIR = REPO_ROOT / "runs"
@@ -69,6 +72,25 @@ def read_metrics(runs_dir: Path, run_id: str) -> list:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def read_run_thumbnail(runs_dir: Path, run_id: str) -> dict | None:
+    """The run's task's first train pair (input/output grids), for the run
+    picker's thumbnail - not episode data, so this works even for a run with
+    no episodes logged yet. `None` when the run has no `task_ids` (nothing to
+    show), which callers should turn into a 404, not a crash."""
+
+    meta = read_run_meta(runs_dir, run_id)
+    task_ids = meta.get("task_ids", [])
+    if not task_ids:
+        return None
+    task = load_task(task_ids[0])
+    pair = task.train[0]
+    return {
+        "task_id": task_ids[0],
+        "input": [list(row) for row in pair.input],
+        "output": [list(row) for row in pair.output],
+    }
 
 
 def list_episode_ids(runs_dir: Path, run_id: str) -> list:
@@ -144,6 +166,15 @@ def make_handler(runs_dir: Path):
                     if not (_safe_id(run_id) and _safe_id(episode_id)):
                         return self._error(HTTPStatus.BAD_REQUEST, "invalid id")
                     return self._json(read_episode(runs_dir, run_id, episode_id))
+
+                if parts[:2] == ["api", "runs"] and len(parts) == 4 and parts[3] == "thumbnail":
+                    run_id = parts[2]
+                    if not _safe_id(run_id):
+                        return self._error(HTTPStatus.BAD_REQUEST, "invalid run_id")
+                    thumbnail = read_run_thumbnail(runs_dir, run_id)
+                    if thumbnail is None:
+                        return self._error(HTTPStatus.NOT_FOUND, "run has no task_ids")
+                    return self._json(thumbnail)
 
                 if parts and parts[0] == "api":
                     return self._error(HTTPStatus.NOT_FOUND, "no such API route")

@@ -20,7 +20,29 @@
         font-size: 14px;
         padding: 4px 8px;
       }
-      #run-picker { display: flex; gap: 8px; align-items: center; }
+      #run-picker { position: relative; display: inline-block; }
+      .run-picker-toggle {
+        min-width: 220px; text-align: left;
+      }
+      .run-picker-panel {
+        position: absolute; top: 100%; left: 0; z-index: 10; margin-top: 4px;
+        max-height: 420px; overflow-y: auto; min-width: 280px;
+        background: #1a1a1a; border: 1px solid #444; border-radius: 4px;
+        padding: 4px;
+      }
+      .run-picker-group-label {
+        font-size: 0.8em; color: #888; padding: 6px 8px 2px; text-transform: uppercase;
+      }
+      .run-picker-card {
+        display: block; width: 100%; text-align: left; background: none; border: none;
+        color: #eee; padding: 6px 8px; border-radius: 4px; cursor: pointer;
+        font-family: inherit; font-size: 14px;
+      }
+      .run-picker-card:hover { background: #2a2a2a; }
+      .run-picker-card.selected { background: #333; outline: 1px solid #666; }
+      .run-picker-card-label { margin-bottom: 4px; }
+      .run-picker-thumb-row { display: flex; gap: 6px; }
+      .run-picker-thumb { border: 1px solid #444; image-rendering: pixelated; }
       #dashboard { display: flex; gap: 16px; }
       #dashboard canvas { border: 1px solid #444; }
       #players { display: flex; gap: 32px; flex-wrap: wrap; justify-content: center; }
@@ -34,9 +56,7 @@
   </head>
   <body>
     <h1>ARC-AGI Agent Replay</h1>
-    <div id="run-picker">
-      <label>Run: <select id="run-select"></select></label>
-    </div>
+    <div id="run-picker"></div>
 
     <section>
       <h2>Training dashboard</h2>

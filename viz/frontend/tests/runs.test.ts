@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { groupRunsByDate } from "../src/runs";
+import { groupRunsByDate, representativeRunIdByTaskId } from "../src/runs";
 import type { RunSummary } from "../src/api";
 
-function run(run_id: string, created_at: string, algo = "ppo"): RunSummary {
-  return { run_id, algo, created_at, task_ids: [] };
+function run(run_id: string, created_at: string, algo = "ppo", task_ids: string[] = []): RunSummary {
+  return { run_id, algo, created_at, task_ids };
 }
 
 describe("groupRunsByDate", () => {
@@ -53,5 +53,28 @@ describe("groupRunsByDate", () => {
     const groups = groupRunsByDate(runs);
     expect(groups.map((g) => g.date)).toEqual(["2026-09-03", "2026-09-02", "2026-09-01"]);
     expect(groups[2].runs.map((r) => r.run_id)).toEqual(["d1-b", "d1-a"]);
+  });
+});
+
+describe("representativeRunIdByTaskId", () => {
+  it("returns an empty map for no runs", () => {
+    expect(representativeRunIdByTaskId([]).size).toBe(0);
+  });
+
+  it("picks the first run seen for each task_id", () => {
+    const runs = [
+      run("adr0012-1cf80156-gp", "2026-09-04T15:55:57Z", "gp", ["1cf80156"]),
+      run("adr0012-1cf80156-ppo", "2026-09-04T15:53:52Z", "ppo", ["1cf80156"]),
+      run("adr0012-25ff71a9-gp", "2026-09-04T15:55:57Z", "gp", ["25ff71a9"]),
+    ];
+    const map = representativeRunIdByTaskId(runs);
+    expect(map.size).toBe(2);
+    expect(map.get("1cf80156")).toBe("adr0012-1cf80156-gp");
+    expect(map.get("25ff71a9")).toBe("adr0012-25ff71a9-gp");
+  });
+
+  it("omits runs with no task_ids", () => {
+    const runs = [run("no-tasks", "2026-09-04T15:53:52Z", "random", [])];
+    expect(representativeRunIdByTaskId(runs).size).toBe(0);
   });
 });

@@ -66,6 +66,23 @@ def test_list_episode_ids(sample_runs_dir):
     assert backend.list_episode_ids(sample_runs_dir, "run-a") == ["67a3c6ac-p0"]
 
 
+def test_read_run_thumbnail_loads_first_train_pair(sample_runs_dir):
+    thumbnail = backend.read_run_thumbnail(sample_runs_dir, "run-a")
+    assert thumbnail["task_id"] == "67a3c6ac"
+    assert thumbnail["input"] and thumbnail["output"]
+    assert isinstance(thumbnail["input"][0], list)
+
+
+def test_read_run_thumbnail_no_task_ids_is_none(tmp_path):
+    run_dir = tmp_path / "no-tasks"
+    run_dir.mkdir()
+    (run_dir / "run_meta.json").write_text(json.dumps({
+        "schema_version": 1, "run_id": "no-tasks", "algo": "random",
+        "created_at": "2026-08-27T00:00:00Z", "task_ids": [], "config": {},
+    }))
+    assert backend.read_run_thumbnail(tmp_path, "no-tasks") is None
+
+
 def test_read_episode_splits_start_steps_end(sample_runs_dir):
     episode = backend.read_episode(sample_runs_dir, "run-a", "67a3c6ac-p0")
     assert episode["start"]["task_id"] == "67a3c6ac"
@@ -106,6 +123,13 @@ def test_http_get_metrics_on_run_without_metrics_is_empty_list(running_server):
     status, body = _get_json(f"{running_server}/api/runs/run-a/metrics")
     assert status == 200
     assert body == []
+
+
+def test_http_get_thumbnail(running_server):
+    status, body = _get_json(f"{running_server}/api/runs/run-a/thumbnail")
+    assert status == 200
+    assert body["task_id"] == "67a3c6ac"
+    assert body["input"] and body["output"]
 
 
 def test_http_rejects_path_traversal_ids(running_server):
