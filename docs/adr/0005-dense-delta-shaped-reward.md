@@ -78,3 +78,38 @@ solver): see `tests/test_reward.py`'s shape-gradient tests for the
 delta/monotonicity/continuity properties, and `tests/test_train_gp.py` for
 end-to-end confirmation that a trainer solves `d10ecb37` within a bounded
 budget.
+
+## Amendment (2026-09-05): invalid-action penalty no longer stacks with step cost
+
+`compute_reward` used to apply `step_cost` unconditionally and then subtract
+`INVALID_ACTION_PENALTY` on top of it for an invalid action, so an invalid
+action actually cost `step_cost + INVALID_ACTION_PENALTY` (0.03) — strictly
+more than a safe, valid no-op like `identity`, which costs just `step_cost`
+(0.01). That extra stacking wasn't an intentional part of the design: the
+ADR's decision only ever specified one constant per-step penalty plus a
+separate invalid-action penalty, not that the two should compound. It
+mattered specifically for PPO, which scores every single step's credit
+assignment (unlike GP, which only scores a whole finished program's outcome)
+— the stacked cost pushed PPO to treat invalid actions as needlessly worse
+than they already are from having no similarity-delta upside, on top of the
+step cost every other action also pays.
+
+`compute_reward` now charges exactly one of the two constants per step:
+`STEP_COST` for a valid action (unchanged), or `INVALID_ACTION_PENALTY` in
+its place (not in addition) for an invalid one. A valid action that makes no
+progress still costs exactly `STEP_COST`, as before; an invalid action now
+costs exactly `INVALID_ACTION_PENALTY` (0.02) instead of 0.03. This only
+changes the constant-penalty term — the similarity delta and
+`TERMINAL_BONUS` are untouched, and both trainers still share the same
+`compute_reward` function, so the fix applies uniformly to PPO and GP.
+
+Checked whether `exact_match` can ever coincide with `valid_action=False`
+(`arc_env/env.py`'s `step()`): an invalid action always leaves the grid
+unchanged (`arc_env/actions.py`'s `execute()`), so `exact_match=True` on an
+invalid-action step is only reachable if the grid already matched the target
+*before* that step — which itself would have already terminated the episode
+on a prior step, except for the degenerate case of a train pair whose input
+already equals its output. In that edge case the penalty and
+`TERMINAL_BONUS` simply compose additively (`-INVALID_ACTION_PENALTY +
+TERMINAL_BONUS`), same as they always have — no special-casing needed; see
+`tests/test_reward.py`'s coverage of this composition.
