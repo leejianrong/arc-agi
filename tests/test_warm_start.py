@@ -14,6 +14,7 @@ from trainers.gp.evolve import GPConfig
 from trainers.gp.replay import program_to_episode_trace
 from trainers.ppo.network import ActorCritic
 from trainers.ppo.warm_start import load_demonstration, pretrain_from_demonstration
+from viz.backend.server import read_episode
 
 TASK_ID = "67a3c6ac"  # solved by a single vmirror - fast for GP, no `slow` marker needed
 
@@ -71,6 +72,46 @@ def test_load_demonstration_recovers_a_select_then_act_on_selection_program(tmp_
     assert len(demonstration) == 2
     assert demonstration[0]["primitive"] == select_idx
     assert demonstration[1]["primitive"] == commit_idx
+
+    # The bug this test also guards against: the observation the policy sees
+    # when predicting a step's action must carry the selection state going
+    # into that decision, not the state that step's own action produces.
+    # Step 0 (select_largest) runs with nothing selected yet - its input
+    # selection channel must be all zero.
+    assert demonstration[0]["grid"][1].sum() == 0
+    # Step 1 (commit_selection) runs with whatever select_largest just
+    # selected - its input selection channel must be non-empty and must
+    # match the env's own post-select-step selection state exactly.
+    episode = read_episode(run_dir.parent, run_dir.name, "best-program")
+    selected_after_select = episode["steps"][0]["selected"]
+    assert selected_after_select  # sanity: select_largest actually selected something
+    expected_mask = np.zeros((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8)
+    for i, j in selected_after_select:
+        expected_mask[i, j] = 1
+    assert np.array_equal(demonstration[1]["grid"][1], expected_mask)
+
+
+def test_load_demonstration_transform_only_program_has_no_selection(tmp_path):
+    """Regression check: a plain transform-only demonstration (no
+    select_*/act_on_selection actions) must be unaffected by the
+    previous-step-selection threading - the selection channel stays all
+    zero throughout, as before."""
+
+    # Two hmirrors, not one vmirror: 67a3c6ac is solved by a single vmirror
+    # (see TASK_ID's comment above), which would terminate the episode after
+    # step 1 and leave no second step for this test to exercise. hmirror
+    # applied twice returns to the original grid, which doesn't match the
+    # target, so the episode runs both steps without an early exact-match
+    # termination.
+    hmirror_idx = actions.ACTION_BY_NAME["hmirror"]
+    program = [(hmirror_idx, (0,) * actions.MAX_ARITY), (hmirror_idx, (0,) * actions.MAX_ARITY)]
+    run_dir = _write_demo_run(tmp_path, TASK_ID, program)
+
+    demonstration = load_demonstration(run_dir)
+
+    assert len(demonstration) == 2
+    for step in demonstration:
+        assert step["grid"][1].sum() == 0
 
 
 def test_load_demonstration_pads_the_grid_like_the_env_observation():
