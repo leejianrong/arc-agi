@@ -1,4 +1,4 @@
-.PHONY: help install test test-py test-py-slow test-ts rollout train viz build-frontend demo
+.PHONY: help install test test-py test-py-slow test-ts rollout train viz build-frontend demo prune-runs
 
 .DEFAULT_GOAL := help
 
@@ -17,6 +17,7 @@ help:
 	@echo "  viz             - build frontend + start the visualizer backend (http://127.0.0.1:$(PORT))"
 	@echo "                    override the port with: make viz PORT=8001"
 	@echo "  demo            - train + viz: one command to produce a run and open the visualizer on it"
+	@echo "  prune-runs      - dry-run report of stale runs/ dirs (add YES=1 to actually delete)"
 
 install:
 	uv sync --group dev
@@ -49,3 +50,8 @@ viz: build-frontend
 	uv run python -m viz.backend.server --port $(PORT)
 
 demo: train viz
+
+# runs/ is gitignored and nothing else ever cleans it up - defaults to a dry
+# run (scripts/prune_runs.py); `make prune-runs YES=1` actually deletes.
+prune-runs:
+	uv run python scripts/prune_runs.py $(if $(YES),--yes,)

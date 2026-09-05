@@ -67,6 +67,11 @@ Planning artifacts (read these before making architectural changes):
   one (`is_new_best_eval` in `train.py`).
 - `scripts/rollout_random.py` — random-policy rollout script (no training);
   writes `runs/<run_id>/` (gitignored, generated locally).
+- `scripts/prune_runs.py` — `runs/` accumulates fast (a full curated-task
+  pass alone is 50+ dirs) and nothing else cleans it up since it's
+  gitignored; `make prune-runs` (dry run) / `make prune-runs YES=1` (delete)
+  keeps only runs from the most recent `created_at` date(s) seen (see the
+  script's docstring for the exact rule).
 - `viz/backend/` — read-only local HTTP server exposing `runs/` as JSON,
   including `metrics.jsonl` (`server.py`); also serves `viz/frontend/dist`
   so one process runs the whole visualizer.
