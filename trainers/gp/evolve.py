@@ -19,6 +19,15 @@ class GPConfig:
     mutation_rate: float = 0.3
     elitism: int = 2
     seed: int = 0
+    # ADR-0014: how often (in generations) to snapshot the generation's best
+    # program for later replay - generation 0 and the final generation
+    # (whether that's an early stop on perfect fitness or n_generations - 1)
+    # are always snapshotted regardless of this interval. 10 is a middling
+    # default: ~11 snapshots for the 100-generation default config, each one
+    # extra `ArcEnv` rollout at replay time (cheap - programs are at most
+    # `max_program_length` steps) but still enough to see real evolution
+    # rather than every generation's near-identical neighbor.
+    snapshot_interval: int = 10
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -38,6 +47,14 @@ class GPResult:
     best_fitness: tuple
     history: list = field(default_factory=list)  # list[GenerationRecord]
     n_generations_run: int = 0
+    # ADR-0014: (generation, program) for each snapshotted generation's own
+    # best program, generation 0 first - lets a replay show evolution across
+    # the run instead of only the final `best_program`. Elitism guarantees
+    # each generation's own best fitness is non-decreasing run-over-run (the
+    # previous top `elitism` genomes always carry over unchanged and
+    # re-score identically, since fitness is deterministic), so this series
+    # is itself a monotonically-improving trace, not a noisy one.
+    snapshots: list = field(default_factory=list)  # list[tuple[int, Program]]
 
 
 def _tournament_select(scored: list, rng: random.Random, k: int) -> Program:
@@ -51,6 +68,8 @@ def run_gp(task: Task, config: GPConfig) -> GPResult:
 
     best_program, best_fitness = population[0], ZERO_FITNESS
     history = []
+    snapshots = []
+    snapshot_interval = max(1, config.snapshot_interval)
     generation = 0
 
     for generation in range(config.n_generations):
@@ -69,6 +88,10 @@ def run_gp(task: Task, config: GPConfig) -> GPResult:
             population_mean_fitness=mean_fitness,
         ))
 
+        is_final_generation = best_fitness[0] >= 1.0 or generation == config.n_generations - 1
+        if generation % snapshot_interval == 0 or is_final_generation:
+            snapshots.append((generation, gen_best_program))
+
         if best_fitness[0] >= 1.0:
             break
 
@@ -82,4 +105,7 @@ def run_gp(task: Task, config: GPConfig) -> GPResult:
             next_population.append(child)
         population = next_population
 
-    return GPResult(best_program=best_program, best_fitness=best_fitness, history=history, n_generations_run=generation + 1)
+    return GPResult(
+        best_program=best_program, best_fitness=best_fitness, history=history,
+        n_generations_run=generation + 1, snapshots=snapshots,
+    )

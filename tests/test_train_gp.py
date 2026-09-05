@@ -1,7 +1,8 @@
 """Integration test (SLICES.md V4): `train.py --algo gp`'s output - GP run
-metrics and the best-found program's execution trace - loads through
-`viz/backend/server.py`'s existing read functions with no GP-specific code
-(ADR-0006: same `runs/<run_id>/` shape V1-V3 already produce)."""
+metrics and, per ADR-0014, one execution trace per snapshotted generation
+plus the best-found program's own - loads through `viz/backend/server.py`'s
+existing read functions with no GP-specific code (ADR-0006: same
+`runs/<run_id>/` shape V1-V3 already produce)."""
 
 
 from arc_env.task_loader import load_task
@@ -30,8 +31,15 @@ def test_train_gp_end_to_end_produces_a_backend_readable_run(tmp_path):
     updates = [row["update"] for row in metrics]
     assert updates == sorted(updates)  # same monotonic-curve requirement as PPO's metrics
 
+    # ADR-0014: at least one generation snapshot alongside "best-program" -
+    # "best-program" sorts last (digit-prefixed snapshot names < the letter
+    # "b"), which is what lets main.ts's existing earliest/latest-episode
+    # panel defaults land on "earliest generation" vs. "the final best" here,
+    # the same way they already land on "earliest eval"/"latest eval" for PPO.
     episode_ids = backend.list_episode_ids(runs_dir, "gp-run")
-    assert episode_ids == ["best-program"]
+    assert len(episode_ids) > 1
+    assert episode_ids[-1] == "best-program"
+    assert episode_ids[0] != "best-program"
 
     episode = backend.read_episode(runs_dir, "gp-run", "best-program")
     assert episode["start"]["task_id"] == TASK_ID
