@@ -8,6 +8,16 @@ import type { EpisodeStep } from "./api";
  * `terminated` - this is what lets a viewer tell "the agent painted onto a
  * scratch canvas and committed a wrong crop" apart from "the agent solved
  * it", both of which otherwise show as the episode ending. */
+// e.g. {name: "recolor_selected", args: {color: 1}} -> "recolor_selected(color=1)"
+// - bare `select_largest` (empty args) is left unparenthesized, since most
+// curated actions take no args at all.
+function formatAction(action: EpisodeStep["action"]): string {
+  const name = action.name ?? "(invalid)";
+  const argEntries = Object.entries(action.args);
+  if (argEntries.length === 0) return name;
+  return `${name}(${argEntries.map(([k, v]) => `${k}=${v}`).join(", ")})`;
+}
+
 export function formatEpisodeStatus(
   step: EpisodeStep | null,
   currentIndex: number,
@@ -16,7 +26,7 @@ export function formatEpisodeStatus(
   const parts = [`step ${currentIndex} / ${frameCount - 1}`];
   if (!step) return parts.join(" | ");
 
-  parts.push(`action: ${step.action.name ?? "(invalid)"}`, `reward: ${step.reward.toFixed(2)}`);
+  parts.push(`action: ${formatAction(step.action)}`, `reward: ${step.reward.toFixed(2)}`);
 
   const exactMatch = step.exact_match ?? step.terminated;
   if (exactMatch) {

@@ -88,3 +88,16 @@ export function fetchEpisode(runId: string, episodeId: string): Promise<Episode>
 export function fetchMetrics(runId: string): Promise<MetricsRow[]> {
   return getJSON(`/api/runs/${encodeURIComponent(runId)}/metrics`);
 }
+
+// One run's representative task grids (first train pair), for the run
+// picker's thumbnail (Slice 3) - not episode data, so it's available even
+// for a run with no logged episodes.
+export interface RunThumbnail {
+  task_id: string;
+  input: Grid;
+  output: Grid;
+}
+
+export function fetchThumbnail(runId: string): Promise<RunThumbnail> {
+  return getJSON(`/api/runs/${encodeURIComponent(runId)}/thumbnail`);
+}

@@ -73,4 +73,14 @@ describe("formatEpisodeStatus", () => {
     expect(status).toContain("action: canvas");
     expect(status).toContain("reward: -0.01");
   });
+
+  it("includes action args, so e.g. which color was selected/recolored is visible", () => {
+    const s = step({ action: { name: "recolor_selected", args: { color: 2 } } });
+    expect(formatEpisodeStatus(s, 1, 3)).toContain("action: recolor_selected(color=2)");
+  });
+
+  it("leaves a no-arg action bare, unparenthesized", () => {
+    const s = step({ action: { name: "select_largest", args: {} } });
+    expect(formatEpisodeStatus(s, 1, 3)).toContain("action: select_largest ");
+  });
 });

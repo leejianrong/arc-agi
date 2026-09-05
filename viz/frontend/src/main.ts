@@ -3,9 +3,9 @@ import { fetchRuns, fetchEpisodeIds, fetchEpisode, fetchMetrics, type Episode } 
 import { EpisodePlayer } from "./player";
 import { computeLinePoints, drawLineChart } from "./dashboard";
 import { formatEpisodeStatus } from "./status";
-import { groupRunsByDate } from "./runs";
+import { RunPicker } from "./picker";
 
-const runSelect = document.getElementById("run-select") as HTMLSelectElement;
+const runPicker = new RunPicker(document.getElementById("run-picker")!, (runId) => void loadRun(runId));
 const rewardChart = document.getElementById("reward-chart") as HTMLCanvasElement;
 const successChart = document.getElementById("success-chart") as HTMLCanvasElement;
 
@@ -130,19 +130,7 @@ function renderDashboard(rows: Awaited<ReturnType<typeof fetchMetrics>>): void {
 
 async function loadRuns(): Promise<void> {
   const runs = await fetchRuns();
-  runSelect.innerHTML = "";
-  for (const group of groupRunsByDate(runs)) {
-    const optgroup = document.createElement("optgroup");
-    optgroup.label = group.date;
-    for (const run of group.runs) {
-      const opt = document.createElement("option");
-      opt.value = run.run_id;
-      opt.textContent = `${run.run_id} (${run.algo})`;
-      optgroup.appendChild(opt);
-    }
-    runSelect.appendChild(optgroup);
-  }
-  if (runs.length > 0) await loadRun(runSelect.options[0].value);
+  await runPicker.setRuns(runs);
 }
 
 async function loadRun(runId: string): Promise<void> {
@@ -154,7 +142,5 @@ async function loadRun(runId: string): Promise<void> {
   await panelA.setRun(runId, episodeIds, 0);
   await panelB.setRun(runId, episodeIds, episodeIds.length - 1);
 }
-
-runSelect.addEventListener("change", () => void loadRun(runSelect.value));
 
 void loadRuns();

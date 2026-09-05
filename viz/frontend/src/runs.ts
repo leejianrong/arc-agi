@@ -38,3 +38,21 @@ export function groupRunsByDate(runs: RunSummary[]): RunDateGroup[] {
 
   return dates.map((date) => ({ date, runs: byDate.get(date)! }));
 }
+
+/** For the run picker's thumbnails: several runs commonly share a task_id
+ * (e.g. an `<task>-gp`/`<task>-ppo` pair), and the thumbnail is the same
+ * grid pair regardless of which run shows it - so pick one "representative"
+ * run per task_id (first occurrence, in the given order) to actually fetch
+ * a thumbnail for, and let every other run sharing that task_id reuse it.
+ * Runs with no `task_ids` are simply absent from the returned map -
+ * callers render those cards without a thumbnail. */
+export function representativeRunIdByTaskId(runs: RunSummary[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const run of runs) {
+    const taskId = run.task_ids[0];
+    if (taskId && !map.has(taskId)) {
+      map.set(taskId, run.run_id);
+    }
+  }
+  return map;
+}
