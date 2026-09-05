@@ -58,6 +58,32 @@ PRIMITIVE_EMBED_DIM = 16
 # update (different rows of a batch can have different arities).
 ARITY_BY_PRIMITIVE = torch.tensor([a.arity for a in actions.ACTIONS], dtype=torch.long)
 
+# Which primitive indices are `kind="act_on_selection"` (ADR-0011/ADR-0012):
+# `commit_selection`, `delete_selected`, `recolor_selected`, `move_selected`,
+# `paint_selected_at`. `arc_env.actions.execute` makes every one of these an
+# unconditional no-op (`valid=False`) whenever nothing is currently selected
+# - see ADR-0008's amendment below for why the policy should never be able
+# to *sample* one of these with an empty selection, not just be penalized
+# for it after the fact.
+IS_ACT_ON_SELECTION = torch.tensor([a.kind == "act_on_selection" for a in actions.ACTIONS], dtype=torch.bool)
+
+
+def _mask_act_on_selection_logits(primitive_logits: torch.Tensor, obs: torch.Tensor) -> torch.Tensor:
+    """Sets `primitive_logits` to `-inf` at the 5 `act_on_selection` indices,
+    per batch row, wherever that row's observation has nothing selected
+    (`obs[:, 1, :, :]` - the ADR-0011 "currently selected" channel - is all
+    zero). Rows with a non-empty selection are left untouched, so all
+    `N_ACTIONS` primitives (including the 5 masked-when-empty ones) stay
+    sampleable there. Verified directly (see `tests/test_network.py`) that
+    `Categorical(logits=...)` treats `-inf` entries as exactly zero sampling
+    probability with well-defined, non-NaN entropy/log-prob for the
+    non-masked entries - the standard way to mask a categorical action
+    space."""
+
+    nothing_selected = obs[:, 1, :, :].reshape(obs.shape[0], -1).sum(dim=-1) == 0  # (B,)
+    mask = nothing_selected.unsqueeze(-1) & IS_ACT_ON_SELECTION.to(obs.device).unsqueeze(0)  # (B, N_ACTIONS)
+    return primitive_logits.masked_fill(mask, float("-inf"))
+
 
 class ResidualBlock(nn.Module):
     def __init__(self, channels: int):
@@ -141,6 +167,7 @@ class ActorCritic(nn.Module):
         value = self.value_head(pooled).squeeze(-1)
 
         primitive_logits = self.primitive_head(pooled)
+        primitive_logits = _mask_act_on_selection_logits(primitive_logits, grid)
         primitive_dist = Categorical(logits=primitive_logits)
 
         if action is None:
@@ -175,7 +202,8 @@ class ActorCritic(nn.Module):
         sampling, for eval-episode replay (not training)."""
 
         pooled = self._encode(grid)
-        primitive = torch.argmax(self.primitive_head(pooled), dim=-1)
+        primitive_logits = _mask_act_on_selection_logits(self.primitive_head(pooled), grid)
+        primitive = torch.argmax(primitive_logits, dim=-1)
         primitive_ctx = self.primitive_embed(primitive)
         arg_context = torch.cat([pooled, primitive_ctx], dim=-1)
         args = torch.stack([torch.argmax(head(arg_context), dim=-1) for head in self.arg_heads], dim=-1)

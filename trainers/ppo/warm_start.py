@@ -37,26 +37,30 @@ _DECODE_INVERSE = {
 }
 
 
-def _pad_grid(grid: list) -> np.ndarray:
+def _pad_grid(grid: list, selected=None) -> np.ndarray:
     """Matches `ArcEnv`'s 2-channel observation (ADR-0011): channel 0 the
-    padded grid, channel 1 the "currently selected" mask. Logged episode
-    steps only carry `grid_before`/`grid_after` (ADR-0006's schema), not the
-    env's internal selection state, so the selection channel is always zero
-    here - a demonstration that used `select_largest`/`select_smallest`/
-    `commit_selection` (ADR-0011) is still cloned faithfully action-by-
-    action, but the policy is trained as if nothing were ever selected,
-    which is wrong for whichever steps followed a real selection. No
-    curated task's solver sequence uses those actions together with
-    `--warm_start_from` yet, so this is a known, currently-inert gap, not a
-    silently wrong result in practice - revisit (e.g. by logging the
-    selection mask per step, or replaying the raw GP program instead of the
-    JSONL trace) before warm-starting off a selection-using demonstration."""
+    padded grid, channel 1 the "currently selected" mask. `selected` is the
+    `[[row, col], ...]`-or-`None` selection state to render into that
+    channel - `arc_env.episode_log`'s `"selected"` shape (`ArcEnv.
+    get_selected()`'s own return shape). The mask logic below mirrors
+    `arc_env.env`'s private `_selected_mask` exactly (0 everywhere when
+    nothing is selected, 1 at each `(row, col)` in the selection list
+    otherwise) - duplicated locally rather than imported, matching this
+    module's existing convention of duplicating `arc_env.env`'s private
+    `_pad_grid` instead of importing across modules.
+
+    Callers must pass the selection state as it was *before* the step being
+    encoded ran, not this step's own post-step `"selected"` value - see
+    `load_demonstration`, which threads that shift through the step loop."""
 
     padded = np.full((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), PAD_VALUE, dtype=np.int8)
     for i, row in enumerate(grid):
         for j, v in enumerate(row):
             padded[i, j] = v
     selected_mask = np.zeros((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8)
+    if selected:
+        for i, j in selected:
+            selected_mask[i, j] = 1
     return np.stack([padded, selected_mask])
 
 
@@ -75,17 +79,28 @@ def load_demonstration(gp_run_dir: Path, episode_id: str = "best-program") -> li
     "arg{MAX_ARITY}": int}` - ready to batch into tensors for
     `pretrain_from_demonstration`. Every logged step is included (even ones
     with `valid_action=False`), matching ADR-0009's "clone the demonstrated
-    action" with no fitness-quality or validity gate."""
+    action" with no fitness-quality or validity gate.
+
+    Each step's selection channel (ADR-0011) is reconstructed from the
+    *previous* step's logged `"selected"` field, not that step's own -
+    `arc_env.episode_log.EpisodeWriter.step`'s `"selected"` is the
+    post-step selection state, but the observation the policy sees when
+    predicting a step's action is the selection state going into that
+    decision, i.e. the prior step's outcome. The first step's input
+    selection is always empty (`ArcEnv.reset` starts with
+    `self._selected = None`)."""
 
     episode = backend.read_episode(Path(gp_run_dir).parent, Path(gp_run_dir).name, episode_id)
     demonstration = []
+    selected_before = None  # episodes always start with nothing selected
     for step in episode["steps"]:
         primitive_index, raw_args = _encode_action(step["action"]["name"], step["action"]["args"])
         demonstration.append({
-            "grid": _pad_grid(step["grid_before"]),
+            "grid": _pad_grid(step["grid_before"], selected_before),
             "primitive": primitive_index,
             **{f"arg{i + 1}": raw_args[i] for i in range(MAX_ARITY)},
         })
+        selected_before = step["selected"]
     return demonstration
 
 
