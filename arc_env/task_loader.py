@@ -45,6 +45,27 @@ doesn't model episode termination) while being unreachable by any trainer.
 See ADR-0013's Consequences for the full writeup and why fixing this would
 need a new fused act-on-selection primitive, out of scope for this pass.
 
+ADR-0015 (2026-09-06) is that fused-primitive follow-up, generalized: adds
+`crop_to_selection` (same crop as `commit_selection`, but doesn't end the
+episode - see `arc_env/actions.py`) and a new `objects(...)` connectivity
+variant (`select_largest_multicolor`, `univalued=False`). This lands
+`1c786137` as originally scoped, plus 5 more tasks the same 2026-09-05 F11
+coverage audit flagged under `first`/`ofcolor`: `a79310a0` needs **no new
+primitive at all** (`select_largest_no_diag` + `move_selected` +
+`replace` - the audit's crude primitive-name check missed that this
+solver's `first(objects(...))`/`move` map onto already-curated actions);
+`28bf18c6`/`f25fbde4` reuse the existing `(True, True, True)` triple
+(`select_largest`) with `crop_to_selection` then `hconcat_self`/`upscale`;
+`2013d3e2`/`7468f01a` need the new `(False, True, True)` triple
+(`select_largest_multicolor`) with `crop_to_selection` then
+`lefthalf`+`tophalf`/`vmirror`. `a79310a0` is same-shape, the other 5 are
+variable-shape: 15 same-shape + 21 variable-shape = 36 total. Notably, none
+of the 5 `ofcolor`-flagged tasks the same audit pass surfaced
+turned out to be this simple - see ADR-0015 for why (mostly: they need
+*multiple* simultaneous selections, or a selection that survives an
+intervening ordinary transform, neither of which this pass's single-
+selection-slot mechanism supports).
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -206,6 +227,26 @@ CURATED_TASK_IDS = {
     # rather than ADR-0011/0012's curated `diagonal=True`). Solver:
     # `subgrid(argmax(objects(I,T,F,T), size), I)`.
     "be94b721": [("select_largest_no_diag", ()), ("commit_selection", ())],
+    # ADR-0015: `crop_to_selection` (non-terminal crop) + a new
+    # `select_largest_multicolor` connectivity variant. Solvers:
+    # `trim(subgrid(argmax(objects(I,T,F,F), height), I))`;
+    # `move(I, first(objects(I,T,F,T)), DOWN)` then `replace(EIGHT, TWO)`
+    # (no new primitive - `first` is trivially `select_largest_no_diag` on
+    # this task's lone object); `tophalf(lefthalf(subgrid(first(objects(I,
+    # F,T,T)), I)))`; `hconcat(x, x)` where `x = subgrid(first(objects(I,T,
+    # T,T)), I)`; `vmirror(subgrid(first(objects(I,F,T,T)), I))`;
+    # `upscale(subgrid(first(objects(I,T,T,T)), I), TWO)`.
+    "1c786137": [("select_tallest", ()), ("crop_to_selection", ()), ("trim", ())],
+    "a79310a0": [("select_largest_no_diag", ()), ("move_selected", (0,)), ("replace", (8, 2))],
+    "2013d3e2": [
+        ("select_largest_multicolor", ()),
+        ("crop_to_selection", ()),
+        ("lefthalf", ()),
+        ("tophalf", ()),
+    ],
+    "28bf18c6": [("select_largest", ()), ("crop_to_selection", ()), ("hconcat_self", ())],
+    "7468f01a": [("select_largest_multicolor", ()), ("crop_to_selection", ()), ("vmirror", ())],
+    "f25fbde4": [("select_largest", ()), ("crop_to_selection", ()), ("upscale", (2,))],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -215,6 +256,7 @@ VARIABLE_SHAPE_TASK_IDS = {
     "d10ecb37", "c59eb873", "9172f3a0", "5614dbcf", "46f33fce",
     "a416b8f3", "6d0aefbc", "c9e6f938", "4c4377d9", "6fa7a44f", "8be77c9e", "5bd6f4ac",
     "1f85a75f", "23b5c85d", "1cf80156", "be94b721",
+    "1c786137", "2013d3e2", "28bf18c6", "7468f01a", "f25fbde4",
 }
 
 

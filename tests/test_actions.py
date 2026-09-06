@@ -198,6 +198,27 @@ class TestExecuteSelectionThreading:
         assert valid
         assert selected_after is None
 
+    def test_crop_to_selection_is_invalid_with_no_current_selection(self):
+        # ADR-0015: same "act_on_selection" invalidity rule as commit_selection.
+        idx = actions.ACTION_BY_NAME["crop_to_selection"]
+        new_grid, new_selected, _decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        assert not valid
+        assert new_grid == OBJECTS_GRID
+        assert new_selected is None
+
+    def test_crop_to_selection_preserves_the_selection_unlike_an_ordinary_transform(self):
+        # ADR-0015: `act_on_selection` actions don't clear the selection
+        # (only a successful ordinary "transform" does) - a further
+        # act_on_selection or the original selection stays usable afterward.
+        select_idx = actions.ACTION_BY_NAME["select_smallest"]
+        crop_idx = actions.ACTION_BY_NAME["crop_to_selection"]
+        grid, selected, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        assert valid
+        grid, selected_after, _, valid = actions.execute(crop_idx, (0,) * actions.MAX_ARITY, grid, selected)
+        assert valid
+        assert grid == ((3,),)
+        assert selected_after == selected
+
     def test_a_failed_ordinary_transform_leaves_the_selection_untouched(self):
         select_idx = actions.ACTION_BY_NAME["select_largest"]
         fill_cell_idx = actions.ACTION_BY_NAME["fill_cell"]
@@ -347,3 +368,36 @@ def test_select_no_diag_variants_return_empty_for_a_zero_size_grid_edge_case():
     blank = ((0, 0), (0, 0))
     action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest_no_diag"]]
     assert action.fn(blank) == frozenset()
+
+
+# ADR-0015: `select_largest_multicolor` (`univalued=False`) merges edge-
+# adjacent cells into one object regardless of color - colors 2 and 3 here
+# are adjacent, so `univalued=True` (`select_largest`) would split them into
+# two separate 1-cell objects, while `univalued=False` merges them into one
+# 2-cell object.
+MULTICOLOR_GRID = (
+    (0, 0, 0, 0),
+    (0, 2, 3, 0),
+    (0, 0, 0, 0),
+)
+
+
+def test_select_largest_multicolor_merges_adjacent_different_colored_cells():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest_multicolor"]]
+    selected = action.fn(MULTICOLOR_GRID)
+    assert selected == frozenset({(1, 1), (1, 2)})
+
+
+def test_select_largest_multicolor_returns_empty_for_a_grid_with_no_objects():
+    blank = ((0, 0), (0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest_multicolor"]]
+    assert action.fn(blank) == frozenset()
+
+
+# ADR-0015: `crop_to_selection` wraps the identical `dsl.subgrid` call
+# `commit_selection` does - same crop, different action name (see that
+# ADR and `tests/test_env.py`'s termination test for why the name matters).
+def test_crop_to_selection_crops_to_the_selected_patchs_bounding_box():
+    selected = frozenset({(1, 1), (2, 1)})
+    result = actions.ACTIONS[actions.ACTION_BY_NAME["crop_to_selection"]].fn(OBJECTS_GRID, selected)
+    assert result == ((2,), (2,))
