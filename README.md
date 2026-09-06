@@ -71,6 +71,8 @@ The one holdout, `5614dbcf`, isn't a recurrence of the identity-trap: its GP sol
 
 The 4 tasks GP itself can't fully solve (`46f33fce`, `5bd6f4ac`, `d10ecb37`, `ea32f347`) were out of scope for this pass (no GP demonstration to warm-start from, and none of the three fixes touch GP's search landscape) and were not re-tested - their KAN-1183 numbers below are carried forward, not reconfirmed.
 
+**Multi-seed caveat (2026-09-06, KAN-1189):** every GP percentage in this section and the two collapsed tables below comes from a single seed (`--seed 0`, implicitly). A 5-seed sweep across all 40 curated tasks (`docs/PLAN.md`'s Open risks, KAN-1189 subsection) found most tasks fully seed-stable, but 4 tasks land on genuinely different outcomes depending on seed, and 2 more (`a9f96cdd`, `d364b489`, not yet in either table below) turned out to be uniform total failures despite not previously being run through a full pass. Most notably, `0d3d703e` - listed as GP 100% here and the demonstration source for its own KAN-1239 warm-start rescue - is only 2/5 at today's standard config; see that subsection for why (partly ordinary GP variance, partly the curated action space itself having grown since this pass ran). `46f33fce` and `d10ecb37`, this repo's own original motivating examples for checking seed variance at all, are also covered there in more detail than the single numbers below.
+
 <details>
 <summary>Full per-task table, KAN-1183 baseline vs. KAN-1239 fix-and-validate pass</summary>
 
