@@ -52,7 +52,67 @@ PPO and GP both solve the easy end of the task set reliably and fast: single-act
 
 Scaling past the original 16-task set needed a real decision first, not just more compute (`docs/adr/0010-task-coverage-scaling.md`): over half of the 400 training tasks need the higher-order primitives this action space deliberately excludes, and most of the rest need selecting or manipulating a specific object. That fast-follow is now fully landed: ADR-0011 (2026-08-31) proved the object-selection mechanism end-to-end with a minimal 3-action menu, ADR-0012 (2026-09-04) filled in the rest (`select_by_color`, `select_unique_color`, `delete_selected`, `recolor_selected`, `move_selected`, `paint_selected_at`), and ADR-0013 (2026-09-05) added two more `objects(...)` connectivity variants (`select_largest_no_diag`, `select_tallest`) - 16 → 24 → 26 → 29 → 30 curated tasks across the four passes.
 
-**A full 30-task training pass (2026-09-05, one PPO run + one GP run per task, both `--seed 0`, KAN-1183) supersedes the earlier 26-task pass below as the current, comprehensive read on where the two trainers stand** (config: GP `--max_steps 25 --population_size 200 --n_generations 100 --max_program_length 6 --tournament_size 3 --crossover_rate 0.7 --mutation_rate 0.3 --elitism 2`; PPO `--n_updates 25 --rollout_steps 128 --eval_every 5 --re_arc_prob 0.5 --max_steps 25`, no warm-start):
+**A fix-and-validate pass (2026-09-06, KAN-1239) supersedes KAN-1183's PPO numbers below with a root-caused fix, not just more training budget.** PPO's persistent zero-`eval_success` tasks turned out to share one mechanism: from most start states, every single-step reward looked worse than or tied with `identity` - an invalid action's penalty stacked with the per-step cost (-0.03, worse than it needed to be relative to a safe no-op), the 5 `act_on_selection` primitives (`commit_selection`, `delete_selected`, `recolor_selected`, `move_selected`, `paint_selected_at`) were always-invalid whenever nothing was selected yet still sampleable (teaching PPO's per-step credit assignment to avoid that whole action region, including the states where they're the *correct* next move), and a successful `select_*` action tied `identity` in reward since neither changes the grid - so nothing ever pulled the policy toward discovering a `select_*` → `act_on_selection` pairing at all. GP never hits this, since it only ever scores a whole finished program, not individual steps.
+
+Three fixes landed on `main` to address this:
+1. **De-stack the invalid-action penalty from the step cost** (`arc_env/reward.py`, ADR-0005 amendment) - an invalid action now costs exactly `INVALID_ACTION_PENALTY` (0.02), not `step_cost + INVALID_ACTION_PENALTY` (0.03).
+2. **Fix a real bug in `trainers/ppo/warm_start.py`** (ADR-0009 addendum) - the demonstration-loading code always encoded a zero selection channel regardless of what was actually selected at each logged step, silently undermining every selection-based warm-start demonstration (including the ones KAN-1176/KAN-1190 warm-started on) since the mechanism first landed.
+3. **Mask the 5 `act_on_selection` primitives out of the policy's sampled distribution** whenever nothing is currently selected (`trainers/ppo/network.py`, ADR-0008 amendment) - turns "always worse than a no-op, so credit assignment teaches avoidance" into "literally unsampleable," landed on top of fix 2 since masking without the channel fix would NaN warm-start's pretrain loss on any selection-using demonstration.
+
+Re-validated against a fresh 26-task pass (the 14 target tasks that were 0% `eval_success` at the KAN-1183 baseline, plus all 12 KAN-1183-passing tasks as regression canaries; same standard config as KAN-1183, both plain and warm-started for the 14 target tasks):
+
+| | Before (KAN-1183) | After (KAN-1239) |
+|---|---|---|
+| Target-14 tasks solved | 0/14 (0%) | **13/14 (93%)** - 6 via plain PPO alone, 7 more rescued by the now-fixed warm-start |
+| Canary-12 tasks still passing | 12/12 | **12/12 - zero regressions** |
+| Estimated PPO solve rate, full 30-task set | 12/30 (40%) | **~25/30 (83%)** |
+
+The one holdout, `5614dbcf`, isn't a recurrence of the identity-trap: its GP solution is `select_smallest` → `move_selected` → `downscale(factor=3)`, and the selection half already works fine post-fix - the remaining difficulty is picking the exact `downscale` factor (1 of 3 choices) *after* the selection sequence, a plain argument-precision problem, consistent with this repo's existing finding that argument-pinning precision (not selection-or-not) predicts PPO instability. Its warm-start behavior-cloning loss (1.21) was also the highest in this pass, further suggesting a harder-to-fit demonstration rather than a masking/reward gap. Given the strength of this result, two more speculative fixes considered alongside these three (a small reward bonus for a successful `select_*` action; raising `entropy_coef` early) were not pursued - they were hedges against the three landed fixes not being enough, and they were enough, so adding more reward-shape surface area now would risk this pass's clean zero-regression record for uncertain gain on one already-understood outlier.
+
+The 4 tasks GP itself can't fully solve (`46f33fce`, `5bd6f4ac`, `d10ecb37`, `ea32f347`) were out of scope for this pass (no GP demonstration to warm-start from, and none of the three fixes touch GP's search landscape) and were not re-tested - their KAN-1183 numbers below are carried forward, not reconfirmed.
+
+<details>
+<summary>Full per-task table, KAN-1183 baseline vs. KAN-1239 fix-and-validate pass</summary>
+
+| Task | GP | PPO (KAN-1183, pre-fix) | PPO (KAN-1239, plain) | PPO (KAN-1239, warm-started) |
+|---|---|---|---|---|
+| `0d3d703e` | 100% | no | no | **yes** |
+| `1cf80156` | 100% | yes | yes | n/a (canary) |
+| `1f85a75f` | 100% | no | **yes** | yes |
+| `23b5c85d` | 100% | no | **yes** | yes |
+| `25ff71a9` | 100% | no | no | **yes** |
+| `3c9b0459` | 100% | yes | yes | n/a (canary) |
+| `46f33fce` | 33% | no | untested this pass | n/a |
+| `4c4377d9` | 100% | yes | yes | n/a (canary) |
+| `5614dbcf` | 100% | no | no | no (still unsolved, see above) |
+| `5bd6f4ac` | 0% | no | untested this pass | n/a |
+| `6150a2bd` | 100% | yes | yes | n/a (canary) |
+| `67a3c6ac` | 100% | yes | yes | n/a (canary) |
+| `68b16354` | 100% | yes | yes | n/a (canary) |
+| `6d0aefbc` | 100% | yes | yes | n/a (canary) |
+| `6fa7a44f` | 100% | yes | yes | n/a (canary) |
+| `74dd1130` | 100% | yes | yes | n/a (canary) |
+| `8be77c9e` | 100% | no | **yes** | yes |
+| `9172f3a0` | 100% | no | no | **yes** |
+| `9dfd6313` | 100% | yes | yes | n/a (canary) |
+| `a416b8f3` | 100% | no | **yes** | yes |
+| `b1948b0a` | 100% | no | no | **yes** |
+| `be94b721` | 100% | no | **yes** | yes |
+| `c59eb873` | 100% | no | **yes** | yes |
+| `c8f0f002` | 100% | no | no | **yes** |
+| `c9e6f938` | 100% | yes | yes | n/a (canary) |
+| `d10ecb37` | 67% | no | untested this pass | n/a |
+| `d511f180` | 100% | no | no | **yes** |
+| `ea32f347` | 0% | no | untested this pass | n/a |
+| `ed36ccf7` | 100% | yes | yes | n/a (canary) |
+| `f25ffba3` | 100% | no | no | **yes** |
+
+</details>
+
+<details>
+<summary>Full 30-task training pass (2026-09-05, KAN-1183), kept for history - its PPO numbers are superseded by KAN-1239 above for the 26 re-tested tasks</summary>
+
+(config: GP `--max_steps 25 --population_size 200 --n_generations 100 --max_program_length 6 --tournament_size 3 --crossover_rate 0.7 --mutation_rate 0.3 --elitism 2`; PPO `--n_updates 25 --rollout_steps 128 --eval_every 5 --re_arc_prob 0.5 --max_steps 25`, no warm-start):
 
 | Trainer | Fully solved | Notes |
 |---|---|---|
@@ -95,6 +155,8 @@ Per-task detail (GP's `success_rate` is the fraction of that task's training pai
 | `f25ffba3` | 100% | no | 0% |
 
 The gap that stands out is still the same shape as before, just with different specific tasks now that `success_rate` is no longer the metric of record: PPO's 18 `eval_success`-failing tasks include both of ADR-0011's original object-selection tasks (`1f85a75f`, `23b5c85d`) - still unsolved by plain, non-warm-started PPO in this pass, consistent with the open finding below - plus most of ADR-0012's newer selection/canvas tasks and `be94b721` (ADR-0013). One nuance this pass surfaces that the 26-task pass didn't: `1f85a75f` and `23b5c85d` are no longer *flat* 0% - their rollout `success_rate` is 67% and 28% respectively - but neither clears the `eval_success` bar, so by KAN-1177's stricter standard they're still unsolved, just with more visible partial progress along the way. **Learning to use newly-added actions within a short training budget remains PPO's open problem, not raw task difficulty** - GP fully solves 14 of PPO's 18 `eval_success` failures (the other 4 - `46f33fce`, `5bd6f4ac`, `d10ecb37`, `ea32f347` - are also GP's own partial/total failures above, so there's no GP demonstration to warm-start from on those). That 14-task gap is exactly what the existing opt-in GP-to-PPO warm-start (ADR-0009) targets; see `docs/PLAN.md`'s Open risks for that experiment's mixed results.
+
+</details>
 
 <details>
 <summary>Earlier 26-task pass (2026-08-31), kept for history</summary>
