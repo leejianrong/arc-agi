@@ -133,6 +133,27 @@ def test_invalid_commit_is_a_noop_and_does_not_end_the_episode():
     assert env.get_grid() == grid_before
 
 
+def test_crop_to_selection_crops_without_ending_the_episode_unlike_commit_selection():
+    """ADR-0015: `crop_to_selection` is the same `dsl.subgrid` crop
+    `commit_selection` already does, but under a different action name so
+    `ArcEnv`'s `action_name in ("commit", "commit_selection")` termination
+    check doesn't fire - letting a further transform run on the cropped
+    result. `28bf18c6`'s solver (`hconcat(x, x)` where `x =
+    subgrid(first(objects(I,T,T,T)), I)`) needs exactly that."""
+    env = ArcEnv()
+    task = load_task("28bf18c6")
+    env.reset(task_id="28bf18c6", pair_index=0, task=task)
+    env.step(action("select_largest"))
+    _, _reward, terminated, _truncated, info = env.step(action("crop_to_selection"))
+    assert info["valid_action"] is True
+    assert terminated is False  # unlike commit_selection, which would end it here
+    _, _reward, terminated, _truncated, info = env.step(action("hconcat_self"))
+    assert info["valid_action"] is True
+    assert terminated is True
+    assert info["exact_match"] is True
+    assert env.get_grid() == task.train[0].output
+
+
 def test_canvas_replaces_the_grid_without_ending_the_episode():
     env = ArcEnv()
     env.reset(task_id="67a3c6ac", pair_index=0)

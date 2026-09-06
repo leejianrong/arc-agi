@@ -91,6 +91,22 @@ expected output - see ADR-0013's Consequences. `select_tallest` is still
 curated (verified by direct unit test, same bar as `select_by_color`/
 `select_unique_color` above) since it's a correct, useful selector in its
 own right, independent of that one fixture task being out of reach.
+
+ADR-0015 supersedes that last call on `1c786137`: adds `crop_to_selection`
+(`dsl.subgrid(selected, grid)`, the identical function `commit_selection`
+already wraps) as a second, non-terminal act-on-selection primitive.
+`arc_env/env.py`'s and `trainers/gp/fitness.py`'s episode-termination checks
+both key off the literal action *name* (`action_name in ("commit",
+"commit_selection")`), so a differently-named action doing the same crop
+simply isn't in that set and the episode carries on normally afterward -
+letting an ordinary transform run on the cropped result, which is exactly
+what `1c786137`'s `trim` (and several other tasks' post-crop transforms)
+needed. This generalizes past `1c786137`: `select -> crop_to_selection ->
+<ordinary transform(s)>` also lands `28bf18c6`/`f25fbde4` (the already-
+curated `(True, True, True)` triple) and `2013d3e2`/`7468f01a` (a new
+`(False, True, True)` triple, added here as `select_largest_multicolor`).
+See ADR-0015 for the full audit, including why most of the same pass's
+`ofcolor`-flagged near-miss tasks did *not* turn out to be this simple.
 """
 
 from collections import Counter
@@ -231,6 +247,15 @@ def _commit_selection(grid: Grid, selected) -> Grid:
     return dsl.subgrid(selected, grid)
 
 
+# ADR-0015: identical crop to `_commit_selection`, but registered under a
+# different action name so `arc_env/env.py`'s and `trainers/gp/fitness.py`'s
+# `action_name in ("commit", "commit_selection")` termination checks don't
+# match it - the episode continues past the crop, letting a further
+# ordinary transform run on the cropped result. See module docstring.
+def _crop_to_selection(grid: Grid, selected) -> Grid:
+    return dsl.subgrid(selected, grid)
+
+
 # ADR-0013: additional `dsl.objects(...)` connectivity variants, beyond the
 # one (univalued=True, diagonal=True, without_bg=True) triple ADR-0011/0012
 # curate above - each a straightforward additional `"select"` action using a
@@ -253,6 +278,21 @@ def _objects_no_diag_with_bg(grid: Grid):
 def _select_tallest(grid: Grid):
     objs = _objects_no_diag_with_bg(grid)
     return dsl.toindices(dsl.argmax(objs, dsl.height)) if objs else frozenset()
+
+
+# ADR-0015: one more `objects(...)` connectivity variant - `univalued=False`
+# (an object may span multiple colors, unlike every other curated variant
+# above), `diagonal=True`, `without_bg=True`. `argmax` by `size` is the same
+# compare function `select_largest` already uses; both fixture tasks this
+# unlocks (`2013d3e2`, `7468f01a`) have exactly one such object per grid, so
+# the compare function never actually has to break a tie.
+def _objects_multicolor(grid: Grid):
+    return dsl.objects(grid, False, True, True)
+
+
+def _select_largest_multicolor(grid: Grid):
+    objs = _objects_multicolor(grid)
+    return dsl.toindices(dsl.argmax(objs, dsl.size)) if objs else frozenset()
 
 
 # ADR-0012: the rest of ADR-0011's deferred menu. Unlike Slice 1's selectors,
@@ -365,9 +405,17 @@ SELECT = [
     # instead, same bar `select_by_color`/`select_unique_color` were held to.
     Action("select_largest_no_diag", _select_largest_no_diag, kind="select"),
     Action("select_tallest", _select_tallest, kind="select"),
+    # ADR-0015: a fourth `objects(...)` connectivity variant - the first
+    # `univalued=False` one curated (see `_select_largest_multicolor`'s own
+    # docstring above).
+    Action("select_largest_multicolor", _select_largest_multicolor, kind="select"),
 ]
 ACT_ON_SELECTION = [
     Action("commit_selection", _commit_selection, kind="act_on_selection"),
+    # ADR-0015: same crop as `commit_selection`, but doesn't end the episode
+    # - see `_crop_to_selection`'s own docstring above and the module
+    # docstring.
+    Action("crop_to_selection", _crop_to_selection, kind="act_on_selection"),
     # ADR-0012: `recolor_selected` and `move_selected` each have a verified
     # curated fixture task (`ea32f347`, `25ff71a9`); `delete_selected` and
     # `paint_selected_at` don't (same audit-negative-result caveat as
