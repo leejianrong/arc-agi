@@ -186,7 +186,7 @@ def test_check_warm_start_compatible_rejects_a_non_gp_run(tmp_path):
 
     error = check_warm_start_compatible(TASK_ID, run_dir)
     assert error is not None
-    assert "not a GP run" in error
+    assert "not a warm-start-compatible run" in error
 
 
 def test_check_warm_start_compatible_rejects_a_different_task(tmp_path):
@@ -200,3 +200,27 @@ def test_check_warm_start_compatible_rejects_a_different_task(tmp_path):
 def test_check_warm_start_compatible_accepts_a_matching_gp_run(tmp_path):
     run_dir = _gp_run(tmp_path)
     assert check_warm_start_compatible(TASK_ID, run_dir) is None
+
+
+def test_check_warm_start_compatible_accepts_a_matching_llm_seed_run(tmp_path):
+    """ADR-0018: `--warm_start_from` also accepts `algo="llm-seed"` runs
+    (`scripts/llm_seed_search.py`'s `write_seed_episode`), not just `"gp"` -
+    the check's real requirement is "a same-task demonstration episode
+    exists", not "produced by the GP trainer specifically"."""
+
+    run_dir = tmp_path / "llm-seed-run"
+    write_run_meta(run_dir, RunMeta(run_id="llm-seed-run", algo="llm-seed", task_ids=[TASK_ID], config={}))
+    assert check_warm_start_compatible(TASK_ID, run_dir) is None
+
+
+def test_check_warm_start_compatible_still_rejects_a_human_run(tmp_path):
+    """The allowlist is deliberately narrow (ADR-0018) - `algo="human"`
+    (`viz/backend/play.py`, ADR-0017) is a real demonstration-shaped run
+    too, but wiring it into `--warm_start_from` is an explicit future
+    decision, not an accidental side effect of broadening this check."""
+
+    run_dir = tmp_path / "human-run"
+    write_run_meta(run_dir, RunMeta(run_id="human-run", algo="human", task_ids=[TASK_ID], config={}))
+    error = check_warm_start_compatible(TASK_ID, run_dir)
+    assert error is not None
+    assert "not a warm-start-compatible run" in error

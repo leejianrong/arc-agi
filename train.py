@@ -96,17 +96,37 @@ def load_checkpoint(path: Path, network: ActorCritic, optimizer: torch.optim.Opt
     return checkpoint["update"]
 
 
+# ADR-0018: which `run_meta.json` `algo` values `--warm_start_from` accepts.
+# `check_warm_start_compatible`'s real requirement (per ADR-0009) is "does
+# this run dir hold a same-task best-program-shaped demonstration episode",
+# not "was it literally produced by the GP trainer" - "gp" was simply the
+# only producer that existed when ADR-0009 landed. `"llm-seed"` (F12's
+# LLM-seeded-search refinement, `docs/QUESTIONS.md`) is a second, equally
+# valid demonstration source: an LLM-proposed action sequence, verified
+# against the task's train/test pairs and written out through the same
+# `EpisodeWriter`/`write_run_meta` schema `train_gp` uses. A small explicit
+# allowlist (not simply removing the check) keeps out anything that isn't a
+# deliberately-produced demonstration run (e.g. a plain PPO run, or "human"
+# from `viz/backend/play.py`'s ADR-0017 write path - not wired up here, a
+# separate future decision, not this one).
+WARM_START_COMPATIBLE_ALGOS = {"gp", "llm-seed"}
+
+
 def check_warm_start_compatible(task_id: str, warm_start_from: Path) -> str | None:
-    """Returns an error message if `warm_start_from` isn't a GP run for
-    `task_id` (ADR-0009's same-task-only constraint), else `None`."""
+    """Returns an error message if `warm_start_from` isn't a
+    `WARM_START_COMPATIBLE_ALGOS` run for `task_id` (ADR-0009's
+    same-task-only constraint), else `None`."""
 
     meta_path = warm_start_from / "run_meta.json"
     if not meta_path.is_file():
         return f"{warm_start_from} is not a run directory (no run_meta.json)"
     with open(meta_path) as f:
         meta = json.load(f)
-    if meta.get("algo") != "gp":
-        return f"{warm_start_from} is not a GP run (algo={meta.get('algo')!r})"
+    if meta.get("algo") not in WARM_START_COMPATIBLE_ALGOS:
+        return (
+            f"{warm_start_from} is not a warm-start-compatible run "
+            f"(algo={meta.get('algo')!r}, expected one of {sorted(WARM_START_COMPATIBLE_ALGOS)})"
+        )
     if meta.get("task_ids") != [task_id]:
         return (
             f"{warm_start_from} was trained on {meta.get('task_ids')!r}, not [{task_id!r}] - "
@@ -342,7 +362,9 @@ def main() -> None:
     ppo_group.add_argument("--minibatch_size", type=int, default=64)
     ppo_group.add_argument(
         "--warm_start_from", type=Path, default=None,
-        help="An existing runs/<run_id>/ from a prior `--algo gp` run for the same --task_id (ADR-0009).",
+        help="An existing runs/<run_id>/ for the same --task_id (ADR-0009), from a prior `--algo gp` "
+             "run or an `algo=\"llm-seed\"` run (`scripts/llm_seed_search.py`, F12's LLM-seeded-search "
+             "refinement) - see WARM_START_COMPATIBLE_ALGOS.",
     )
     ppo_group.add_argument("--warm_start_epochs", type=int, default=50)
     ppo_group.add_argument("--warm_start_batch_size", type=int, default=32)

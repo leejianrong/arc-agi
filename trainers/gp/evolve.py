@@ -62,9 +62,30 @@ def _tournament_select(scored: list, rng: random.Random, k: int) -> Program:
     return max(contenders, key=lambda item: item[0])[1]
 
 
-def run_gp(task: Task, config: GPConfig) -> GPResult:
+def run_gp(task: Task, config: GPConfig, seed_programs: list | None = None) -> GPResult:
+    """`seed_programs` (F12's "LLM-seeded search" refinement, `docs/
+    QUESTIONS.md`): an optional list of `Program`s to include in generation
+    0's population, in place of some of its random slots rather than on top
+    of `population_size` - e.g. a demonstration proposed by an LLM (or any
+    other external source) from the task's train pairs, verified to
+    actually solve it before being handed in here. Capped to
+    `config.population_size` entries (extras beyond that are dropped, never
+    grown past the configured population); the remaining slots are filled
+    with `random_program` exactly as before. Omitting `seed_programs` (the
+    default `None`, and an empty list) reproduces today's pure-random
+    generation-0 population byte-for-byte - this parameter is strictly
+    additive and opt-in, chosen as a `run_gp` argument rather than a new
+    `GPConfig` field so `GPConfig.to_dict()` (serialized verbatim into
+    `run_meta.json`'s `config`) stays a flat, JSON-trivial hyperparameter
+    record - a list of programs doesn't belong there."""
+
     rng = random.Random(config.seed)
-    population = [random_program(rng, config.max_program_length) for _ in range(config.population_size)]
+    if seed_programs:
+        seeds = list(seed_programs)[:config.population_size]
+        n_random = config.population_size - len(seeds)
+        population = seeds + [random_program(rng, config.max_program_length) for _ in range(n_random)]
+    else:
+        population = [random_program(rng, config.max_program_length) for _ in range(config.population_size)]
 
     best_program, best_fitness = population[0], ZERO_FITNESS
     history = []
