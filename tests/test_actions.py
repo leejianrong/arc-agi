@@ -401,3 +401,77 @@ def test_crop_to_selection_crops_to_the_selected_patchs_bounding_box():
     selected = frozenset({(1, 1), (2, 1)})
     result = actions.ACTIONS[actions.ACTION_BY_NAME["crop_to_selection"]].fn(OBJECTS_GRID, selected)
     assert result == ((2,), (2,))
+
+
+# ADR-0016: `stamp_selected` - shifts the *selected indices* by a fixed
+# offset and fills the grid with a color there, WITHOUT clearing the
+# original selected cells (unlike `move_selected`).
+def test_stamp_selected_fills_a_shifted_copy_without_clearing_the_original():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["stamp_selected"]]
+    selected = frozenset({(1, 3)})  # the "3" cell
+    result = action.fn(OBJECTS_GRID, selected, 5, 0)  # 0 = DOWN
+    # Original (1, 3) still has its original color 3; (2, 3) is newly 5.
+    assert result == ((0, 0, 0, 0), (0, 2, 0, 3), (0, 2, 0, 5), (0, 0, 0, 0))
+
+
+def test_stamp_selected_supports_all_8_directions():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["stamp_selected"]]
+    center = frozenset({(2, 2)})
+    grid = tuple(tuple(0 for _ in range(5)) for _ in range(5))
+    # direction_index -> expected shifted cell, per actions._STAMP_DIRECTIONS'
+    # documented order: DOWN, UP, LEFT, RIGHT, UNITY, NEG_UNITY, UP_RIGHT, DOWN_LEFT.
+    expected_cells = {
+        0: (3, 2),  # DOWN
+        1: (1, 2),  # UP
+        2: (2, 1),  # LEFT
+        3: (2, 3),  # RIGHT
+        4: (3, 3),  # UNITY
+        5: (1, 1),  # NEG_UNITY
+        6: (1, 3),  # UP_RIGHT
+        7: (3, 1),  # DOWN_LEFT
+    }
+    for direction_index, (row, col) in expected_cells.items():
+        result = action.fn(grid, center, 9, direction_index)
+        assert result[row][col] == 9, direction_index
+        assert result[2][2] == 0, direction_index  # original cell untouched
+
+
+def test_stamp_selected_reuses_the_selection_across_several_calls():
+    # A prior selection survives an act_on_selection call (ADR-0015's rule),
+    # so several stamp_selected calls in a row can reuse the same selection -
+    # exactly how a9f96cdd/d364b489's curated sequences use it.
+    select_idx = actions.ACTION_BY_NAME["select_by_color"]
+    stamp_idx = actions.ACTION_BY_NAME["stamp_selected"]
+    raw_select = (2,) + (0,) * (actions.MAX_ARITY - 1)
+    grid, selected, _, valid = actions.execute(select_idx, raw_select, OBJECTS_GRID, None)
+    assert valid
+
+    raw_stamp_down = (5, 0) + (0,) * (actions.MAX_ARITY - 2)
+    grid, selected_after_first, _, valid = actions.execute(stamp_idx, raw_stamp_down, grid, selected)
+    assert valid
+    assert selected_after_first == selected  # still usable for a second stamp
+
+    raw_stamp_up = (6, 1) + (0,) * (actions.MAX_ARITY - 2)
+    grid, selected_after_second, _, valid = actions.execute(stamp_idx, raw_stamp_up, grid, selected_after_first)
+    assert valid
+    assert selected_after_second == selected
+
+
+def test_stamp_selected_is_invalid_with_no_current_selection():
+    idx = actions.ACTION_BY_NAME["stamp_selected"]
+    new_grid, new_selected, _decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+    assert not valid
+    assert new_grid == OBJECTS_GRID
+    assert new_selected is None
+
+
+def test_stamp_selected_direction_arg_decodes_mod_8():
+    # Raw direction args >= 8 wrap around to the same 8-entry menu, mirroring
+    # move_selected's own DIRECTION_ARG mod-4 wraparound.
+    idx = actions.ACTION_BY_NAME["stamp_selected"]
+    selected = frozenset({(1, 1), (2, 1)})
+    for raw_direction, expected_decoded in ((0, 0), (7, 7), (8, 0), (15, 7)):
+        raw_args = (0, raw_direction) + (0,) * (actions.MAX_ARITY - 2)
+        _, _, decoded, valid = actions.execute(idx, raw_args, OBJECTS_GRID, selected)
+        assert valid
+        assert decoded["direction"] == expected_decoded

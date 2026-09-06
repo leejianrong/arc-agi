@@ -107,6 +107,19 @@ curated `(True, True, True)` triple) and `2013d3e2`/`7468f01a` (a new
 `(False, True, True)` triple, added here as `select_largest_multicolor`).
 See ADR-0015 for the full audit, including why most of the same pass's
 `ofcolor`-flagged near-miss tasks did *not* turn out to be this simple.
+
+ADR-0016 lands the "directional stamp" primitive ADR-0015's Consequences
+named as its own next candidate: `stamp_selected` (`dsl.fill(grid, color,
+dsl.shift(selected, DIRECTION))`) shifts the *selected indices* by a fixed
+offset and fills the grid with a color there, without clearing the
+original selected cells - and, being an `act_on_selection` action, without
+invalidating the selection either, so one selection is reused across
+several stamp calls in a row. Needs its own 8-direction menu (4 cardinal +
+4 diagonal), separate from `move_selected`'s existing 4-direction
+`_DIRECTIONS` (left untouched - widening it would risk changing behavior
+for its own existing fixture, `25ff71a9`). Unlocks the two `ofcolor`-
+flagged tasks ADR-0015 identified but didn't land: `a9f96cdd` and
+`d364b489`. See ADR-0016 for the full design.
 """
 
 from collections import Counter
@@ -152,11 +165,16 @@ def _decode_direction(raw: int) -> int:
     return raw % 4  # index into _DIRECTIONS below
 
 
+def _decode_stamp_direction(raw: int) -> int:
+    return raw % 8  # index into _STAMP_DIRECTIONS below
+
+
 COLOR_ARG = lambda name: ArgSpec(name, "color", _decode_color)
 FACTOR_ARG = lambda name: ArgSpec(name, "factor", _decode_factor)
 COORD_ARG = lambda name: ArgSpec(name, "coord", _decode_coord)
 DIM_ARG = lambda name: ArgSpec(name, "dim", _decode_dim)
 DIRECTION_ARG = lambda name: ArgSpec(name, "direction", _decode_direction)
+STAMP_DIRECTION_ARG = lambda name: ArgSpec(name, "direction", _decode_stamp_direction)
 
 # ADR-0012: a small fixed menu of cardinal directions for `move_selected`,
 # mirroring `arc-dsl`'s own DOWN/UP/LEFT/RIGHT constants - kept as a curated
@@ -164,6 +182,22 @@ DIRECTION_ARG = lambda name: ArgSpec(name, "direction", _decode_direction)
 # offset, since the audit fixture (`25ff71a9`) only ever needs one of these
 # four and an unconstrained signed offset would blow up the raw-arg range.
 _DIRECTIONS = (constants.DOWN, constants.UP, constants.LEFT, constants.RIGHT)
+
+# ADR-0016: a separate, 8-direction menu for `stamp_selected` - 4 cardinal
+# (same order as `_DIRECTIONS` above) plus 4 diagonal, since its fixture
+# task `a9f96cdd` needs diagonal offsets `_DIRECTIONS` doesn't have. Kept as
+# its own menu rather than widening `_DIRECTIONS` itself, so `move_selected`
+# and its own existing fixture (`25ff71a9`) are unaffected - see ADR-0016.
+_STAMP_DIRECTIONS = (
+    constants.DOWN,
+    constants.UP,
+    constants.LEFT,
+    constants.RIGHT,
+    constants.UNITY,
+    constants.NEG_UNITY,
+    constants.UP_RIGHT,
+    constants.DOWN_LEFT,
+)
 
 
 @dataclass(frozen=True)
@@ -330,6 +364,16 @@ def _paint_selected_at(grid: Grid, selected, row: int, col: int) -> Grid:
     return dsl.paint(grid, dsl.shift(obj, (row - ul_row, col - ul_col)))
 
 
+# ADR-0016: shifts the *selected indices* (not the underlying object) by a
+# fixed offset and fills the grid with `color` at those shifted positions -
+# unlike `move_selected`, the original selected cells are NOT cleared, and
+# (being `act_on_selection`) the selection itself isn't invalidated either,
+# so one selection is reused across several `stamp_selected` calls in a row
+# (see both fixture tasks' curated sequences in `task_loader.py`).
+def _stamp_selected(grid: Grid, selected, color: int, direction_index: int) -> Grid:
+    return dsl.fill(grid, color, dsl.shift(selected, _STAMP_DIRECTIONS[direction_index]))
+
+
 # Zero-arg grid transforms.
 ZERO_ARG = [
     Action("identity", dsl.identity),
@@ -427,6 +471,15 @@ ACT_ON_SELECTION = [
         "paint_selected_at",
         _paint_selected_at,
         (COORD_ARG("row"), COORD_ARG("col")),
+        kind="act_on_selection",
+    ),
+    # ADR-0016: directional "stamp a shifted copy of the selection, at a
+    # fixed color, without clearing the original" - see `_stamp_selected`'s
+    # own docstring above and the module docstring.
+    Action(
+        "stamp_selected",
+        _stamp_selected,
+        (COLOR_ARG("color"), STAMP_DIRECTION_ARG("direction")),
         kind="act_on_selection",
     ),
 ]

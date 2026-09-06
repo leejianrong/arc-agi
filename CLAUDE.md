@@ -25,21 +25,26 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 40 actions as of
-  ADR-0015: structural transforms including the 4 self-concatenation
+  `arc-dsl`-primitive action space (`actions.py` — 41 actions as of
+  ADR-0016: structural transforms including the 4 self-concatenation
   actions, `fill_cell`, `canvas`, `commit`, plus the object-selection
-  mechanism's 13 actions (`select_largest`/`select_smallest`/
+  mechanism's 14 actions (`select_largest`/`select_smallest`/
   `select_by_color`/`select_unique_color`/`select_largest_no_diag`/
   `select_tallest`/`select_largest_multicolor`/`commit_selection`/
   `crop_to_selection`/`delete_selected`/`recolor_selected`/`move_selected`/
-  `paint_selected_at`) threading a "currently selected patch" side-channel,
-  ADR-0002/ADR-0010/ADR-0011/ADR-0012/ADR-0013/ADR-0015 — `crop_to_selection`
-  is the same crop `commit_selection` does but, deliberately, under a
-  different action name so it does *not* end the episode, letting a further
-  transform run on the cropped result (ADR-0011/`fitness.py` both key
-  episode-termination off the literal action name, not `Action.kind`)), the
-  task loader (`task_loader.py` — 36 curated tasks, 15 same-shape + 21
-  variable-shape), `env.py` (2-channel observation:
+  `paint_selected_at`/`stamp_selected`) threading a "currently selected
+  patch" side-channel, ADR-0002/ADR-0010/ADR-0011/ADR-0012/ADR-0013/
+  ADR-0015/ADR-0016 — `crop_to_selection` is the same crop `commit_selection`
+  does but, deliberately, under a different action name so it does *not* end
+  the episode, letting a further transform run on the cropped result
+  (ADR-0011/`fitness.py` both key episode-termination off the literal action
+  name, not `Action.kind`); `stamp_selected` (ADR-0016) shifts the selected
+  indices by one of 8 fixed directions (its own menu, separate from
+  `move_selected`'s 4-direction one) and fills the grid with a color there,
+  without clearing the original selected cells and without invalidating the
+  selection, so one selection is reused across several stamp calls in a
+  row), the task loader (`task_loader.py` — 38 curated tasks, 17 same-shape
+  + 21 variable-shape), `env.py` (2-channel observation:
   grid + selection mask; `get_selected()` exposes the selection for episode
   logging), ADR-0005's dense reward (`reward.py`), extra
   practice-instance generation via `re-arc` (`re_arc.py`), and the JSONL
