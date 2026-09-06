@@ -101,3 +101,67 @@ export interface RunThumbnail {
 export function fetchThumbnail(runId: string): Promise<RunThumbnail> {
   return getJSON(`/api/runs/${encodeURIComponent(runId)}/thumbnail`);
 }
+
+// F13 Stage 0 (ADR-0017): the interactive "play" write path. Mirrors
+// `viz/backend/play.py`'s response shapes 1:1, same "no translation layer"
+// discipline as the read-only types above.
+
+export interface ActionArgSpec {
+  name: string;
+  kind: string;
+}
+
+export interface ActionSpec {
+  name: string;
+  kind: string;
+  args: ActionArgSpec[];
+}
+
+export interface PlayState {
+  session_id: string;
+  task_id: string;
+  pair_index: number;
+  grid: Grid;
+  target_grid: Grid;
+  selected: [number, number][] | null;
+  terminated: boolean;
+  truncated: boolean;
+  valid_action: boolean;
+  exact_match: boolean;
+  reward?: number;
+}
+
+export interface PlaySaveResult {
+  run_id: string;
+  episode_id: string;
+}
+
+async function postJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null);
+    const message = payload && typeof payload.error === "string" ? payload.error : `HTTP ${res.status}`;
+    throw new Error(`${path}: ${message}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export function fetchActions(): Promise<ActionSpec[]> {
+  return getJSON(`/api/actions`);
+}
+
+export function startPlaySession(taskId: string, pairIndex = 0): Promise<PlayState> {
+  return postJSON(`/api/play/start`, { task_id: taskId, pair_index: pairIndex });
+}
+
+export function stepPlaySession(sessionId: string, primitive: string, args: number[]): Promise<PlayState> {
+  return postJSON(`/api/play/${encodeURIComponent(sessionId)}/step`, { primitive, args });
+}
+
+export function savePlaySession(sessionId: string, runId?: string): Promise<PlaySaveResult> {
+  return postJSON(`/api/play/${encodeURIComponent(sessionId)}/save`, runId ? { run_id: runId } : {});
+}

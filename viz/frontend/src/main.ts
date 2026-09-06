@@ -4,6 +4,7 @@ import { EpisodePlayer } from "./player";
 import { computeLinePoints, drawLineChart } from "./dashboard";
 import { formatEpisodeStatus } from "./status";
 import { RunPicker } from "./picker";
+import { PlayPanel } from "./play";
 
 const runPicker = new RunPicker(document.getElementById("run-picker")!, (runId) => void loadRun(runId));
 const rewardChart = document.getElementById("reward-chart") as HTMLCanvasElement;
@@ -118,6 +119,11 @@ class PlayerPanel {
 
 const panelA = new PlayerPanel(document.getElementById("panel-a")!, "A");
 const panelB = new PlayerPanel(document.getElementById("panel-b")!, "B");
+
+// F13 Stage 0 (ADR-0017): the interactive human-play panel - independent of
+// the run picker/dashboard/replay above, since it drives a live session
+// rather than reading a logged run.
+new PlayPanel(document.getElementById("play")!);
 
 function renderDashboard(rows: Awaited<ReturnType<typeof fetchMetrics>>): void {
   const rewardPoints = computeLinePoints(rows, "mean_reward", rewardChart.width, rewardChart.height);

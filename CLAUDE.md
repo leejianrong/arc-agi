@@ -91,14 +91,28 @@ Planning artifacts (read these before making architectural changes):
   gitignored; `make prune-runs` (dry run) / `make prune-runs YES=1` (delete)
   keeps only runs from the most recent `created_at` date(s) seen (see the
   script's docstring for the exact rule).
-- `viz/backend/` — read-only local HTTP server exposing `runs/` as JSON,
-  including `metrics.jsonl` (`server.py`); also serves `viz/frontend/dist`
-  so one process runs the whole visualizer.
-- `viz/frontend/` — TypeScript + Canvas replay UI: training dashboard
-  (reward/success-rate curves) and dual side-by-side episode replay for
-  early- vs. late-training comparison (Vite + Vitest), per ADR-0007. Replay
-  renders the current object-selection (an amber outline over selected
-  cells, `grid.ts`'s `computeCellRects`/`drawGrid`).
+- `viz/backend/` — local HTTP server exposing `runs/` as JSON, including
+  `metrics.jsonl` (`server.py`); also serves `viz/frontend/dist` so one
+  process runs the whole visualizer. The run-browsing/dashboard routes are
+  read-only, per ADR-0006/ADR-0007. `play.py` (F13 Stage 0, ADR-0017) is a
+  separate, narrow write path: an in-memory `session_id -> ArcEnv` session
+  store (guarded by a `threading.Lock()`, no persistence until an explicit
+  save) behind `GET /api/actions` and `POST /api/play/start|<id>/step|<id>/
+  save`, letting a human solve any of the 400 training tasks by hand,
+  one curated action at a time, and save the result as a real `runs/
+  <run_id>/` dir through the *unmodified* `EpisodeWriter` schema
+  (`algo="human"`, automatically warm-start-compatible per ADR-0009).
+  `server.py` only dispatches HTTP into `play.py`'s functions; `task_id`/
+  `run_id` are validated against a path-traversal allowlist before either
+  touches the filesystem.
+- `viz/frontend/` — TypeScript + Canvas UI: training dashboard
+  (reward/success-rate curves), dual side-by-side episode replay for
+  early- vs. late-training comparison (Vite + Vitest), per ADR-0007, and a
+  "Play" panel (`play.ts`, F13 Stage 0/ADR-0017) driving a live `/api/play/*`
+  session so a human can solve a task by hand and save it as a run. Replay
+  and Play both render the current object-selection (an amber outline over
+  selected cells, `grid.ts`'s `computeCellRects`/`drawGrid`); Play's action
+  picker is built generically from `GET /api/actions`, not hardcoded.
 - `legacy/` — the original geometric-transform + color-bijection baseline
   (`baseline.py`, `evaluate.py`, `arc_io.py`). Kept as a reference/sanity-check
   baseline, not part of the new agent.
@@ -111,7 +125,7 @@ Planning artifacts (read these before making architectural changes):
 
 - `make` (no target) — lists every available command; it is not `install` (that's just the first target in the Makefile, not the default goal).
 - `make install` — `uv sync --group dev` (Python, includes `ruff`/`pytest`/`pip-audit`) + `npm ci` (frontend).
-- `make test` (or `uv run pytest -m "not slow"` / `cd viz/frontend && npm run typecheck && npm test`) — the fast layer, no external services needed, ~10s (364 Python tests + 33 frontend). `make test-py-slow` (or `uv run pytest`) also runs the ~90s PPO-sanity e2e test (`tests/test_train_ppo.py`, marked `slow`; `test_train_gp.py`'s own e2e check is fast enough to already be in the default layer).
+- `make test` (or `uv run pytest -m "not slow"` / `cd viz/frontend && npm run typecheck && npm test`) — the fast layer, no external services needed, ~10s (460 Python tests + 57 frontend). `make test-py-slow` (or `uv run pytest`) also runs the ~90s PPO-sanity e2e test (`tests/test_train_ppo.py`, marked `slow`; `test_train_gp.py`'s own e2e check is fast enough to already be in the default layer).
 - `uv run ruff check .` — lint (config in `pyproject.toml`'s `[tool.ruff]`; excludes `third_party/`, `legacy/`, `research/` — only the shipped agent's own code is linted).
 - `make rollout` — random-policy rollout over all curated tasks, writes `runs/demo/`.
 - `make train` — `train.py --algo ppo --task_id 67a3c6ac --run_id demo` (edit the task_id, or pass `--algo gp`, for a different run).
