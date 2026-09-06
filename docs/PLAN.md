@@ -453,3 +453,76 @@ each now carries what actually happened, appended rather than rewritten.
   with warm-start being the open, not-yet-reliable mitigation for them
   rather than something this baseline pass would fix on its own. Full
   per-task table in README's `What actually works right now`.
+  **KAN-1239 update (2026-09-06): root cause found, three fixes landed,
+  problem substantially closed.** A closer look at PPO's per-step reward
+  from a stuck task's start state found one shared mechanism behind every
+  case above: from most start states, every single-step reward looked
+  worse than or tied with `identity`. Three contributing causes, all fixed:
+  (1) an invalid action's penalty stacked with the per-step cost
+  (`arc_env/reward.py`, -0.03 total — worse than it needed to be relative
+  to a safe no-op — now de-stacked to exactly `INVALID_ACTION_PENALTY`,
+  ADR-0005 amendment, PR #31); (2) the 5 `act_on_selection` primitives
+  (`commit_selection`, `delete_selected`, `recolor_selected`,
+  `move_selected`, `paint_selected_at`) were always-invalid whenever
+  nothing was selected yet still sampleable by the policy, so PPO's
+  per-step credit assignment learned to avoid that whole action region —
+  including the states where they're the *correct* next move — now masked
+  to exactly zero sampling probability in that case (`trainers/ppo/
+  network.py`, ADR-0008 amendment, PR #33); (3) `trainers/ppo/
+  warm_start.py` had a real, previously-undiscovered bug — it always
+  encoded a zero selection channel for every demonstrated step regardless
+  of what was actually selected at that point in the logged trace, so
+  warm-starting on any `select_*`-then-`act_on_selection` demonstration
+  (exactly the tasks KAN-1176/KAN-1190 warm-start on) was silently
+  training the policy against a wrong observation for every step after
+  the selection — fixed by threading the previous step's logged
+  `"selected"` field through (ADR-0009 addendum, PR #32); this had to land
+  *before* fix (2), since masking without the channel fix would make a
+  demonstrated `act_on_selection` step's log-probability `-inf` and NaN
+  the pretrain loss.
+
+  Re-validated with a fresh 26-task pass: the 14 tasks that were 0%
+  `eval_success` at the KAN-1183 baseline, plus all 12 KAN-1183-passing
+  tasks as regression canaries, same standard config, both plain and
+  warm-started for the 14 target tasks (all training run under a
+  `systemd --user` cgroup scope with a hard `MemoryMax` per process after
+  an earlier unthrottled attempt exhausted this machine's memory and
+  crashed it — an operational lesson, not a modeling one, so not detailed
+  further here). Result: **13 of 14 target tasks now solve** (6 via plain
+  PPO alone — `1f85a75f`, `23b5c85d`, `8be77c9e`, `a416b8f3`, `be94b721`,
+  `c59eb873` — 7 more rescued by the now-fixed warm-start — `0d3d703e`,
+  `25ff71a9`, `9172f3a0`, `b1948b0a`, `c8f0f002`, `d511f180`, `f25ffba3`),
+  and **all 12 canaries still pass — zero regressions**. Notably,
+  `0d3d703e` and `25ff71a9` were exactly the two tasks the pre-KAN-1239
+  warm-start experiment above called "unstable"/"non-improving" — both
+  now solve cleanly, direct evidence the warm-start channel bug (not
+  warm-start-as-a-mechanism) was the real cause of that instability.
+  Estimated PPO solve rate across the full 30-task curated set: **12/30
+  (40%) → ~25/30 (83%)** (the 4 tasks GP itself can't fully solve —
+  `46f33fce`, `5bd6f4ac`, `d10ecb37`, `ea32f347` — were out of scope for
+  this pass, no GP demonstration to warm-start from, and weren't
+  re-tested).
+
+  **The one remaining failure, `5614dbcf`, is not a recurrence of this
+  bullet's problem.** Its GP solution is `select_smallest` →
+  `move_selected` → `downscale(factor=3)` — the selection half already
+  works fine post-fix; the actual remaining difficulty is picking the
+  exact `downscale` factor (1 of 3 choices) *after* the selection
+  sequence, an ordinary argument-precision problem, consistent with this
+  section's existing finding that argument-pinning precision (an exact
+  color pair, an exact direction, now an exact scale factor) — not
+  selection-or-not — predicts PPO instability. Its warm-start
+  behavior-cloning loss (1.21) was also the highest of the 14 target
+  tasks, consistent with a harder-to-fit demonstration rather than a
+  masking/reward gap. Given how cleanly the three fixes above resolved
+  every other case, two further speculative fixes considered alongside
+  them (a small reward bonus for a successful `select_*` action; raising
+  `entropy_coef` early in training) were deliberately not pursued — they
+  were hedges against the three landed fixes not being enough, and they
+  were enough, so adding more reward-shape surface area now would trade
+  this pass's clean zero-regression record for uncertain gain on one
+  already-understood outlier. `5614dbcf` is left as a narrow, separately
+  scoped follow-up, not evidence of a gap in this fix. Full comparison
+  table in README's `What actually works right now`; tracked as KAN-1239
+  (epic EPIC-169), which also closes out KAN-1190's "apply warm-start
+  systematically" ask.
