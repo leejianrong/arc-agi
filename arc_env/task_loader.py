@@ -78,6 +78,19 @@ calls). Both are same-shape: 17 same-shape + 21 variable-shape = 38 total.
 See ADR-0016 for the full design, including why a fresh 8-direction menu
 was added rather than widening `move_selected`'s existing 4-direction one.
 
+ADR-0019 (2026-09-06) adds two more one-new-primitive tasks F11 flagged:
+`5582e5ca` (needs `mostcolor`) and `aabf363d` (needs `leastcolor`), landed
+as two new derived actions (`canvas_mostcolor`, `swap_two_least_colors` -
+see `arc_env/actions.py`). Both turn out to be same-shape, not
+variable-shape: `5582e5ca`'s solver always builds a fresh 3x3 canvas
+regardless of the *general* action's own dimension args, but every one of
+this specific task's train/test pairs happens to already have a 3x3 input
+too (confirmed computationally, not assumed - the natural guess that a
+fixed-output-size task must be variable-shape doesn't hold for this
+particular task's data); `aabf363d` never changes shape at all. 19
+same-shape + 21 variable-shape = 40 total. See ADR-0019 for the full
+design.
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -284,6 +297,11 @@ CURATED_TASK_IDS = {
         ("stamp_selected", (6, 3)),  # 6=color, 3=RIGHT
         ("stamp_selected", (7, 2)),  # 7=color, 2=LEFT
     ],
+    # ADR-0019: two new derived actions, one primitive each. Solvers:
+    # `canvas(mostcolor(I), THREE_BY_THREE)`; `x1 = leastcolor(I); x2 =
+    # replace(I, x1, ZERO); x3 = leastcolor(x2); O = replace(x2, x3, x1)`.
+    "5582e5ca": [("canvas_mostcolor", (3, 3))],
+    "aabf363d": [("swap_two_least_colors", ())],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
