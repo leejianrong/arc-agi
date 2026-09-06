@@ -59,21 +59,22 @@ PRIMITIVE_EMBED_DIM = 16
 ARITY_BY_PRIMITIVE = torch.tensor([a.arity for a in actions.ACTIONS], dtype=torch.long)
 
 # Which primitive indices are `kind="act_on_selection"` (ADR-0011/ADR-0012/
-# ADR-0015): `commit_selection`, `crop_to_selection`, `delete_selected`,
-# `recolor_selected`, `move_selected`, `paint_selected_at`. `arc_env.actions.
-# execute` makes every one of these an unconditional no-op (`valid=False`)
-# whenever nothing is currently selected - see ADR-0008's amendment below
-# for why the policy should never be able to *sample* one of these with an
-# empty selection, not just be penalized for it after the fact.
+# ADR-0015/ADR-0016): `commit_selection`, `crop_to_selection`,
+# `delete_selected`, `recolor_selected`, `move_selected`, `paint_selected_at`,
+# `stamp_selected`. `arc_env.actions.execute` makes every one of these an
+# unconditional no-op (`valid=False`) whenever nothing is currently selected
+# - see ADR-0008's amendment below for why the policy should never be able
+# to *sample* one of these with an empty selection, not just be penalized
+# for it after the fact.
 IS_ACT_ON_SELECTION = torch.tensor([a.kind == "act_on_selection" for a in actions.ACTIONS], dtype=torch.bool)
 
 
 def _mask_act_on_selection_logits(primitive_logits: torch.Tensor, obs: torch.Tensor) -> torch.Tensor:
-    """Sets `primitive_logits` to `-inf` at the 6 `act_on_selection` indices,
+    """Sets `primitive_logits` to `-inf` at the 7 `act_on_selection` indices,
     per batch row, wherever that row's observation has nothing selected
     (`obs[:, 1, :, :]` - the ADR-0011 "currently selected" channel - is all
     zero). Rows with a non-empty selection are left untouched, so all
-    `N_ACTIONS` primitives (including the 6 masked-when-empty ones) stay
+    `N_ACTIONS` primitives (including the 7 masked-when-empty ones) stay
     sampleable there. Verified directly (see `tests/test_network.py`) that
     `Categorical(logits=...)` treats `-inf` entries as exactly zero sampling
     probability with well-defined, non-NaN entropy/log-prob for the

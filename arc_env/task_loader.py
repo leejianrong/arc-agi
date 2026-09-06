@@ -66,6 +66,18 @@ turned out to be this simple - see ADR-0015 for why (mostly: they need
 intervening ordinary transform, neither of which this pass's single-
 selection-slot mechanism supports).
 
+ADR-0016 (2026-09-06) lands the directional "stamp" act-on-selection
+primitive ADR-0015's Consequences named as its next concrete candidate
+(`stamp_selected`: `dsl.fill(grid, color, dsl.shift(selected, DIRECTION))`,
+plus a new 8-direction menu - 4 cardinal + 4 diagonal - separate from
+`move_selected`'s existing cardinal-only one). Unlocks the 2 `ofcolor`-
+flagged tasks ADR-0015 identified but didn't land: `a9f96cdd` (solver:
+`ofcolor(I,2)` reused across 4 `shift`-then-`fill` "stamp" calls, one per
+diagonal direction) and `d364b489` (same shape, 4 cardinal-direction stamp
+calls). Both are same-shape: 17 same-shape + 21 variable-shape = 38 total.
+See ADR-0016 for the full design, including why a fresh 8-direction menu
+was added rather than widening `move_selected`'s existing 4-direction one.
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -247,6 +259,31 @@ CURATED_TASK_IDS = {
     "28bf18c6": [("select_largest", ()), ("crop_to_selection", ()), ("hconcat_self", ())],
     "7468f01a": [("select_largest_multicolor", ()), ("crop_to_selection", ()), ("vmirror", ())],
     "f25fbde4": [("select_largest", ()), ("crop_to_selection", ()), ("upscale", (2,))],
+    # ADR-0016: the new `stamp_selected` act-on-selection primitive, reusing
+    # one selection across several stamp calls in a row (see `arc_env/
+    # actions.py`'s `_STAMP_DIRECTIONS` for the direction-index scheme: 0=
+    # DOWN, 1=UP, 2=LEFT, 3=RIGHT, 4=UNITY, 5=NEG_UNITY, 6=UP_RIGHT,
+    # 7=DOWN_LEFT). Solvers: `fill(fill(fill(fill(replace(I,TWO,ZERO), THREE,
+    # shift(ofcolor(I,TWO),NEG_UNITY)), SIX, shift(ofcolor(I,TWO),UP_RIGHT)),
+    # EIGHT, shift(ofcolor(I,TWO),DOWN_LEFT)), SEVEN, shift(ofcolor(I,TWO),
+    # UNITY))`; `fill(fill(fill(fill(I, EIGHT, shift(ofcolor(I,ONE),DOWN)),
+    # TWO, shift(ofcolor(I,ONE),UP)), SIX, shift(ofcolor(I,ONE),RIGHT)),
+    # SEVEN, shift(ofcolor(I,ONE),LEFT))`.
+    "a9f96cdd": [
+        ("select_by_color", (2,)),
+        ("recolor_selected", (0,)),
+        ("stamp_selected", (3, 5)),  # 3=color, 5=NEG_UNITY
+        ("stamp_selected", (6, 6)),  # 6=color, 6=UP_RIGHT
+        ("stamp_selected", (8, 7)),  # 8=color, 7=DOWN_LEFT
+        ("stamp_selected", (7, 4)),  # 7=color, 4=UNITY
+    ],
+    "d364b489": [
+        ("select_by_color", (1,)),
+        ("stamp_selected", (8, 0)),  # 8=color, 0=DOWN
+        ("stamp_selected", (2, 1)),  # 2=color, 1=UP
+        ("stamp_selected", (6, 3)),  # 6=color, 3=RIGHT
+        ("stamp_selected", (7, 2)),  # 7=color, 2=LEFT
+    ],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
