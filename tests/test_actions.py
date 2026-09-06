@@ -14,14 +14,22 @@ GRIDS = [
     ((2, 2, 2, 2),),
 ]
 
-# ADR-0010 Phase 1's self-concatenation actions are derived (composed from
-# more than one `dsl` call, like `fill_cell`/`canvas`/`commit`), not a 1:1
-# `dsl.<name>` call - excluded from the generic 1:1 check below, covered by
-# their own dedicated tests instead.
+# ADR-0010 Phase 1's self-concatenation actions (plus ADR-0019's
+# `swap_two_least_colors`) are derived (composed from more than one `dsl`
+# call, like `fill_cell`/`canvas`/`commit`), not a 1:1 `dsl.<name>` call -
+# excluded from the generic 1:1 check below, covered by their own dedicated
+# tests instead.
 DERIVED_ZERO_ARG_NAMES = {
     "hconcat_self", "hconcat_self_vmirror", "vconcat_self_hmirror_top", "vconcat_self_hmirror_bottom",
+    "swap_two_least_colors",
 }
 DIRECT_ZERO_ARG = [a for a in actions.ZERO_ARG if a.name not in DERIVED_ZERO_ARG_NAMES]
+
+# ADR-0019's `canvas_mostcolor` is likewise derived (`dsl.canvas` plus
+# `dsl.mostcolor`, not a bare `dsl.canvas_mostcolor`) - excluded from the
+# generic TWO_ARG 1:1 check below for the same reason.
+DERIVED_TWO_ARG_NAMES = {"canvas_mostcolor"}
+DIRECT_TWO_ARG = [a for a in actions.TWO_ARG if a.name not in DERIVED_TWO_ARG_NAMES]
 
 
 @pytest.mark.parametrize("action", DIRECT_ZERO_ARG, ids=lambda a: a.name)
@@ -67,7 +75,7 @@ def test_one_arg_action_matches_direct_dsl_call(action):
         assert action.fn(grid, factor) == dsl_fn(grid, factor)
 
 
-@pytest.mark.parametrize("action", actions.TWO_ARG, ids=lambda a: a.name)
+@pytest.mark.parametrize("action", DIRECT_TWO_ARG, ids=lambda a: a.name)
 def test_two_arg_action_matches_direct_dsl_call(action):
     grid = ((1, 2, 3), (4, 1, 6))
     dsl_fn = getattr(dsl, action.name)
@@ -475,3 +483,41 @@ def test_stamp_selected_direction_arg_decodes_mod_8():
         _, _, decoded, valid = actions.execute(idx, raw_args, OBJECTS_GRID, selected)
         assert valid
         assert decoded["direction"] == expected_decoded
+
+
+# ADR-0019: `canvas_mostcolor`/`swap_two_least_colors` are derived (composed
+# from more than one `dsl` call, like `fill_cell`/`canvas`/`commit` above) -
+# verified by direct unit test against hand-constructed grids, not the
+# generic 1:1-`dsl`-call checks earlier in this file.
+def test_canvas_mostcolor_builds_a_fresh_canvas_filled_with_the_grids_most_common_color():
+    grid = ((1, 1, 2), (1, 3, 3), (1, 1, 1))  # 1 is most common (6 of 9 cells)
+    result = actions.ACTIONS[actions.ACTION_BY_NAME["canvas_mostcolor"]].fn(grid, 2, 4)
+    assert result == ((1, 1, 1, 1), (1, 1, 1, 1))
+
+
+def test_canvas_mostcolor_ignores_the_original_grids_shape():
+    # Like `canvas`, the output shape is whatever height/width is passed,
+    # independent of the input grid's own shape.
+    grid = ((5,),)
+    result = actions.ACTIONS[actions.ACTION_BY_NAME["canvas_mostcolor"]].fn(grid, 3, 3)
+    assert result == ((5, 5, 5), (5, 5, 5), (5, 5, 5))
+
+
+def test_swap_two_least_colors_swaps_the_grids_two_least_common_colors():
+    # 1 appears once (least common), 2 appears twice (next-least, i.e. the
+    # least common of what remains after clearing 1 to 0), 0 is the
+    # background/most common color. Clearing 1 to 0 first, then replacing
+    # the (now-least-common) 2 with 1, nets out to swapping 1 and 2.
+    grid = ((0, 0, 0), (0, 2, 2), (0, 0, 1))
+    result = actions.ACTIONS[actions.ACTION_BY_NAME["swap_two_least_colors"]].fn(grid)
+    assert result == ((0, 0, 0), (0, 1, 1), (0, 0, 0))
+
+
+def test_swap_two_least_colors_matches_the_derived_dsl_composition_directly():
+    grid = ((3, 3, 4), (3, 5, 5), (3, 3, 3))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["swap_two_least_colors"]]
+    a = dsl.leastcolor(grid)
+    g2 = dsl.replace(grid, a, 0)
+    b = dsl.leastcolor(g2)
+    expected = dsl.replace(g2, b, a)
+    assert action.fn(grid) == expected
