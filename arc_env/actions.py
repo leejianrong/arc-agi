@@ -120,6 +120,21 @@ several stamp calls in a row. Needs its own 8-direction menu (4 cardinal +
 for its own existing fixture, `25ff71a9`). Unlocks the two `ofcolor`-
 flagged tasks ADR-0015 identified but didn't land: `a9f96cdd` and
 `d364b489`. See ADR-0016 for the full design.
+
+ADR-0019 lands two more not-drawn-from-a-solver-1:1 additions, each fixing
+one plain `arc-dsl` primitive's remaining argument as a function of the
+grid itself rather than exposing it to the agent, the same "derived"
+pattern `canvas`/`fill_cell` already established: `canvas_mostcolor(height,
+width)` is `dsl.canvas(dsl.mostcolor(grid), (height, width))` - like the
+existing `canvas` action, but the fill color is computed from the current
+grid's most-common color instead of being an agent-chosen `COLOR_ARG`
+(`height`/`width` stay real `DIM_ARG`s, matching `canvas`'s own precedent,
+rather than hardcoding a narrower zero-arg action); `swap_two_least_colors`
+is a fully self-contained, zero-arg composition of `dsl.leastcolor`/
+`dsl.replace` that swaps a grid's two least-common colors, with no
+agent-chosen args at all. Unlocks two more curated tasks: `5582e5ca`
+(`canvas_mostcolor`) and `aabf363d` (`swap_two_least_colors`). See
+ADR-0019 for the full design.
 """
 
 from collections import Counter
@@ -230,6 +245,23 @@ def _fill_cell(grid: Grid, color: int, row: int, col: int) -> Grid:
 
 def _canvas(grid: Grid, value: int, height: int, width: int) -> Grid:
     return dsl.canvas(value, (height, width))  # replaces `grid` outright; ignores it
+
+
+# ADR-0019: like `_canvas`, but the fill color is derived from the grid's
+# own most-common color rather than an agent-chosen `COLOR_ARG` - see module
+# docstring.
+def _canvas_mostcolor(grid: Grid, height: int, width: int) -> Grid:
+    return dsl.canvas(dsl.mostcolor(grid), (height, width))
+
+
+# ADR-0019: a fully self-contained, zero-arg composition - clears the
+# grid's least-common color to 0, then swaps in the *new* least-common
+# color of that result. See module docstring.
+def _swap_two_least_colors(grid: Grid) -> Grid:
+    a = dsl.leastcolor(grid)
+    g2 = dsl.replace(grid, a, 0)
+    b = dsl.leastcolor(g2)
+    return dsl.replace(g2, b, a)
 
 
 def _commit(grid: Grid, row: int, col: int, height: int, width: int) -> Grid:
@@ -395,6 +427,9 @@ ZERO_ARG = [
     Action("hconcat_self_vmirror", _hconcat_self_vmirror),
     Action("vconcat_self_hmirror_top", _vconcat_self_hmirror_top),
     Action("vconcat_self_hmirror_bottom", _vconcat_self_hmirror_bottom),
+    # ADR-0019: zero-arg (everything derived from the grid) - see module
+    # docstring and `_swap_two_least_colors`'s own docstring above.
+    Action("swap_two_least_colors", _swap_two_least_colors),
 ]
 
 # One-arg (scale factor) grid transforms.
@@ -409,6 +444,11 @@ ONE_ARG = [
 TWO_ARG = [
     Action("replace", dsl.replace, (COLOR_ARG("replacee"), COLOR_ARG("replacer"))),
     Action("switch", dsl.switch, (COLOR_ARG("a"), COLOR_ARG("b"))),
+    # ADR-0019: also two-arg by arity, but both slots are `DIM_ARG`s (like
+    # `canvas`'s own height/width) rather than a `COLOR_ARG` pair - the fill
+    # color is derived internally from `dsl.mostcolor(grid)` instead of
+    # being agent-chosen. See module docstring.
+    Action("canvas_mostcolor", _canvas_mostcolor, (DIM_ARG("height"), DIM_ARG("width"))),
 ]
 
 # Three-arg (color, row, col) pixel edit, and (color, height, width) fresh-

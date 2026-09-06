@@ -25,25 +25,31 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 41 actions as of
-  ADR-0016: structural transforms including the 4 self-concatenation
-  actions, `fill_cell`, `canvas`, `commit`, plus the object-selection
+  `arc-dsl`-primitive action space (`actions.py` — 43 actions as of
+  ADR-0019: structural transforms including the 4 self-concatenation
+  actions, `fill_cell`, `canvas`, `canvas_mostcolor`,
+  `swap_two_least_colors`, `commit`, plus the object-selection
   mechanism's 14 actions (`select_largest`/`select_smallest`/
   `select_by_color`/`select_unique_color`/`select_largest_no_diag`/
   `select_tallest`/`select_largest_multicolor`/`commit_selection`/
   `crop_to_selection`/`delete_selected`/`recolor_selected`/`move_selected`/
   `paint_selected_at`/`stamp_selected`) threading a "currently selected
   patch" side-channel, ADR-0002/ADR-0010/ADR-0011/ADR-0012/ADR-0013/
-  ADR-0015/ADR-0016 — `crop_to_selection` is the same crop `commit_selection`
-  does but, deliberately, under a different action name so it does *not* end
-  the episode, letting a further transform run on the cropped result
-  (ADR-0011/`fitness.py` both key episode-termination off the literal action
-  name, not `Action.kind`); `stamp_selected` (ADR-0016) shifts the selected
-  indices by one of 8 fixed directions (its own menu, separate from
-  `move_selected`'s 4-direction one) and fills the grid with a color there,
-  without clearing the original selected cells and without invalidating the
-  selection, so one selection is reused across several stamp calls in a
-  row), the task loader (`task_loader.py` — 38 curated tasks, 17 same-shape
+  ADR-0015/ADR-0016/ADR-0019 — `crop_to_selection` is the same crop
+  `commit_selection` does but, deliberately, under a different action name
+  so it does *not* end the episode, letting a further transform run on the
+  cropped result (ADR-0011/`fitness.py` both key episode-termination off the
+  literal action name, not `Action.kind`); `stamp_selected` (ADR-0016) shifts
+  the selected indices by one of 8 fixed directions (its own menu, separate
+  from `move_selected`'s 4-direction one) and fills the grid with a color
+  there, without clearing the original selected cells and without
+  invalidating the selection, so one selection is reused across several
+  stamp calls in a row; `canvas_mostcolor`/`swap_two_least_colors`
+  (ADR-0019) are two more derived actions (`canvas` fed a grid-derived color
+  instead of an agent-chosen one; a fully self-contained zero-arg swap of a
+  grid's two least-common colors) — same "derived, not drawn 1:1 from a
+  single `dsl` call" pattern `fill_cell`/`canvas` already established), the
+  task loader (`task_loader.py` — 40 curated tasks, 19 same-shape
   + 21 variable-shape), `env.py` (2-channel observation:
   grid + selection mask; `get_selected()` exposes the selection for episode
   logging), ADR-0005's dense reward (`reward.py`), extra
@@ -125,7 +131,7 @@ Planning artifacts (read these before making architectural changes):
 
 - `make` (no target) — lists every available command; it is not `install` (that's just the first target in the Makefile, not the default goal).
 - `make install` — `uv sync --group dev` (Python, includes `ruff`/`pytest`/`pip-audit`) + `npm ci` (frontend).
-- `make test` (or `uv run pytest -m "not slow"` / `cd viz/frontend && npm run typecheck && npm test`) — the fast layer, no external services needed, ~10s (460 Python tests + 57 frontend). `make test-py-slow` (or `uv run pytest`) also runs the ~90s PPO-sanity e2e test (`tests/test_train_ppo.py`, marked `slow`; `test_train_gp.py`'s own e2e check is fast enough to already be in the default layer).
+- `make test` (or `uv run pytest -m "not slow"` / `cd viz/frontend && npm run typecheck && npm test`) — the fast layer, no external services needed, ~10s (488 Python tests + 57 frontend). `make test-py-slow` (or `uv run pytest`) also runs the ~90s PPO-sanity e2e test (`tests/test_train_ppo.py`, marked `slow`; `test_train_gp.py`'s own e2e check is fast enough to already be in the default layer).
 - `uv run ruff check .` — lint (config in `pyproject.toml`'s `[tool.ruff]`; excludes `third_party/`, `legacy/`, `research/` — only the shipped agent's own code is linted).
 - `make rollout` — random-policy rollout over all curated tasks, writes `runs/demo/`.
 - `make train` — `train.py --algo ppo --task_id 67a3c6ac --run_id demo` (edit the task_id, or pass `--algo gp`, for a different run).
