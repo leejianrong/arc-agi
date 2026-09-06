@@ -390,6 +390,175 @@ each now carries what actually happened, appended rather than rewritten.
   change made (out of scope, per the ticket) — ADR-0018's `seed_programs`
   mechanism remains the available mitigation for any of these if it's ever
   needed in practice.
+  **KAN-1189 (2026-09-06): GP seed variance across the full curated task
+  set.** Motivating observation: a full 30-task pass found `46f33fce` (33%)
+  and `d10ecb37` (67%) landing on partial credit vs. ~100% in an earlier
+  (2026-08-31) pass, with no `trainers/gp/` code change in between —
+  suggesting every "GP: 100%" or "GP: 33%" figure reported so far in this
+  repo's docs might be a single noisy sample rather than a stable
+  characterization. This pass runs `trainers/gp/evolve.py::run_gp` directly
+  (no `runs/` output) at the documented standard config
+  (`population_size=200, n_generations=100, max_program_length=6,
+  tournament_size=3, crossover_rate=0.7, mutation_rate=0.3, elitism=2`) for
+  every one of the 40 tasks now in `arc_env.task_loader.CURATED_TASK_IDS`
+  (grown from 30 since this ticket was written, per ADR-0015/0016/0019),
+  across 5 seeds each (0-4) — 200 runs total, 49.9s wall time on this
+  16-core machine, confirming the ticket's premise that a full sweep at
+  this scale is cheap.
+
+  **Aggregate**: 30/40 tasks are uniform 5/5 (every seed reaches exact
+  match — no seed-variance concern). 6/40 are uniform 0/5 (no seed reaches
+  exact match): `46f33fce`, `5bd6f4ac`, `a9f96cdd`, `d10ecb37`, `d364b489`,
+  `ea32f347`. The remaining 4/40 are where seed variance actually
+  matters — different seeds land on different solved/not-solved
+  outcomes, so a single-seed report is genuinely misleading about
+  reliability: `0d3d703e` (2/5), `1c786137` (4/5), `2013d3e2` (4/5),
+  `a79310a0` (2/5).
+
+  Full per-task table (`frac`/`sim` = the `(exact_match_fraction,
+  mean_similarity)` fitness tuple `trainers/gp/fitness.py` returns, ranged
+  across whichever seeds didn't reach exact match):
+
+  | Task | Solved (of 5) | Unsolved-seed fitness range |
+  |---|---|---|
+  | `0d3d703e` | 2/5 | frac 0.500-0.750, sim 0.833-0.917 (n=3) |
+  | `1c786137` | 4/5 | frac 0.000, sim 0.383 (n=1) |
+  | `1cf80156` | 5/5 | — |
+  | `1f85a75f` | 5/5 | — |
+  | `2013d3e2` | 4/5 | frac 0.000, sim 0.689 (n=1) |
+  | `23b5c85d` | 5/5 | — |
+  | `25ff71a9` | 5/5 | — |
+  | `28bf18c6` | 5/5 | — |
+  | `3c9b0459` | 5/5 | — |
+  | `46f33fce` | 0/5 | frac 0.333, sim 0.526-0.897 (n=5) |
+  | `4c4377d9` | 5/5 | — |
+  | `5582e5ca` | 5/5 | — |
+  | `5614dbcf` | 5/5 | — |
+  | `5bd6f4ac` | 0/5 | frac 0.000, sim 0.669-0.708 (n=5) |
+  | `6150a2bd` | 5/5 | — |
+  | `67a3c6ac` | 5/5 | — |
+  | `68b16354` | 5/5 | — |
+  | `6d0aefbc` | 5/5 | — |
+  | `6fa7a44f` | 5/5 | — |
+  | `7468f01a` | 5/5 | — |
+  | `74dd1130` | 5/5 | — |
+  | `8be77c9e` | 5/5 | — |
+  | `9172f3a0` | 5/5 | — |
+  | `9dfd6313` | 5/5 | — |
+  | `a416b8f3` | 5/5 | — |
+  | `a79310a0` | 2/5 | frac 0.000, sim 0.889 (n=3) |
+  | `a9f96cdd` | 0/5 | frac 0.000-0.500, sim 0.308-0.900 (n=5) |
+  | `aabf363d` | 5/5 | — |
+  | `b1948b0a` | 5/5 | — |
+  | `be94b721` | 5/5 | — |
+  | `c59eb873` | 5/5 | — |
+  | `c8f0f002` | 5/5 | — |
+  | `c9e6f938` | 5/5 | — |
+  | `d10ecb37` | 0/5 | frac 0.333-0.667, sim 0.707-0.942 (n=5) |
+  | `d364b489` | 0/5 | frac 0.000, sim 0.325-0.784 (n=5) |
+  | `d511f180` | 5/5 | — |
+  | `ea32f347` | 0/5 | frac 0.000, sim 0.449-0.660 (n=5) |
+  | `ed36ccf7` | 5/5 | — |
+  | `f25fbde4` | 5/5 | — |
+  | `f25ffba3` | 5/5 | — |
+
+  **Corrections/callouts against previously-published single-seed
+  numbers:**
+
+  - **`0d3d703e` — the most consequential finding here.** README's
+    KAN-1183 per-task table lists this task's GP column as 100%, and
+    KAN-1191 explicitly reasoned about it as "already-reliable GP success"
+    on the strength of that single number (it's one of the 14 tasks
+    KAN-1239's PPO fix-and-validate pass targeted, ultimately rescued by
+    warm-start — the GP 100% figure is what supplied that warm-start
+    demonstration, not a canary claim, but the same single-seed report is
+    what's being re-examined here).
+    This sweep finds only 2/5 seeds (1, 3) actually reach exact match; the
+    other 3 (0, 2, 4) land at 50-75% partial credit
+    (`(0.75, 0.9167)`/`(0.75, 0.9167)`/`(0.5, 0.8333)`) — not a decoy, just
+    an ordinary case of the standard budget not always finding all 4 of
+    this task's `switch` calls in the same run. Notably, re-running seed 0
+    specifically (the implicit default used throughout this repo's history)
+    against **today's** codebase reproducibly gives `(0.75, 0.9167)`, not
+    the previously-reported 100% — confirmed deterministic by rerunning it
+    3 times standalone, so this isn't multiprocessing nondeterminism. That
+    mismatch has a second, distinct explanation beyond ordinary GP
+    stochasticity: ADR-0015/0016/0019 (all landed 2026-09-06, after
+    KAN-1183's 2026-09-05 pass) inserted `crop_to_selection`,
+    `canvas_mostcolor`, and `swap_two_least_colors` into the *middle* of
+    `arc_env/actions.py`'s action-group lists, not appended at the end —
+    confirmed directly by inspection (`swap_two_least_colors` sits inside
+    `ZERO_ARG` before the `FACTOR_ARG` group; `canvas_mostcolor` sits before
+    `fill_cell`/`canvas`; `crop_to_selection` sits inside
+    `ACT_ON_SELECTION` between `commit_selection` and `delete_selected`).
+    Since `ACTIONS` is the concatenation of those groups and
+    `trainers/gp/genome.py`'s `random_program`/`mutate` sample primitives
+    by integer index into it, every action after each insertion point now
+    has a different index than it did at KAN-1183 time — so a fixed
+    `GPConfig.seed` no longer decodes to the same population it did before
+    those ADRs landed, even holding the rest of the GP code and the
+    "standard config" numbers fixed. **This means re-running "the same
+    seed" is not a true replay once the curated action space has grown in
+    the interim** — a second, code-churn-driven source of single-seed
+    unreliability distinct from the ticket's original "GP search is
+    stochastic" concern, and one that will recur every time a future ADR
+    adds actions anywhere but the end of an existing group.
+  - **`46f33fce`** (the ticket's own motivating example): all 5 tested
+    seeds land at exactly the same 33% exact-match fraction (similarity
+    ranges 0.526-0.897) — no variance in the fraction at all. This means
+    seed variance within {0..4} does *not* explain the specific
+    2026-08-31-to-KAN-1183 swing from 100% to 33% that motivated this
+    ticket; KAN-1183 already ruled out a `trainers/gp/` code change as the
+    cause between those two passes (both predate ADR-0015/0016/0019, so
+    the action-space-reindexing mechanism above doesn't apply here either).
+    The likely explanation remains KAN-1191's finding that `46f33fce` has
+    "the strongest [deceptive-local-optimum] signature of any task
+    checked" (29.6% of random programs beat the true program's own
+    early partial credit) — consistent with a near-deterministic trap at
+    the standard budget rather than ordinary seed noise. This sweep
+    confirms the trap is real and stable, but can't independently confirm
+    what specifically differed about the 2026-08-31 run.
+  - **`d10ecb37`** (the ticket's other motivating example): 4/5 seeds land
+    at the previously-published 67% (similarity 0.707-0.942); seed 1 lands
+    worse, at 33% (similarity 0.707). No seed reaches exact match. So 67%
+    is the modal, not universal, outcome — consistent with KAN-1178/1191's
+    "flat landscape, some train pairs' row/col found by luck and some
+    aren't" explanation, and itself an example of the fraction (not just
+    the solved/not-solved boundary) varying by seed even within a uniformly
+    "0/5 solved" task.
+  - **`a9f96cdd` and `d364b489`**: KAN-1191 checked these via fitness-
+    landscape/decoy sampling only, explicitly noting neither had "been run
+    through a full GP pass" and calling the results "no problem found"
+    (`a9f96cdd`) and a "mild" decoy, "unconfirmed whether this actually
+    causes a failure in practice" (`d364b489`). This is that confirmation,
+    and it's more severe than either characterization suggested: both are
+    uniform 0/5 total failures at the standard budget. `a9f96cdd` is the
+    bigger surprise given KAN-1191 found no decoy signal there at all
+    (fraction still varies 0.0-0.5 by seed, similarity up to 0.900 — a real
+    near-miss on some seeds, but never a full solve in 5 tries). `d364b489`
+    is worse than "mild" implied: exact-match fraction is uniformly 0.0 in
+    every seed — it never solves even a single train pair, not just an
+    occasional one.
+  - **`1c786137`, `2013d3e2`, `a79310a0`**: newly-landed ADR-0015 tasks,
+    not yet in any full-pass table. All are "mostly reliable but not
+    uniformly" (4/5, 4/5, 2/5) — worth keeping in mind before any future
+    single-seed report calls these fully solved. `2013d3e2`'s one failure
+    (frac 0.0, sim 0.689) is consistent with KAN-1191's read of it as a
+    "wide plateau" rather than a hard trap; `a79310a0`'s 3 failures all
+    land at the identical `(0.0, 0.889)`, suggesting one specific recurring
+    near-miss rather than 3 independent ones.
+
+  No `docs/PLAN.md`/`README.md` historical numbers are rewritten here —
+  per this repo's append-only convention for point-in-time records, they
+  stand as originally reported, with this subsection as the pointer to the
+  fuller multi-seed picture. `runs/` was not touched (`run_gp` was called
+  directly, no trainer CLI/logging involved). No code change made — this
+  is a pure investigation, and none of the seed-variance mechanisms found
+  here have an obvious low-risk fix (KAN-1191's deceptive-optimum tasks
+  already have ADR-0018's `seed_programs` mitigation available; the
+  action-space-reindexing issue would need either a stable
+  action-name-keyed seeding scheme or an explicit note that GP seeds aren't
+  portable across curated-action-space changes, neither attempted here).
 - **Genetic programming over ~150 primitives may need real constraint/typing
   enforcement to avoid combinatorial explosion**, since there's no existing
   benchmark to calibrate population size/generation budget against. Earliest
