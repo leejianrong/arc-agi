@@ -27,10 +27,10 @@ def _find_repo_root(start: Path) -> Path:
 REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 sys.path.insert(0, str(REPO_ROOT))
 
-from arc_env import actions  # noqa: E402
-from arc_env.env import ArcEnv  # noqa: E402
-from arc_env.episode_log import EpisodeWriter, RunMeta, write_run_meta  # noqa: E402
-from arc_env.task_loader import CURATED_TASK_IDS, load_task  # noqa: E402
+from arc_env import actions
+from arc_env.env import ArcEnv
+from arc_env.episode_log import EpisodeWriter, RunMeta, write_run_meta
+from arc_env.task_loader import CURATED_TASK_IDS, load_task
 
 
 def build(task_id: str, run_id: str, episode_id: str, runs_dir: Path) -> Path:
