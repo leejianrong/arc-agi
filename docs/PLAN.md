@@ -287,6 +287,109 @@ each now carries what actually happened, appended rather than rewritten.
   single scalar similarity score be dominated by a same-shape decoy (e.g.
   novelty search or explicit diversity preservation), not a budget or
   selection-pressure tweak.
+  **KAN-1191 (2026-09-06): does the deceptive-local-optimum pattern recur
+  elsewhere?** KAN-1179 was two data points (`ea32f347` decoy, `5bd6f4ac`
+  flat landscape); this pass reruns the same methodology (prefix-fitness
+  replay + 2000-random-program decoy sampling, via `trainers/gp/fitness.py`'s
+  `run_program`/`evaluate_fitness` and `trainers/gp/genome.py`'s
+  `random_program`) on every curated task needing >=4 genes, plus
+  `d10ecb37` (a 1-gene program that's nonetheless a documented GP failure).
+  Sanity check first: replaying `ea32f347` reproduces KAN-1179 bit-for-bit
+  — prefix trace 0.0 → 0.34 → 0.34 → 0.7887 → 0.7887 → 1.0, 3/2000 (0.15%)
+  of random programs beat 0.34, and the single best-scoring decoy is
+  `replace(5,1)` at similarity 0.448661 (identical to KAN-1179's reported
+  0.4486). Per-task findings: `a9f96cdd` (6 genes, brand new/ADR-0016,
+  `select_by_color(2)` → `recolor_selected(0)` → four `stamp_selected`
+  calls): real, monotonic gradient (0.0 → 0.0 → 0.31 → 0.53 → 0.63 → 0.82 →
+  1.0 — the first 0.0→0.0 step is `select_by_color`, which never touches
+  the grid). 10,000 random programs (5 seeds × 2000) found none that beat
+  the second prefix's 0.3083 by more than floating-point noise — the best
+  tied it exactly (`rot180()` → `switch(8, 2)`, an unrelated two-gene
+  program that happens to recolor the same cells). **No problem found.**
+  `d364b489` (5 genes, brand new/ADR-0016, `select_by_color(1)` → four
+  `stamp_selected` calls): also monotonic (0.0 → 0.0 → 0.2427 → 0.5132 →
+  0.7295 → 1.0), but unlike `a9f96cdd` there's a genuine, if weak, decoy:
+  over 20,000 random programs (10 seeds), 21 (0.105%) score above the
+  second prefix's 0.2427, and several structurally unrelated 3-4 gene
+  programs (e.g. `select_by_color(0)` → `commit(26,24,28,25)` →
+  `select_unique_color()` → `switch(0,7)`; `select_tallest()` →
+  `stamp_selected(2,5)` → `delete_selected()` → `replace(4,0)`)
+  independently converge on the identical score 0.2705 (+11.6% relative) —
+  too consistent across unrelated programs to be noise, so a small
+  deceptive-local-optimum signature is real here. It's much weaker than
+  `ea32f347`'s: the decoy only out-scores the true program's *second*
+  gene, and the true program's *third* gene (0.5132) already clears it 2x
+  over, so the window in which tournament selection could actually be
+  misled is narrow. **Deceptive local optimum, but mild** — not yet run
+  through a full GP pass (task is brand new), so it's unconfirmed whether
+  this actually causes a failure in practice. `0d3d703e` (4 genes,
+  `switch(3,4)` → `switch(8,9)` → `switch(2,6)` → `switch(1,5)`, GP already
+  solves this 100% per KAN-1183): clean monotonic gradient, 0.0 → 0.25 →
+  0.5 → 0.833 → 1.0, 0/2000 random programs beat 0.25. **No problem found**
+  — consistent with its already-reliable GP success. `46f33fce` (4 genes,
+  `rot180()` → `downscale(2)` → `rot180()` → `upscale(4)`, GP's documented
+  33% partial success per KAN-1183/README): the most severe case found.
+  The prefix trace is *non-monotonic*: 0.1966 → 0.1966 → 0.1448 → 0.1448 →
+  1.0 — it briefly gets worse than doing nothing. Every train pair is a
+  10x10→20x20 upscale; the true program's correct intermediate step
+  shrinks to 5x5 before the final `upscale(4)` restores 20x20, and
+  `arc_env/reward.py`'s `SHAPE_MATCH_CREDIT` gradient scores that
+  intermediate 5x5 shape *worse* than the untouched 10x10 input (Manhattan
+  shape-distance 30 of a max 58, giving 0.3×(1−30/58)=0.1448 — exactly the
+  observed dip). Meanwhile the trivial single-gene decoy `upscale(2)`
+  reaches the exact right shape immediately and, by chance, matches 88.1%
+  of target cells — a 10,000-sample check found 2961/10000 (29.6%) of
+  random programs beat the 0.1448 threshold, far more than any other task
+  here. **Deceptive local optimum — the strongest case found**, and
+  structurally different from `ea32f347`'s (color coincidence): here the
+  true path's own shape-credit gradient is briefly adversarial, not just
+  flat. One-off ADR-0018 spot check (deliberately just one, for
+  concreteness, not a full re-run of every case): `run_gp(task, config,
+  seed_programs=[<true program>])` reaches exact match in 1 generation
+  (fitness `(1.0, 1.0)`) vs. the standard un-seeded run's `(0.333, 0.897)`
+  at the same `population_size=200`/`n_generations=100` budget — confirms
+  the existing mitigation applies here too, exactly as expected.
+  `2013d3e2` (4 genes, brand new/ADR-0015, `select_largest_multicolor()` →
+  `crop_to_selection()` → `lefthalf()` → `tophalf()`): gradient is real and
+  monotonic (0.2276 → 0.2276 → 0.269 → 0.2845 → 1.0), and a sizeable
+  fraction of random programs (1028/10000 = 10.3%) score above the second
+  prefix's 0.269 — the widest "beat rate" found here after `46f33fce`. But
+  unlike the other decoy cases, this isn't a dead end: 2/10000 (0.02%) of
+  random 6-gene programs reach the exact solution by pure chance via an
+  entirely different decomposition (`compress()` → `compress()` →
+  `rot90()` → `tophalf()` → `lefthalf()`), meaning the landscape is
+  generous rather than trapped — no single competing local optimum blocks
+  the path to 1.0 the way `ea32f347`'s dead-end `fill_cell` patchwork does.
+  **No problem found** in the deceptive-local-optimum sense, though the
+  plateau is wide — worth another look if this brand-new task (not yet run
+  through a full training pass) ever shows up as a GP failure. `d10ecb37`
+  (1 gene, `commit(0,0,2,2)`, GP's documented 67% partial success per
+  KAN-1183/README): the prefix/decoy methodology doesn't structurally
+  apply — a 1-gene program has only k=0 and k=1, and k=1 already *is* the
+  exact solution (similarity 1.0), so by construction no random program can
+  "beat" it (0/2000, best random score 0.7083). But `d10ecb37`'s
+  `commit(row,col,height,width)` is exactly `5bd6f4ac`'s pattern
+  (`arc_env/task_loader.py`'s docstring already draws this parallel), so
+  this pass instead reran KAN-1178's diagnostic directly: pinning
+  `height`/`width` to the correct 2x2 and sweeping every valid
+  `(row, col)` gives mean similarity in a flat 0.241-0.767 band (mean
+  0.254, stdev 0.058) with only the single correct `(0,0)` cell spiking to
+  1.0 — the identical needle-in-haystack signature KAN-1178 found for
+  `5bd6f4ac`. **Flat landscape, matching KAN-1178/`5bd6f4ac`** — not a
+  decoy problem, and consistent with GP's 67% (some train pairs' `row`/
+  `col` get found by luck, some don't). Tally across the 7 tasks: 3
+  no-problem-found (`a9f96cdd`, `0d3d703e`, `2013d3e2`), 1 confirmed decoy
+  matching KAN-1179 exactly (`ea32f347`), 1 new severe decoy (`46f33fce` —
+  the strongest signature of any task checked so far), 1 new mild decoy
+  (`d364b489`), and 1 flat landscape matching KAN-1178 (`d10ecb37`). The
+  deceptive-local-optimum pattern is real and recurs, but isn't universal,
+  and its severity varies a lot (0.105% to 29.6% of random programs beating
+  the true program's own early partial credit) — a same-shape decoy plus
+  tournament selection is a genuine, repeatable GP failure mode on this
+  action space, not a one-off quirk of `ea32f347` specifically. No code
+  change made (out of scope, per the ticket) — ADR-0018's `seed_programs`
+  mechanism remains the available mitigation for any of these if it's ever
+  needed in practice.
 - **Genetic programming over ~150 primitives may need real constraint/typing
   enforcement to avoid combinatorial explosion**, since there's no existing
   benchmark to calibrate population size/generation budget against. Earliest
