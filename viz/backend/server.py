@@ -1,19 +1,30 @@
 #!/usr/bin/env python3
 """V1 visualizer backend (ADR-0006, ADR-0007, SLICES.md V1 step 4).
 
-Serves a `runs/` directory tree as JSON over local HTTP - read-only, no
-database, no write path. Also serves the built frontend (`viz/frontend/dist`)
-as static files, so `python -m viz.backend.server` is the one command that
-brings the whole visualizer up.
+Serves a `runs/` directory tree as JSON over local HTTP, and serves the
+built frontend (`viz/frontend/dist`) as static files, so `python -m
+viz.backend.server` is the one command that brings the whole visualizer up.
+
+The run-browsing/dashboard routes below are read-only, exactly as
+ADR-0006/0007 designed them. A separate, narrow write path exists for live
+human-play sessions (F13 Stage 0) - `viz/backend/play.py`'s session logic,
+dispatched from the `/api/play/*` and `/api/actions` routes below; see
+ADR-0017 for why this is a deliberate, explicit reversal of this module's
+former "read-only, no write path" claim, scoped narrowly rather than
+reopening the read-only routes to writes.
 
 Routes:
-    GET /api/runs                              -> [{run_id, algo, created_at, task_ids}, ...]
-    GET /api/runs/<run_id>/meta                 -> run_meta.json, verbatim
-    GET /api/runs/<run_id>/metrics              -> [metrics.jsonl row, ...] (ADR-0006, V2 training dashboard)
-    GET /api/runs/<run_id>/episodes             -> [episode_id, ...]
-    GET /api/runs/<run_id>/episodes/<episode_id> -> {start, steps: [...], end}
-    GET /api/runs/<run_id>/thumbnail            -> {task_id, input, output} (run picker thumbnails)
-    GET /* (anything else)                      -> static files from frontend/dist, index.html for unknown paths
+    GET  /api/runs                              -> [{run_id, algo, created_at, task_ids}, ...]
+    GET  /api/runs/<run_id>/meta                 -> run_meta.json, verbatim
+    GET  /api/runs/<run_id>/metrics              -> [metrics.jsonl row, ...] (ADR-0006, V2 training dashboard)
+    GET  /api/runs/<run_id>/episodes             -> [episode_id, ...]
+    GET  /api/runs/<run_id>/episodes/<episode_id> -> {start, steps: [...], end}
+    GET  /api/runs/<run_id>/thumbnail            -> {task_id, input, output} (run picker thumbnails)
+    GET  /api/actions                            -> [{name, kind, args: [...]}, ...] (F13 Stage 0, ADR-0017)
+    POST /api/play/start                         -> new human-play session (F13 Stage 0, ADR-0017)
+    POST /api/play/<session_id>/step             -> drive one action against a session's live ArcEnv
+    POST /api/play/<session_id>/save             -> write the session out as a real runs/<run_id>/ dir
+    GET  /* (anything else)                      -> static files from frontend/dist, index.html for unknown paths
 """
 
 import argparse
@@ -24,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from arc_env.task_loader import load_task
+from viz.backend import play
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_RUNS_DIR = REPO_ROOT / "runs"
@@ -176,6 +188,9 @@ def make_handler(runs_dir: Path):
                         return self._error(HTTPStatus.NOT_FOUND, "run has no task_ids")
                     return self._json(thumbnail)
 
+                if parts == ["api", "actions"]:
+                    return self._json(play.list_actions())
+
                 if parts and parts[0] == "api":
                     return self._error(HTTPStatus.NOT_FOUND, "no such API route")
 
@@ -185,6 +200,47 @@ def make_handler(runs_dir: Path):
                 return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "malformed run data")
 
             self._serve_static(path)
+
+        def _read_json_body(self) -> dict:
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b""
+            return json.loads(raw) if raw else {}
+
+        def do_POST(self):
+            """F13 Stage 0 (ADR-0017): the visualizer's one write path,
+            dispatched into `viz.backend.play`'s session logic - see this
+            module's docstring for why this is a deliberate, narrow
+            reversal of the read-only design above, not a rewrite of it."""
+
+            path = self.path.split("?", 1)[0]
+            parts = [p for p in path.split("/") if p]
+
+            try:
+                body = self._read_json_body()
+            except json.JSONDecodeError:
+                return self._error(HTTPStatus.BAD_REQUEST, "malformed JSON body")
+
+            try:
+                if parts == ["api", "play", "start"]:
+                    task_id = body.get("task_id")
+                    pair_index = body.get("pair_index", 0)
+                    return self._json(play.start_session(task_id, pair_index))
+
+                if parts[:2] == ["api", "play"] and len(parts) == 4 and parts[3] == "step":
+                    session_id = parts[2]
+                    primitive = body.get("primitive")
+                    args = body.get("args", [])
+                    return self._json(play.step_session(session_id, primitive, args))
+
+                if parts[:2] == ["api", "play"] and len(parts) == 4 and parts[3] == "save":
+                    session_id = parts[2]
+                    run_id = body.get("run_id")
+                    return self._json(play.save_session(session_id, runs_dir, run_id))
+
+                return self._error(HTTPStatus.NOT_FOUND, "no such API route")
+
+            except play.PlayError as exc:
+                return self._error(exc.status, exc.message)
 
         def _serve_static(self, path: str):
             if not FRONTEND_DIST.is_dir():

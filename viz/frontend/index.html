@@ -52,6 +52,12 @@
       .grid-panel { display: flex; flex-direction: column; align-items: center; gap: 4px; }
       canvas.grid-canvas { border: 1px solid #444; image-rendering: pixelated; }
       .player-status { min-height: 1.5em; font-size: 0.9em; }
+      #play { display: flex; flex-direction: column; align-items: center; gap: 8px; border: 1px solid #333; padding: 12px; border-radius: 4px; }
+      .play-start, .play-action-picker, .play-save { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; }
+      .play-arg-label { margin-right: 4px; }
+      .play-arg-input { width: 4em; }
+      #play input[type="number"] { width: 4em; }
+      #play input[type="text"] { width: 10em; }
     </style>
   </head>
   <body>
@@ -72,6 +78,11 @@
         <div class="player-panel" id="panel-a" data-panel-label="A"></div>
         <div class="player-panel" id="panel-b" data-panel-label="B"></div>
       </div>
+    </section>
+
+    <section>
+      <h2>Play - solve a task by hand, one action at a time (F13 Stage 0)</h2>
+      <div id="play"></div>
     </section>
 
     <script type="module" src="/src/main.ts"></script>

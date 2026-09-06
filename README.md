@@ -44,7 +44,7 @@ Reward is dense, not sparse: at each step it's the change in how many of the "sh
 
 **re-arc.** Beyond each task's native 3-5 training pairs, `arc_env/re_arc.py` generates fresh synthetic instances of the same concept on demand, using Michael Hodel's [re-arc](https://github.com/michaelhodel/re-arc) generators, so PPO's rollouts see more variety than the raw ARC dataset provides.
 
-**The visualizer** (`viz/`). A small Python backend serves a `runs/` directory as JSON. The frontend is TypeScript and Canvas: a training dashboard (reward and success-rate curves, whether the run came from PPO or GP) and two side-by-side replay panels, so you can step through an early checkpoint and a late one at the same time and watch the difference. It follows ARC-AGI's own color palette, so a replayed episode looks like the same puzzle you'd see in the official testing interface.
+**The visualizer** (`viz/`). A small Python backend serves a `runs/` directory as JSON. The frontend is TypeScript and Canvas: a training dashboard (reward and success-rate curves, whether the run came from PPO or GP) and two side-by-side replay panels, so you can step through an early checkpoint and a late one at the same time and watch the difference. It follows ARC-AGI's own color palette, so a replayed episode looks like the same puzzle you'd see in the official testing interface. A "Play" panel (ADR-0017, F13 Stage 0) lets you solve any of the 400 training tasks by hand, one curated action at a time, against a live `ArcEnv` session, and save the result as a real run - logged through the same `EpisodeWriter` schema a trainer uses, so a human solve is automatically usable as a PPO warm-start demonstration (ADR-0009).
 
 ## What actually works right now
 
@@ -182,8 +182,8 @@ trainers/ppo/              the policy/value network, rollout collection + GAE, t
 trainers/gp/               genome representation, fitness, the evolutionary loop, replay for logging
 train.py                   train.py --algo ppo|gp --task_id <id>
 
-viz/backend/               read-only HTTP server exposing runs/ as JSON
-viz/frontend/              TypeScript + Canvas dashboard and replay UI
+viz/backend/               HTTP server exposing runs/ as JSON (read-only), plus a narrow human-play write path (play.py, ADR-0017)
+viz/frontend/              TypeScript + Canvas dashboard, replay, and human-play UI
 
 scripts/rollout_random.py  random-policy baseline rollout (no training)
 tests/                     pytest suite - see Testing below
@@ -198,7 +198,7 @@ research/arc-ngps/         a superseded supervised program-synthesis scaffold, n
 ## Testing
 
 ```bash
-make test           # the fast layer: 364 tests, ~10 seconds, no GPU or training runs involved
+make test           # the fast layer: 460 Python + 57 frontend tests, ~10 seconds, no GPU or training runs involved
 make test-py-slow   # adds the PPO convergence check (~90s): does reward actually improve over training?
 ```
 
