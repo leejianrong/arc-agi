@@ -6,6 +6,7 @@ import pytest
 
 from arc_env import actions
 from arc_env._dsl import dsl
+from arc_env.actions import _left_third, _middle_third, _right_third
 
 GRIDS = [
     ((1, 2, 3), (4, 5, 6), (7, 8, 9)),
@@ -361,6 +362,120 @@ class TestRegionScopedDualSelection:
         assert not valid
         assert new_grid == REGION_GRID
         assert selected == {0: None, 1: None}
+
+
+# ADR-0022: the 3-way region split, `fill_slot_onto_region`, and
+# `replace_region_and_fill`.
+THIRDS_GRID = (
+    (0, 1, 2, 3, 4, 5),
+    (6, 7, 8, 9, 10, 11),
+)  # a 2x6 grid, evenly divisible into 3 2x2 thirds - columns 0-1/2-3/4-5.
+
+
+def test_left_third_picks_the_leftmost_columns():
+    assert _left_third(THIRDS_GRID) == ((0, 1), (6, 7))
+
+
+def test_middle_third_picks_the_middle_columns():
+    assert _middle_third(THIRDS_GRID) == ((2, 3), (8, 9))
+
+
+def test_right_third_picks_the_rightmost_columns():
+    assert _right_third(THIRDS_GRID) == ((4, 5), (10, 11))
+
+
+# tophalf (region 0) and bottomhalf (region 1) are both 2x4 crops of this
+# 4x4 grid - comparable shapes, but distinct regions, so a slot tagged
+# bottomhalf can be validly targeted at tophalf.
+FILL_SLOT_GRID = (
+    (1, 1, 1, 1),
+    (0, 0, 0, 0),
+    (1, 1, 1, 1),
+    (0, 0, 0, 0),
+)
+
+
+def _select_region_raw(slot, region, color, grid=FILL_SLOT_GRID, selected=None, selected_region=None):
+    idx = actions.ACTION_BY_NAME["select_by_color_in_region"]
+    raw_args = (slot, region, color) + (0,) * (actions.MAX_ARITY - 3)
+    return actions.execute(idx, raw_args, grid, selected, selected_region)
+
+
+def _fill_slot_onto_region_raw(slot, target_region, fill_color, grid, selected, selected_region):
+    idx = actions.ACTION_BY_NAME["fill_slot_onto_region"]
+    raw_args = (slot, target_region, fill_color) + (0,) * (actions.MAX_ARITY - 3)
+    return actions.execute(idx, raw_args, grid, selected, selected_region)
+
+
+class TestFillSlotOntoRegion:
+    """ADR-0022: `fill_slot_onto_region` - an explicit slot painted onto an
+    explicit target region, independent of that slot's own tag."""
+
+    def test_fills_slot_bs_selection_onto_an_explicitly_different_target_region(self):
+        grid, selected, selected_region, _, valid = _select_region_raw(1, 1, 0)  # slot b, bottomhalf, color 0
+        assert valid
+        assert selected_region[1] == 1  # tagged bottomhalf
+
+        new_grid, selected_after, selected_region_after, _, valid = _fill_slot_onto_region_raw(
+            1, 0, 9, grid, selected, selected_region  # slot b, target=tophalf(0), fill=9
+        )
+        assert valid
+        assert new_grid == ((1, 1, 1, 1), (9, 9, 9, 9))  # tophalf, local row 1 recolored 9
+        # Selection state passes through unchanged on success.
+        assert selected_after == selected
+        assert selected_region_after == selected_region
+
+    def test_invalid_when_the_named_slot_is_empty(self):
+        grid, selected, selected_region, _, valid = _select_region_raw(1, 1, 0)  # only slot b populated
+        assert valid
+        new_grid, selected_after, _, _, valid = _fill_slot_onto_region_raw(
+            0, 0, 9, grid, selected, selected_region  # slot a is empty
+        )
+        assert not valid
+        assert new_grid == grid
+        assert selected_after == selected
+
+    def test_invalid_when_source_and_target_region_shapes_dont_match(self):
+        # slot b tagged righthalf (4x2 crop of this 4x4 grid); tophalf is
+        # 2x4 - not a comparable shape.
+        grid, selected, selected_region, _, valid = _select_region_raw(1, 3, 0)  # slot b, righthalf, color 0
+        assert valid
+        assert selected_region[1] == 3
+        new_grid, selected_after, selected_region_after, _, valid = _fill_slot_onto_region_raw(
+            1, 0, 9, grid, selected, selected_region  # target=tophalf(0)
+        )
+        assert not valid
+        assert new_grid == grid
+        assert selected_after == selected
+        assert selected_region_after == selected_region
+
+
+class TestReplaceRegionAndFill:
+    """ADR-0022: `replace_region_and_fill` - fuses a region-scoped `replace`
+    with `fill` into one atomic `act_on_region_selection` action."""
+
+    def test_replaces_then_fills_within_the_tagged_region(self):
+        grid = (
+            (1, 1, 1, 1),
+            (9, 0, 9, 0),
+            (1, 1, 1, 1),
+            (0, 0, 0, 0),
+        )
+        selected_grid, selected, selected_region, _, valid = _select_region_raw(0, 0, 9, grid)  # slot a, tophalf, color 9
+        assert valid
+        assert selected[0] == frozenset({(1, 0), (1, 2)})
+
+        idx = actions.ACTION_BY_NAME["replace_region_and_fill"]
+        raw_args = (9, 0, 8) + (0,) * (actions.MAX_ARITY - 3)  # replacee=9, replacer=0, fill=8
+        new_grid, selected_after, selected_region_after, _, valid = actions.execute(
+            idx, raw_args, selected_grid, selected, selected_region
+        )
+        assert valid
+        # tophalf's 9s -> 0, then the originally-selected (now-0) cells -> 8.
+        assert new_grid == ((1, 1, 1, 1), (8, 0, 8, 0))
+        # Selection/region-tag pass through unchanged (act_on_region_selection convention).
+        assert selected_after == selected
+        assert selected_region_after == selected_region
 
 
 # ADR-0012: rest of the object-selection menu.

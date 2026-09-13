@@ -173,6 +173,25 @@ the "hold two live grid states" mechanism, but it's actually a pure
 function of the input grid alone, fully reproducible as one bundled
 derived action (`fractal_expand_cellwise`) - see ADR-0021's Context for the
 full correction. See ADR-0021 for the full design.
+
+ADR-0022 widens the region menu from ADR-0020's 4 halves to 7 entries,
+adding a 3-way split (`_left_third`/`_middle_third`/`_right_third`, via
+`dsl.hsplit(grid, 3)`), and lands two more actions on top of the existing
+region-scoped dual-selection mechanism: `fill_slot_onto_region(slot,
+target_region, fill_color)` is a genuinely new `Action.kind`
+(`"fill_slot_onto_region"`) - unlike `fill_onto_region`, which always
+implicitly reads slot 0/"a" and its own tag, this one takes an *explicit*
+slot to read and an *explicit* target region, independent of that slot's
+own tag, so a selection computed in one region's coordinate frame can be
+painted onto a different region entirely; `replace_region_and_fill
+(replacee, replacer, fill_color)` reuses the *existing*
+`"act_on_region_selection"` kind unmodified - it fuses a region-scoped
+`dsl.replace` with `dsl.fill` into one atomic step, since a bare
+region-scoped `replace` alone would leave a transform-shaped action that
+doesn't consume the selection it needs to leave alive (the exact shape
+ADR-0015's `9ecd008a` no-go already ruled out). Together these unlock 2
+more curated tasks: `cf98881b` (3-way split + `fill_slot_onto_region`) and
+`1b2d62fb` (`replace_region_and_fill`). See ADR-0022 for the full design.
 """
 
 from collections import Counter
@@ -231,7 +250,7 @@ def _decode_slot(raw: int) -> int:
 
 
 def _decode_region(raw: int) -> int:
-    return raw % 4  # index into _REGIONS below
+    return raw % 7  # index into _REGIONS below (widened from 4 to 7 by ADR-0022)
 
 
 def _decode_combine_op(raw: int) -> int:
@@ -272,10 +291,34 @@ _STAMP_DIRECTIONS = (
     constants.DOWN_LEFT,
 )
 
-# ADR-0020: the 4-way region-scoping menu for `select_by_color_in_region`/
+# ADR-0022: a 3-way horizontal split, added alongside ADR-0020's 4 halves
+# below - not a bare 1:1 `dsl` call (each fixes `dsl.hsplit(grid, 3)`'s
+# result down to one of its 3 parts), so these live here rather than in
+# `_REGIONS` being built directly from `dsl` names.
+def _left_third(grid: Grid):
+    return dsl.first(dsl.hsplit(grid, 3))
+
+
+def _middle_third(grid: Grid):
+    parts = dsl.hsplit(grid, 3)
+    return dsl.first(dsl.remove(dsl.first(parts), parts))
+
+
+def _right_third(grid: Grid):
+    return dsl.last(dsl.hsplit(grid, 3))
+
+
+# ADR-0020: the region-scoping menu for `select_by_color_in_region`/
 # `fill_onto_region` - the 4 already-curated whole-grid-crop transforms,
-# reused here as the region-cropping step rather than duplicated.
-_REGIONS = (dsl.tophalf, dsl.bottomhalf, dsl.lefthalf, dsl.righthalf)  # index 0-3
+# reused here as the region-cropping step rather than duplicated. ADR-0022
+# widens this from 4 to 7 entries, adding the 3-way split above (indices
+# 4-6) - `_decode_region`'s range widens to match, backward compatible since
+# `CURATED_TASK_IDS` stores already-decoded indices and existing `0`-`3`
+# entries are unaffected by more values becoming reachable.
+_REGIONS = (
+    dsl.tophalf, dsl.bottomhalf, dsl.lefthalf, dsl.righthalf,  # index 0-3
+    _left_third, _middle_third, _right_third,  # index 4-6 (ADR-0022)
+)
 
 # ADR-0020: the 3-way set-op menu for `combine_slots`, used by name (not
 # index) in `_combine_slots` below.
@@ -306,6 +349,14 @@ class Action:
     region, *decoded_args) -> Grid`, like `"act_on_selection"` but also
     passed slot `0`/"a"'s tagged region, invalid if that slot or its region
     tag is unset.
+
+    ADR-0022 adds one more kind, `"fill_slot_onto_region"` - `fn(grid,
+    selected_for_slot, target_region, fill_color) -> Grid`, like
+    `"act_on_region_selection"` but reads an *explicit* decoded `slot` arg
+    (not always slot `0`/"a") and paints onto an *explicit* decoded
+    `target_region` arg (independent of that slot's own tagged region),
+    invalid if the named slot is empty/untagged or its tagged region's crop
+    and the target region's crop don't have matching shapes.
     """
 
     name: str
@@ -589,6 +640,24 @@ def _fill_onto_region(grid: Grid, selected, region: int, fill_color: int) -> Gri
     return dsl.fill(_REGIONS[region](grid), fill_color, selected)
 
 
+# ADR-0022: `kind="fill_slot_onto_region"` (a new kind) - takes an *explicit*
+# slot to read and an *explicit* target region, independent of that slot's
+# own tag, unlike `_fill_onto_region` above (which always implicitly reads
+# slot 0/"a" and its own tag). `execute()`'s matching dispatch branch pops
+# `slot` out of `decoded` before calling this fn.
+def _fill_slot_onto_region(grid: Grid, selected_for_slot, target_region: int, fill_color: int) -> Grid:
+    return dsl.fill(_REGIONS[target_region](grid), fill_color, selected_for_slot)
+
+
+# ADR-0022: `kind="act_on_region_selection"` (the existing kind, unmodified)
+# - fuses a region-scoped `dsl.replace` with `dsl.fill` into one atomic step,
+# so the transform-clears-selection question a bare region-scoped `replace`
+# alone would raise never comes up (see module docstring).
+def _replace_region_and_fill(grid: Grid, selected, region: int, replacee: int, replacer: int, fill_color: int) -> Grid:
+    base = dsl.replace(_REGIONS[region](grid), replacee, replacer)
+    return dsl.fill(base, fill_color, selected)
+
+
 # Zero-arg grid transforms.
 ZERO_ARG = [
     Action("identity", dsl.identity),
@@ -749,6 +818,26 @@ COMBINE_SELECTION = [
 # whole grid) - see `_fill_onto_region`'s own docstring above.
 ACT_ON_REGION_SELECTION = [
     Action("fill_onto_region", _fill_onto_region, (COLOR_ARG("fill_color"),), kind="act_on_region_selection"),
+    # ADR-0022: fuses a region-scoped `replace` with `fill` - see
+    # `_replace_region_and_fill`'s own docstring above.
+    Action(
+        "replace_region_and_fill",
+        _replace_region_and_fill,
+        (COLOR_ARG("replacee"), COLOR_ARG("replacer"), COLOR_ARG("fill_color")),
+        kind="act_on_region_selection",
+    ),
+]
+
+# ADR-0022: a new kind - reads an *explicit* slot (not always slot 0/"a")
+# and paints it onto an *explicit* target region (independent of that
+# slot's own tag) - see `_fill_slot_onto_region`'s own docstring above.
+FILL_SLOT_ONTO_REGION = [
+    Action(
+        "fill_slot_onto_region",
+        _fill_slot_onto_region,
+        (SLOT_ARG("slot"), REGION_ARG("target_region"), COLOR_ARG("fill_color")),
+        kind="fill_slot_onto_region",
+    ),
 ]
 
 ACTIONS: list = (
@@ -762,13 +851,16 @@ ACTIONS: list = (
     + ACT_ON_SELECTION
     + COMBINE_SELECTION
     + ACT_ON_REGION_SELECTION
+    + FILL_SLOT_ONTO_REGION
 )
 ACTION_BY_NAME = {a.name: i for i, a in enumerate(ACTIONS)}
 # ADR-0020: `fill_new_canvas` (arity 4) and `select_by_color_in_region`
 # (arity 3) both stay <= 4, so MAX_ARITY (from `commit`'s 4 args) is
 # unchanged - asserted here rather than just noted, since a future action
 # accidentally widening it would silently change PPO's action-head shape.
-assert max(a.arity for a in ACT_ON_REGION_SELECTION + SELECT_REGION + COMBINE_SELECTION) <= 4
+# ADR-0022's `replace_region_and_fill` (arity 3) and `fill_slot_onto_region`
+# (arity 3) both stay <= 4 too.
+assert max(a.arity for a in ACT_ON_REGION_SELECTION + SELECT_REGION + COMBINE_SELECTION + FILL_SLOT_ONTO_REGION) <= 4
 MAX_ARITY = max(a.arity for a in ACTIONS)
 RAW_ARG_RANGE = 30  # matches ARC's max grid dimension; also covers colors/factors with room to spare
 
@@ -808,12 +900,14 @@ def execute(
     transform that would exceed the 30x30 canvas or collapse a grid
     dimension to zero, a `"select"`/`"select_region"` action finding
     nothing to select, an `"act_on_selection"`/`"act_on_region_selection"`
-    action with no current selection/region tag in slot 0/"a", or a
+    action with no current selection/region tag in slot 0/"a", a
     `"combine_selection"` action with either slot unpopulated or a region-
-    shape mismatch between the two slots), `new_grid`/`new_selected`/
-    `new_selected_region` are `grid`/`selected`/`selected_region`
-    unchanged and `valid` is False - the env applies the no-op-with-penalty
-    behavior (Q7).
+    shape mismatch between the two slots, or a `"fill_slot_onto_region"`
+    action (ADR-0022) with the named slot empty/untagged or a region-shape
+    mismatch between that slot's tagged region and the explicit target
+    region), `new_grid`/`new_selected`/`new_selected_region` are
+    `grid`/`selected`/`selected_region` unchanged and `valid` is False -
+    the env applies the no-op-with-penalty behavior (Q7).
     """
 
     if selected is None:
@@ -901,6 +995,26 @@ def execute(
             return grid, selected, selected_region, decoded, False
         try:
             new_grid = action.fn(grid, selected[0], selected_region[0], *decoded.values())
+        except Exception:  # noqa: BLE001
+            return grid, selected, selected_region, decoded, False
+        new_h, new_w = _grid_shape(new_grid)
+        if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
+            return grid, selected, selected_region, decoded, False
+        return new_grid, selected, selected_region, decoded, True
+
+    if action.kind == "fill_slot_onto_region":
+        # ADR-0022: reads an *explicit* slot and paints onto an *explicit*
+        # target region, independent of that slot's own tag - `slot` picks
+        # a dict key, not a `fn` arg, so it's popped out before calling
+        # `fn` (same convention as `"select_region"` above).
+        slot = decoded["slot"]
+        target_region = decoded["target_region"]
+        if not selected.get(slot) or selected_region.get(slot) is None:
+            return grid, selected, selected_region, decoded, False
+        if _grid_shape(_REGIONS[selected_region[slot]](grid)) != _grid_shape(_REGIONS[target_region](grid)):
+            return grid, selected, selected_region, decoded, False
+        try:
+            new_grid = action.fn(grid, selected[slot], target_region, decoded["fill_color"])
         except Exception:  # noqa: BLE001
             return grid, selected, selected_region, decoded, False
         new_h, new_w = _grid_shape(new_grid)
