@@ -130,6 +130,19 @@ Planning artifacts (read these before making architectural changes):
   gitignored; `make prune-runs` (dry run) / `make prune-runs YES=1` (delete)
   keeps only runs from the most recent `created_at` date(s) seen (see the
   script's docstring for the exact rule).
+- `scripts/print_task.py` — prints an ARC-AGI-1 task's train/test grids
+  straight to the terminal (`make print-task TASK=<id>`, or
+  `uv run python scripts/print_task.py <id> [--pair train|test N] [--no-color]`)
+  so an agentic coding session and the person reading its terminal output
+  can look at the same grids without opening the visualizer or the raw
+  JSON — searches both `third_party/ARC-AGI/data/training` and
+  `data/evaluation`, validates `task_id` against an 8-hex-digit allowlist
+  before touching the filesystem (same convention as `viz/backend/play.py`'s
+  own `task_id`/`run_id` checks), and renders truecolor 2-char-wide cells
+  using the exact same 10-color palette `viz/frontend/src/palette.ts`
+  already transcribes from `third_party/ARC-AGI/apps/css/common.css`
+  (ADR-0007) — falls back to a plain bracketed-digit rendering when stdout
+  isn't a TTY, `--no-color` is passed, or `NO_COLOR` is set.
 - `viz/backend/` — local HTTP server exposing `runs/` as JSON, including
   `metrics.jsonl` (`server.py`); also serves `viz/frontend/dist` so one
   process runs the whole visualizer. The run-browsing/dashboard routes are
@@ -170,6 +183,7 @@ Planning artifacts (read these before making architectural changes):
 - `make train` — `train.py --algo ppo --task_id 67a3c6ac --run_id demo` (edit the task_id, or pass `--algo gp`, for a different run).
 - `make viz` — builds the frontend and starts the backend at `http://127.0.0.1:8000` (reads `runs/`; override the port with `make viz PORT=8001` if 8000 is taken).
 - `make demo` — `train` + `viz` in one command: trains a fresh run, then opens the visualizer on it. If `runs/` already has something in it (`make rollout`/`make train` output, or any prior run), `make viz` alone is faster.
+- `make print-task TASK=<id>` — prints an ARC-AGI-1 task's grids to the terminal (`scripts/print_task.py`); see that script's own `CLAUDE.md` bullet above.
 - `git config core.hooksPath .githooks` — installs the pre-push hook: `ruff check .`, the fast test layer, frontend typecheck/tests, and a `gitleaks` secret scan (skipped with a warning if `gitleaks` isn't installed locally; CI runs it regardless). `.github/workflows/ci.yml` runs five jobs in parallel: `lint` (`ruff`), `python-tests`, `python-tests-slow`, `frontend` (adds `npm audit`), and `security` (`gitleaks` + `pip-audit --skip-editable`, skipping the local `arc-agi-agent` package and the CPU-only `torch` build since neither resolves on PyPI under those exact names/versions). Branch protection on `main` requires all five before merge. `.github/dependabot.yml` opens weekly update PRs for `uv`, `npm` (`viz/frontend`), and GitHub Actions.
 
 ## Git workflow
