@@ -1,4 +1,4 @@
-.PHONY: help install test test-py test-py-slow test-ts rollout train viz build-frontend demo prune-runs
+.PHONY: help install test test-py test-py-slow test-ts rollout train viz build-frontend demo prune-runs print-task
 
 .DEFAULT_GOAL := help
 
@@ -18,6 +18,7 @@ help:
 	@echo "                    override the port with: make viz PORT=8001"
 	@echo "  demo            - train + viz: one command to produce a run and open the visualizer on it"
 	@echo "  prune-runs      - dry-run report of stale runs/ dirs (add YES=1 to actually delete)"
+	@echo "  print-task      - print an ARC task's grids to the terminal: make print-task TASK=928ad970"
 
 install:
 	uv sync --group dev
@@ -55,3 +56,6 @@ demo: train viz
 # run (scripts/prune_runs.py); `make prune-runs YES=1` actually deletes.
 prune-runs:
 	uv run python scripts/prune_runs.py $(if $(YES),--yes,)
+
+print-task:
+	uv run python scripts/print_task.py $(TASK)
