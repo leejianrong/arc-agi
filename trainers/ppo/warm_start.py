@@ -34,20 +34,27 @@ _DECODE_INVERSE = {
     "coord": lambda value: value,
     "dim": lambda value: value - 1,
     "direction": lambda value: value,
+    # ADR-0020: `slot`/`region`/`combine_op` all decode via `raw % N`, the
+    # same as `color`/`coord`/`direction` above - identity is the correct
+    # inverse for all of them.
+    "slot": lambda value: value,
+    "region": lambda value: value,
+    "combine_op": lambda value: value,
 }
 
 
-def _pad_grid(grid: list, selected=None) -> np.ndarray:
-    """Matches `ArcEnv`'s 2-channel observation (ADR-0011): channel 0 the
-    padded grid, channel 1 the "currently selected" mask. `selected` is the
-    `[[row, col], ...]`-or-`None` selection state to render into that
-    channel - `arc_env.episode_log`'s `"selected"` shape (`ArcEnv.
-    get_selected()`'s own return shape). The mask logic below mirrors
-    `arc_env.env`'s private `_selected_mask` exactly (0 everywhere when
-    nothing is selected, 1 at each `(row, col)` in the selection list
-    otherwise) - duplicated locally rather than imported, matching this
-    module's existing convention of duplicating `arc_env.env`'s private
-    `_pad_grid` instead of importing across modules.
+def _pad_grid(grid: list, selected: dict | None = None) -> np.ndarray:
+    """Matches `ArcEnv`'s 2-channel observation (ADR-0011/ADR-0020): channel
+    0 the padded grid, channel 1 the "currently selected" mask. `selected`
+    is the `{"a": [[row, col], ...] | None, "b": [[row, col], ...] | None}`
+    dual-slot selection state to render into that channel -
+    `arc_env.episode_log`'s `"selected"` shape (`ArcEnv.get_selected()`'s
+    own return shape). The mask logic below mirrors `arc_env.env`'s private
+    `_selected_mask` exactly (0 everywhere when nothing is selected, slot
+    "a"'s cells marked 1, then slot "b"'s cells marked 2 - "b" drawn second
+    so it wins on any overlap) - duplicated locally rather than imported,
+    matching this module's existing convention of duplicating `arc_env.
+    env`'s private `_pad_grid` instead of importing across modules.
 
     Callers must pass the selection state as it was *before* the step being
     encoded ran, not this step's own post-step `"selected"` value - see
@@ -59,8 +66,12 @@ def _pad_grid(grid: list, selected=None) -> np.ndarray:
             padded[i, j] = v
     selected_mask = np.zeros((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8)
     if selected:
-        for i, j in selected:
-            selected_mask[i, j] = 1
+        if selected.get("a"):
+            for i, j in selected["a"]:
+                selected_mask[i, j] = 1
+        if selected.get("b"):
+            for i, j in selected["b"]:
+                selected_mask[i, j] = 2
     return np.stack([padded, selected_mask])
 
 
@@ -87,8 +98,8 @@ def load_demonstration(gp_run_dir: Path, episode_id: str = "best-program") -> li
     post-step selection state, but the observation the policy sees when
     predicting a step's action is the selection state going into that
     decision, i.e. the prior step's outcome. The first step's input
-    selection is always empty (`ArcEnv.reset` starts with
-    `self._selected = None`)."""
+    selection is always empty (`ArcEnv.reset` starts with both slots of
+    `self._selected` set to `None`)."""
 
     episode = backend.read_episode(Path(gp_run_dir).parent, Path(gp_run_dir).name, episode_id)
     demonstration = []

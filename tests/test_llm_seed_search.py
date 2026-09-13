@@ -98,8 +98,11 @@ def test_sequence_to_program_round_trips_through_actions_execute():
     for pair in task.train:
         grid = pair.input
         selected = None
+        selected_region = None
         for primitive_index, raw_args in program:
-            grid, selected, _decoded, valid = actions.execute(primitive_index, raw_args, grid, selected)
+            grid, selected, selected_region, _decoded, valid = actions.execute(
+                primitive_index, raw_args, grid, selected, selected_region
+            )
             assert valid
         assert grid == pair.output
 

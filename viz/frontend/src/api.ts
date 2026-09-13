@@ -1,4 +1,4 @@
-import type { Grid } from "./grid";
+import type { Grid, SelectionSlots } from "./grid";
 
 // Mirrors arc_env/episode_log.py's JSONL record shapes 1:1 (ADR-0006,
 // ADR-0007's "no translation layer beyond parsing" decision).
@@ -35,10 +35,10 @@ export interface EpisodeStep {
   // matching the target - exact_match is what actually means "solved".
   // Optional for episodes logged before this field existed.
   exact_match?: boolean;
-  // ADR-0011/ADR-0012's object-selection mechanism: the post-step selected
-  // patch as `[row, col]` pairs, or `null`/absent when nothing is selected
-  // (or the episode predates this field).
-  selected?: [number, number][] | null;
+  // ADR-0011/ADR-0012/ADR-0020's object-selection mechanism: the post-step
+  // dual-slot selection (`{a: [[row,col],...]|null, b: [[row,col],...]|null}`),
+  // or `null`/absent when the episode predates this field.
+  selected?: SelectionSlots | null;
 }
 
 export interface EpisodeEnd {
@@ -123,7 +123,7 @@ export interface PlayState {
   pair_index: number;
   grid: Grid;
   target_grid: Grid;
-  selected: [number, number][] | null;
+  selected: SelectionSlots;
   terminated: boolean;
   truncated: boolean;
   valid_action: boolean;

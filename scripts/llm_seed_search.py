@@ -126,6 +126,7 @@ def verify(task_id: str, sequence: Sequence) -> dict:
         for i, pair in enumerate(pairs):
             grid = pair.input
             selected = None
+            selected_region = None
             passed = True
             reason = None
 
@@ -136,7 +137,9 @@ def verify(task_id: str, sequence: Sequence) -> dict:
                 primitive_index = actions.ACTION_BY_NAME[primitive_name]
                 action = actions.ACTIONS[primitive_index]
                 raw_args = tuple(_encode(spec, value) for spec, value in zip(action.args, args))
-                grid, selected, decoded, valid = actions.execute(primitive_index, raw_args, grid, selected)
+                grid, selected, selected_region, decoded, valid = actions.execute(
+                    primitive_index, raw_args, grid, selected, selected_region
+                )
                 if not valid:
                     passed, reason = False, f"step {step_i} ({primitive_name}{tuple(args)}) was invalid"
                     break

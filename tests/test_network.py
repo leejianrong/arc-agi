@@ -1,12 +1,13 @@
 """Tests for `trainers.ppo.network.ActorCritic`, focused on the ADR-0008
-amendment: primitive-level action masking for the 7 `kind="act_on_selection"`
+amendment: primitive-level action masking for the 8 `kind="act_on_selection"`
 actions (`commit_selection`, `crop_to_selection` (ADR-0015),
 `delete_selected`, `recolor_selected`, `move_selected`, `paint_selected_at`,
-`stamp_selected` (ADR-0016)) whenever the observation's selection channel
-(channel 1) is empty. `arc_env.actions.execute` already makes every one of
-these an unconditional no-op when nothing is selected - this masking stops
-the policy from even being able to *sample* one of them in that case,
-rather than only being penalized for it after the fact."""
+`stamp_selected` (ADR-0016), `fill_new_canvas` (ADR-0020)) whenever the
+observation's selection channel (channel 1) is empty. `arc_env.actions.
+execute` already makes every one of these an unconditional no-op when
+nothing is selected - this masking stops the policy from even being able to
+*sample* one of them in that case, rather than only being penalized for it
+after the fact."""
 
 import torch
 
@@ -18,7 +19,7 @@ GRID_DIM = actions.MAX_GRID_DIM
 
 ACT_ON_SELECTION_INDICES = [actions.ACTION_BY_NAME[name] for name in (
     "commit_selection", "crop_to_selection", "delete_selected", "recolor_selected",
-    "move_selected", "paint_selected_at", "stamp_selected",
+    "move_selected", "paint_selected_at", "stamp_selected", "fill_new_canvas",
 )]
 
 
@@ -36,16 +37,17 @@ def _obs(selected: bool, batch: int = 1) -> torch.Tensor:
     return torch.stack([grid, sel], dim=1)
 
 
-def test_is_act_on_selection_matches_the_7_curated_actions():
-    assert IS_ACT_ON_SELECTION.sum().item() == 7
+def test_is_act_on_selection_matches_the_8_curated_actions():
+    assert IS_ACT_ON_SELECTION.sum().item() == 8
     got = {actions.ACTIONS[i].name for i in torch.nonzero(IS_ACT_ON_SELECTION).flatten().tolist()}
     assert got == {
         "commit_selection", "crop_to_selection", "delete_selected",
         "recolor_selected", "move_selected", "paint_selected_at", "stamp_selected",
+        "fill_new_canvas",
     }
 
 
-def test_empty_selection_masks_out_all_7_act_on_selection_primitives():
+def test_empty_selection_masks_out_all_8_act_on_selection_primitives():
     torch.manual_seed(0)
     network = ActorCritic()
     obs = _obs(selected=False, batch=4)

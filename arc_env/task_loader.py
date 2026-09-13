@@ -91,6 +91,18 @@ particular task's data); `aabf363d` never changes shape at all. 19
 same-shape + 21 variable-shape = 40 total. See ADR-0019 for the full
 design.
 
+ADR-0020 (2026-09-13) adds 8 more variable-shape tasks via the new
+region-scoped dual-slot selection mechanism (`select_by_color_in_region`/
+`combine_slots`/`fill_new_canvas`/`fill_onto_region`, see `arc_env/
+actions.py`): `6430c8c4`, `94f9d214`, `ce4f8723`, `f2829549`, `fafffa47`,
+`99b1bc43`, `3428a4f5`, `dae9d2b5` - all share a "combine indices from two
+regions via a set op, then paint the result" shape. This lands 8 of the 9
+tasks ADR-0020 discusses; `1b2d62fb` looked like a ninth instance of the
+same shape but needs a fifth capability (recoloring within a region
+without losing the selection) this design doesn't add, so it stays
+uncurated - see ADR-0020's Decision section for the full explanation. 19
+same-shape + 29 variable-shape = 48 total.
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -302,6 +314,58 @@ CURATED_TASK_IDS = {
     # replace(I, x1, ZERO); x3 = leastcolor(x2); O = replace(x2, x3, x1)`.
     "5582e5ca": [("canvas_mostcolor", (3, 3))],
     "aabf363d": [("swap_two_least_colors", ())],
+    # ADR-0020: region-scoped dual-slot selection. Region indices (matching
+    # `arc_env/actions.py`'s `_REGIONS`): 0=tophalf, 1=bottomhalf,
+    # 2=lefthalf, 3=righthalf. Combine-op indices (matching `_COMBINE_OPS`):
+    # 0=intersect, 1=union, 2=symdiff. Slot indices: 0="a", 1="b".
+    "6430c8c4": [
+        ("select_by_color_in_region", (0, 0, 0)),  # slot a, tophalf, color 0
+        ("select_by_color_in_region", (1, 1, 0)),  # slot b, bottomhalf, color 0
+        ("combine_slots", (0,)),  # intersect
+        ("fill_new_canvas", (0, 3, 4, 4)),  # bg=0, fill=3, 4x4
+    ],
+    "94f9d214": [
+        ("select_by_color_in_region", (0, 0, 0)),
+        ("select_by_color_in_region", (1, 1, 0)),
+        ("combine_slots", (0,)),
+        ("fill_new_canvas", (0, 2, 4, 4)),
+    ],
+    "ce4f8723": [
+        ("select_by_color_in_region", (0, 0, 0)),
+        ("select_by_color_in_region", (1, 1, 0)),
+        ("combine_slots", (0,)),
+        ("fill_new_canvas", (3, 0, 4, 4)),
+    ],
+    "f2829549": [
+        ("select_by_color_in_region", (0, 2, 0)),  # lefthalf
+        ("select_by_color_in_region", (1, 3, 0)),  # righthalf
+        ("combine_slots", (0,)),
+        ("fill_new_canvas", (0, 3, 4, 3)),
+    ],
+    "fafffa47": [
+        ("select_by_color_in_region", (0, 0, 0)),
+        ("select_by_color_in_region", (1, 1, 0)),
+        ("combine_slots", (0,)),
+        ("fill_new_canvas", (0, 2, 3, 3)),
+    ],
+    "99b1bc43": [
+        ("select_by_color_in_region", (0, 0, 0)),
+        ("select_by_color_in_region", (1, 1, 0)),
+        ("combine_slots", (2,)),  # symdiff
+        ("fill_new_canvas", (0, 3, 4, 4)),
+    ],
+    "3428a4f5": [
+        ("select_by_color_in_region", (0, 0, 2)),  # color 2, not 0
+        ("select_by_color_in_region", (1, 1, 2)),
+        ("combine_slots", (2,)),  # symdiff
+        ("fill_new_canvas", (0, 3, 6, 5)),
+    ],
+    "dae9d2b5": [
+        ("select_by_color_in_region", (0, 2, 4)),  # lefthalf, color 4
+        ("select_by_color_in_region", (1, 3, 3)),  # righthalf, color 3
+        ("combine_slots", (1,)),  # union
+        ("fill_onto_region", (6,)),  # fills onto slot a's region (lefthalf), color 6
+    ],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -312,6 +376,8 @@ VARIABLE_SHAPE_TASK_IDS = {
     "a416b8f3", "6d0aefbc", "c9e6f938", "4c4377d9", "6fa7a44f", "8be77c9e", "5bd6f4ac",
     "1f85a75f", "23b5c85d", "1cf80156", "be94b721",
     "1c786137", "2013d3e2", "28bf18c6", "7468f01a", "f25fbde4",
+    "6430c8c4", "94f9d214", "ce4f8723", "f2829549", "fafffa47",
+    "99b1bc43", "3428a4f5", "dae9d2b5",
 }
 
 

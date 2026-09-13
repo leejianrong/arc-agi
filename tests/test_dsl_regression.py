@@ -16,13 +16,27 @@ from arc_env.task_loader import CURATED_TASK_IDS, load_task
 
 
 def replay(task_id: str, grid: tuple) -> tuple:
-    selected = None
+    # ADR-0020: a dual-slot selection dict (`0`="a"/`1`="b") plus its
+    # matching region-tag dict, mirroring `actions.execute`'s own dispatch.
+    selected = {0: None, 1: None}
+    selected_region = {0: None, 1: None}
     for primitive_name, args in CURATED_TASK_IDS[task_id]:
         action = actions.ACTIONS[actions.ACTION_BY_NAME[primitive_name]]
         if action.kind == "select":
-            selected = action.fn(grid, *args)
+            selected[0] = action.fn(grid, *args)
+        elif action.kind == "select_region":
+            slot = args[0]
+            selected[slot] = action.fn(grid, *args[1:])
+            selected_region[slot] = args[1]
+        elif action.kind == "combine_selection":
+            op = args[0]
+            selected[0] = action.fn(op, selected[0], selected[1])
+            selected[1] = None
+            selected_region[1] = None
         elif action.kind == "act_on_selection":
-            grid = action.fn(grid, selected, *args)
+            grid = action.fn(grid, selected[0], *args)
+        elif action.kind == "act_on_region_selection":
+            grid = action.fn(grid, selected[0], selected_region[0], *args)
         else:
             grid = action.fn(grid, *args)
     return grid
@@ -44,12 +58,15 @@ def test_solver_replays_through_env_action_executor(task_id):
     task = load_task(task_id)
     for pair in (*task.train, *task.test):
         grid = pair.input
-        selected = None
+        selected = {0: None, 1: None}
+        selected_region = {0: None, 1: None}
         for primitive_name, args in CURATED_TASK_IDS[task_id]:
             primitive_index = actions.ACTION_BY_NAME[primitive_name]
             action = actions.ACTIONS[primitive_index]
             raw_args = tuple(_encode(spec, value) for spec, value in zip(action.args, args))
-            grid, selected, decoded, valid = actions.execute(primitive_index, raw_args, grid, selected)
+            grid, selected, selected_region, decoded, valid = actions.execute(
+                primitive_index, raw_args, grid, selected, selected_region
+            )
             assert valid, f"{task_id}: {primitive_name}{args} was rejected as invalid"
             assert tuple(decoded.values()) == args
         assert grid == pair.output
@@ -65,4 +82,6 @@ def _encode(spec: actions.ArgSpec, value: int) -> int:
         return value - 2
     if spec.kind == "dim":
         return value - 1
+    if spec.kind in ("slot", "region", "combine_op"):
+        return value  # ADR-0020: all decode via `raw % N`, identity here too
     return value  # "coord"/"direction": decode is the identity (mod 4 for direction)

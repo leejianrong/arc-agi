@@ -95,7 +95,7 @@ class EpisodeWriter:
         truncated: bool,
         valid_action: bool,
         exact_match: bool | None = None,
-        selected: list | None = None,
+        selected: dict | None = None,
     ) -> None:
         """`terminated` can now be true without `exact_match` (V3's `commit`
         action ends the episode on a chosen crop whether or not it matches)
@@ -103,10 +103,11 @@ class EpisodeWriter:
         V3 that only ever had one way to terminate.
 
         `selected` (visualizer selection-overlay slice, following ADR-0011/
-        ADR-0012's object-selection mechanism) is the post-step selection as
-        `[[row, col], ...]` or `None` - `ArcEnv.get_selected()`'s own return
-        shape, already JSON-safe. Defaults to `None` for callers that don't
-        pass it (nothing selected, or the mechanism isn't in play)."""
+        ADR-0012/ADR-0020's object-selection mechanism) is the post-step
+        dual-slot selection as `{"a": [[row, col], ...] | None, "b": [[row,
+        col], ...] | None}` - `ArcEnv.get_selected()`'s own return shape,
+        already JSON-safe. Defaults to `None` for callers that don't pass it
+        (nothing selected, or the mechanism isn't in play)."""
 
         self._write({
             "type": "step",
