@@ -323,8 +323,14 @@ def _left_third(grid: Grid):
 
 
 def _middle_third(grid: Grid):
-    parts = dsl.hsplit(grid, 3)
-    return dsl.first(dsl.remove(dsl.first(parts), parts))
+    # `hsplit` returns an ordered `Tuple`, so index positionally. Picking the
+    # middle part via `dsl.remove(dsl.first(parts), parts)` (value equality,
+    # not position) was wrong whenever two or more of the 3 parts had
+    # identical content (e.g. a blank/symmetric grid): `remove` strips every
+    # part equal to the first one, which can empty the container entirely
+    # and raise `StopIteration` in `dsl.first` - this bit a PPO e2e test
+    # once the random policy/re-arc practice instances hit such a grid.
+    return dsl.hsplit(grid, 3)[1]
 
 
 def _right_third(grid: Grid):
