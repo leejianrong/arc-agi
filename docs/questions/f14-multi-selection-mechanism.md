@@ -39,10 +39,12 @@ the agent make an instance-dependent choice at decision time.
 One recurring shape does need that: split the grid into two halves, pull a
 color's cell locations independently from each half, combine the two
 location-sets with a set operation (intersection/union/symmetric
-difference), paint the result. Confirmed in at least 9 tasks: `6430c8c4`,
+difference), paint the result. Confirmed in 8 tasks: `6430c8c4`,
 `94f9d214`, `ce4f8723`, `f2829549`, `fafffa47`, `99b1bc43`, `3428a4f5`,
-`dae9d2b5`, `1b2d62fb` - a materially bigger and better-evidenced number
-than the original 2-task motivation.
+`dae9d2b5` - a materially bigger and better-evidenced number than the
+original 2-task motivation. (A ninth, `1b2d62fb`, looked like the same
+shape but turned out to need a fifth capability this design doesn't add -
+see `docs/adr/0020-region-scoped-dual-selection.md`'s own note on it.)
 
 **Important, checked directly:** this is *not* the same need `7c008303`/
 `a68b268e` have. Those need the pre-crop *original* grid held alongside a
@@ -61,9 +63,9 @@ slots, (4) skip the mechanism and keep adding bespoke derived actions
 instead. **User picked (1).**
 
 That surfaced the scope mismatch above - the chosen design reaches the
-9-task region-vs-half cluster, not the 2 tasks that originally motivated
+8-task region-vs-half cluster, not the 2 tasks that originally motivated
 this thread. Checked explicitly with the user before proceeding: **build
-it as scoped for the 9-task cluster; leave `7c008303`/`a68b268e`
+it as scoped for the 8-task cluster; leave `7c008303`/`a68b268e`
 (and F13 Stage 1's `928ad970`/`017c7c7b`, which need the same
 "hold the pre-crop original" capability) an explicitly open, separate
 question - not silently dropped, not stretched to cover by force.**
@@ -75,7 +77,7 @@ Full design, verification method, and exact new actions: `docs/adr/
 slot (`"a"`/`"b"`), a 4-way region menu (`tophalf`/`bottomhalf`/`lefthalf`/
 `righthalf`, all four already-curated transforms reused rather than
 duplicated), and 4 new actions (`select_by_color_in_region`,
-`combine_slots`, `fill_new_canvas`, `fill_onto_region`). All 9 target
+`combine_slots`, `fill_new_canvas`, `fill_onto_region`). All 8 target
 tasks verified by direct bare-`dsl` replay against every train/test pair
 before the ADR was written, not just plausibility-checked.
 
@@ -97,8 +99,11 @@ observation encoding itself stays a single mask channel (slot `"a"` marked
 
 `cf98881b` shares the cluster's shape but splits the grid three ways, not
 in half - out of this pass's region menu, a well-scoped follow-up if ever
-picked up. `7c008303`, `a68b268e`, `928ad970`, `017c7c7b` remain uncurated,
-needing the still-separate "hold the pre-crop original" capability.
+picked up. `1b2d62fb` shares the shape too but needs a `replace` sandwiched
+between selecting and filling, which this design can't carry a selection
+through - a fifth capability, not attempted. `7c008303`, `a68b268e`,
+`928ad970`, `017c7c7b` remain uncurated, needing the still-separate "hold
+the pre-crop original" capability.
 
 **Landed by:** ADR-0020 (design); implementation tracked on the Pandan
 board's multi-selection epic, not yet merged as of this write-up.

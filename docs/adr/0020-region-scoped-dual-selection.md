@@ -52,13 +52,14 @@ as a general mechanism is not a generally useful addition").
 One coherent, recurring shape does: split the grid into two regions
 (halves), pull cell locations of a given color independently from each,
 combine the two location-sets with a set operation (intersection, union,
-symmetric difference), and paint the result. Confirmed in at least 9 tasks:
+symmetric difference), and paint the result. Confirmed in 8 tasks:
 `6430c8c4`, `94f9d214`, `ce4f8723`, `f2829549`, `fafffa47`, `99b1bc43`,
-`3428a4f5`, `dae9d2b5`, `1b2d62fb` - a materially bigger, better-evidenced
-number than the original 2-task motivation, concentrated in one recognizable
-pattern rather than scattered one-offs. (`cf98881b` shares the shape with a
-3-way split rather than halves - out of this pass's region menu, noted
-below as a follow-up, not landed.)
+`3428a4f5`, `dae9d2b5` - a materially bigger, better-evidenced number than
+the original 2-task motivation, concentrated in one recognizable pattern
+rather than scattered one-offs. (`cf98881b` shares the shape with a 3-way
+split rather than halves - out of this pass's region menu, noted below as
+a follow-up, not landed. `1b2d62fb` looked like a ninth instance of the
+same shape but isn't, per the Decision section's own note on it below.)
 
 **This is not the same need `7c008303`/`a68b268e` have.** Those need the
 *pre-crop original* grid held alongside a derived crop (not two regions of
@@ -76,7 +77,7 @@ open, separate question.**
 
 Add a **second named selection slot** (`"a"`, `"b"`) and a small
 **region-scoping** menu, plus a way to **combine** the two slots into one
-result - four new actions, verified against all 9 target tasks by direct
+result - four new actions, verified against all 8 target tasks by direct
 replay against every train/test pair before writing this up (not just
 plausibility-checked):
 
@@ -116,11 +117,30 @@ independent slot alongside it, not a replacement. An ordinary successful
 (ADR-0011's staleness rule, now applied to the pair).
 
 **Deliberately not added:** a `"full"` (no-crop) region option, or a
-quadrant option - neither is needed by any of the 9 verified tasks, and
+quadrant option - neither is needed by any of the 8 verified tasks, and
 adding them speculatively would widen the menu past what's actually
 evidenced. `cf98881b`'s 3-way-split variant and `a68b268e`'s
 quadrant/pre-crop-original needs stay explicitly out of scope for this
 pass.
+
+**`1b2d62fb` looked like a ninth instance of the same shape and isn't.**
+Its solver is `fill(replace(lefthalf(I), 9, 0), 8, intersection(ofcolor
+(lefthalf(I),0), ofcolor(righthalf(I),0)))` - the same cluster shape,
+*except* for one `replace` sandwiched between computing the combined
+selection and the final fill. Verified directly (bare-`dsl` replay against
+all 6 train/test pairs) that reordering the `replace` to run first, before
+selecting, is **not** equivalent - it changes which cells the intersection
+picks up whenever the grid has cells that were originally `9` (0/6 pairs
+matched under the reordering, vs. 6/6 under the solver's own order). And
+running `replace` in its original position, between the select/combine
+step and the fill, would collide with this design's existing invalidation
+rule (an ordinary transform clears both slots) - or, worse, silently
+misapply an existing selection-consuming action to a region-scoped
+selection's *local* coordinates, which only `fill_new_canvas`/
+`fill_onto_region` are built to handle correctly. `1b2d62fb` needs a fifth
+capability this pass doesn't add (recoloring within a region without
+losing the selection) - stays uncurated, an honest gap rather than a
+silent ninth win.
 
 ## Mechanism - why this is cheaper than it first looked
 
@@ -164,9 +184,9 @@ grid.ts` (two overlay colors instead of one).
 
 - Unlocks (pending implementation and the same fixture-level verification
   every other ADR here requires): `6430c8c4`, `94f9d214`, `ce4f8723`,
-  `f2829549`, `fafffa47`, `99b1bc43`, `3428a4f5`, `dae9d2b5`, `1b2d62fb` - 9
-  tasks, all already verified by direct bare-`dsl` replay against every
-  train/test pair using this exact action set.
+  `f2829549`, `fafffa47`, `99b1bc43`, `3428a4f5`, `dae9d2b5` - 8 tasks, all
+  already verified by direct bare-`dsl` replay against every train/test
+  pair using this exact action set.
 - `7c008303`, `a68b268e`, `928ad970`, `017c7c7b` remain uncurated - they
   need a related but different capability (holding the pre-crop original
   grid alongside a derived crop; `a68b268e` also needs three simultaneous
@@ -174,5 +194,8 @@ grid.ts` (two overlay colors instead of one).
 - `cf98881b` (a 3-way-split sibling of the confirmed cluster) is out of
   this pass's region menu (halves only) - a well-scoped, cheap follow-up if
   ever picked up, not attempted here.
+- `1b2d62fb` (a near-miss of the confirmed cluster, blocked by an
+  in-between `replace` this design can't carry a selection through) also
+  stays uncurated - see the Decision section's note on it above.
 - `docs/questions/f14-multi-selection-mechanism.md` records the full
   design/audit trail; `docs/QUESTIONS.md`'s F14 register row points there.
