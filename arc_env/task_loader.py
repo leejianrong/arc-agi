@@ -116,6 +116,18 @@ pure function of the input grid alone, fully reproducible as one bundled
 `fractal_expand_cellwise` call - see ADR-0021's Context for the full
 correction. 21 same-shape + 34 variable-shape = 55 total.
 
+ADR-0022 (2026-09-13) widens the region menu from 4 halves to 7 entries
+(adding a 3-way split: `left_third`/`middle_third`/`right_third`) and adds
+2 more actions on top of the existing region-scoped dual-slot selection
+mechanism - `fill_slot_onto_region` (an explicit slot painted onto an
+explicit target region, independent of that slot's own tag) and
+`replace_region_and_fill` (a region-scoped `replace` fused with `fill`,
+reusing the existing `"act_on_region_selection"` kind) - see `arc_env/
+actions.py`. Unlocks 2 more variable-shape tasks: `cf98881b` (3-way split +
+`fill_slot_onto_region`) and `1b2d62fb` (`replace_region_and_fill`), both
+named as follow-ups in ADR-0020's own Consequences. 21 same-shape + 36
+variable-shape = 57 total. See ADR-0022 for the full design.
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -413,6 +425,23 @@ CURATED_TASK_IDS = {
         ("crop_to_selection", ()),
         ("fractal_expand_cellwise", (3,)),
     ],
+    # ADR-0022: 3-way region split + the 2 new actions. Region indices
+    # (matching `arc_env/actions.py`'s widened `_REGIONS`): 0=tophalf,
+    # 1=bottomhalf, 2=lefthalf, 3=righthalf, 4=left_third, 5=middle_third,
+    # 6=right_third. Slot indices: 0="a", 1="b". Combine-op indices
+    # (matching `_COMBINE_OPS`): 0=intersect, 1=union, 2=symdiff.
+    "cf98881b": [
+        ("select_by_color_in_region", (0, 4, 4)),   # slot a, left_third, color 4
+        ("select_by_color_in_region", (1, 5, 9)),   # slot b, middle_third, color 9
+        ("fill_slot_onto_region", (1, 6, 9)),        # slot b's selection, onto right_third, fill 9
+        ("recolor_selected", (4,)),                  # existing action - slot a's selection from step 1, untouched by step 3
+    ],
+    "1b2d62fb": [
+        ("select_by_color_in_region", (0, 2, 0)),   # slot a, lefthalf, color 0
+        ("select_by_color_in_region", (1, 3, 0)),   # slot b, righthalf, color 0
+        ("combine_slots", (0,)),                     # intersect -> slot a, region tag a stays lefthalf
+        ("replace_region_and_fill", (9, 0, 8)),      # replacee=9, replacer=0, fill=8
+    ],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -427,6 +456,8 @@ VARIABLE_SHAPE_TASK_IDS = {
     "99b1bc43", "3428a4f5", "dae9d2b5",
     # ADR-0021.
     "c909285e", "b94a9452", "a740d043", "007bbfb7", "80af3007",
+    # ADR-0022.
+    "cf98881b", "1b2d62fb",
 }
 
 

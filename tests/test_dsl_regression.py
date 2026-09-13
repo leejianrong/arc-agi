@@ -37,6 +37,9 @@ def replay(task_id: str, grid: tuple) -> tuple:
             grid = action.fn(grid, selected[0], *args)
         elif action.kind == "act_on_region_selection":
             grid = action.fn(grid, selected[0], selected_region[0], *args)
+        elif action.kind == "fill_slot_onto_region":
+            slot = args[0]
+            grid = action.fn(grid, selected[slot], *args[1:])
         else:
             grid = action.fn(grid, *args)
     return grid
