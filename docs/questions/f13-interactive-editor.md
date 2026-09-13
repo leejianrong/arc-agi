@@ -1,8 +1,9 @@
 # F13: the interactive "Photoshop-like" editor
 
 **Status:** decided (user, 2026-09-06), staged. Stage 0 built 2026-09-06
-(ADR-0017). Stage 1 done 2026-09-13. Stage 2 in progress (Bucket A landed
-2026-09-13, ADR-0021).
+(ADR-0017). Stage 1 done 2026-09-13. Stage 2 in progress (Buckets A and B
+landed 2026-09-13, ADR-0021/ADR-0022; the "hold the pre-crop original
+grid" cluster stays open).
 
 Should we build an interactive editor where a human solves ARC-AGI-1 tasks
 by hand, with a constrained toolset mirroring the curated action space,
@@ -116,13 +117,19 @@ free win the original coverage audit's name-level check missed). 7 tasks,
 6 new actions, all verified end to end before implementation - see
 ADR-0021 for the corrected accounting.
 
-**Still open:** `cf98881b` (needs a 3-way region split, a small extension
-of ADR-0020's region menu) and `1b2d62fb` (needs a region-scoped recolor
-that doesn't clear the selection) as scoped follow-ups to ADR-0020;
-`7c008303`/`a68b268e`/`928ad970`/`017c7c7b` (the "hold the pre-crop
-original grid" need, Family 2's real, now-2-task-smaller roster) as its
-own still-undecided design question, the same weight as the original
+**Bucket B landed 2026-09-13 (ADR-0022):** `cf98881b` (a 3-way region
+split plus a new `fill_slot_onto_region` action - turned out to need a
+genuinely new `Action.kind`, not just more region entries, once the exact
+need was worked out) and `1b2d62fb` (a `replace_region_and_fill` action
+that fuses `replace` and `fill` into one atomic step, reusing the
+existing `act_on_region_selection` kind - cheaper than first framed, no
+new kind needed once the selection-clearing question was sidestepped by
+fusing rather than adding a bare region-scoped `replace`).
+
+**Still open:** `7c008303`/`a68b268e`/`928ad970`/`017c7c7b` (the "hold the
+pre-crop original grid" need, Family 2's real roster) as its own
+still-undecided design question, the same weight as the original
 multi-selection/cross-grid mechanism decision.
 
 **Landed by:** ADR-0017, `docs/research/f13-stage1-play-audit.md`,
-ADR-0021.
+ADR-0021, ADR-0022.

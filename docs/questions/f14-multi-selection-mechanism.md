@@ -98,12 +98,16 @@ observation encoding itself stays a single mask channel (slot `"a"` marked
 ## Not landed here
 
 `cf98881b` shares the cluster's shape but splits the grid three ways, not
-in half - out of this pass's region menu, a well-scoped follow-up if ever
-picked up. `1b2d62fb` shares the shape too but needs a `replace` sandwiched
-between selecting and filling, which this design can't carry a selection
-through - a fifth capability, not attempted. `7c008303`, `a68b268e`,
-`928ad970`, `017c7c7b` remain uncurated, needing the still-separate "hold
-the pre-crop original" capability.
+in half - out of this pass's region menu. `1b2d62fb` shares the shape too
+but needs a `replace` sandwiched between selecting and filling, which this
+design can't carry a selection through - a fifth capability, not
+attempted here. **Both landed 2026-09-13 (ADR-0022):** a 3-way region
+split plus a new `fill_slot_onto_region` action for `cf98881b`; a fused
+`replace_region_and_fill` action (reusing the existing `act_on_region_
+selection` kind, no new selection-survives-a-transform precedent needed)
+for `1b2d62fb`. `7c008303`, `a68b268e`, `928ad970`, `017c7c7b` remain
+uncurated, needing the still-separate "hold the pre-crop original"
+capability - untouched by ADR-0022.
 
 **Landed by:** ADR-0020 (design); implementation tracked on the Pandan
 board's multi-selection epic, not yet merged as of this write-up.
