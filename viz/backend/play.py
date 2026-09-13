@@ -89,7 +89,7 @@ class _StepRecord:
     truncated: bool
     valid_action: bool
     exact_match: bool
-    selected: list | None
+    selected: dict
 
 
 @dataclass

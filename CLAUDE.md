@@ -27,8 +27,8 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 43 actions as of
-  ADR-0019: structural transforms including the 4 self-concatenation
+  `arc-dsl`-primitive action space (`actions.py` — 47 actions as of
+  ADR-0020: structural transforms including the 4 self-concatenation
   actions, `fill_cell`, `canvas`, `canvas_mostcolor`,
   `swap_two_least_colors`, `commit`, plus the object-selection
   mechanism's 14 actions (`select_largest`/`select_smallest`/
@@ -50,10 +50,16 @@ Planning artifacts (read these before making architectural changes):
   (ADR-0019) are two more derived actions (`canvas` fed a grid-derived color
   instead of an agent-chosen one; a fully self-contained zero-arg swap of a
   grid's two least-common colors) — same "derived, not drawn 1:1 from a
-  single `dsl` call" pattern `fill_cell`/`canvas` already established), the
-  task loader (`task_loader.py` — 40 curated tasks, 19 same-shape
-  + 21 variable-shape), `env.py` (2-channel observation:
-  grid + selection mask; `get_selected()` exposes the selection for episode
+  single `dsl` call" pattern `fill_cell`/`canvas` already established; and
+  ADR-0020 adds a region-scoped, second named selection slot ("a"/"b",
+  keyed internally by int 0/1) via 4 more actions —
+  `select_by_color_in_region`, `combine_slots` (intersect/union/symdiff),
+  `fill_new_canvas`, `fill_onto_region` — unlocking 8 more curated tasks
+  that combine indices from two grid halves via a set op), the
+  task loader (`task_loader.py` — 48 curated tasks, 19 same-shape
+  + 29 variable-shape), `env.py` (2-channel observation:
+  grid + selection mask, now with values in {0,1,2} per ADR-0020's dual
+  slots; `get_selected()` exposes the selection for episode
   logging), ADR-0005's dense reward (`reward.py`), extra
   practice-instance generation via `re-arc` (`re_arc.py`), and the JSONL
   trajectory/run-meta writers (`episode_log.py`), per ADR-0004/ADR-0006.

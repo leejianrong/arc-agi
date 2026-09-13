@@ -161,58 +161,74 @@ def test_commit_selection_crops_to_the_selected_patchs_bounding_box():
 
 
 class TestExecuteSelectionThreading:
-    """`execute`'s `selected` parameter/return (ADR-0011), exercised through
-    the full raw-args interface rather than `Action.fn` directly."""
+    """`execute`'s `selected`/`selected_region` parameters/returns
+    (ADR-0011/ADR-0020), exercised through the full raw-args interface
+    rather than `Action.fn` directly. `selected`/`selected_region` are
+    2-key dicts (`0`="a"/`1`="b") - these tests only ever touch slot 0."""
 
     def test_select_action_updates_selection_without_touching_the_grid(self):
         idx = actions.ACTION_BY_NAME["select_largest"]
-        new_grid, new_selected, decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        new_grid, new_selected, new_selected_region, decoded, valid = actions.execute(
+            idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID
+        )
         assert valid
         assert new_grid == OBJECTS_GRID
-        assert new_selected == frozenset({(1, 1), (2, 1)})
+        assert new_selected[0] == frozenset({(1, 1), (2, 1)})
+        assert new_selected_region == {0: None, 1: None}
         assert decoded == {}
 
     def test_select_action_is_invalid_when_no_objects_found(self):
         blank = ((0, 0), (0, 0))
         idx = actions.ACTION_BY_NAME["select_largest"]
-        new_grid, new_selected, _decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, blank, None)
+        new_grid, new_selected, _new_selected_region, _decoded, valid = actions.execute(
+            idx, (0,) * actions.MAX_ARITY, blank
+        )
         assert not valid
         assert new_grid == blank
-        assert new_selected is None  # unchanged - there was nothing selected before either
+        assert new_selected[0] is None  # unchanged - there was nothing selected before either
 
     def test_act_on_selection_is_invalid_with_no_current_selection(self):
         idx = actions.ACTION_BY_NAME["commit_selection"]
-        new_grid, new_selected, _decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        new_grid, new_selected, _new_selected_region, _decoded, valid = actions.execute(
+            idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID
+        )
         assert not valid
         assert new_grid == OBJECTS_GRID
-        assert new_selected is None
+        assert new_selected[0] is None
 
     def test_act_on_selection_consumes_a_prior_selection(self):
         select_idx = actions.ACTION_BY_NAME["select_smallest"]
         commit_idx = actions.ACTION_BY_NAME["commit_selection"]
-        grid, selected, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        grid, selected, selected_region, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID)
         assert valid
-        grid, selected, _, valid = actions.execute(commit_idx, (0,) * actions.MAX_ARITY, grid, selected)
+        grid, selected, selected_region, _, valid = actions.execute(
+            commit_idx, (0,) * actions.MAX_ARITY, grid, selected, selected_region
+        )
         assert valid
         assert grid == ((3,),)
 
     def test_a_successful_ordinary_transform_clears_a_stale_selection(self):
         select_idx = actions.ACTION_BY_NAME["select_largest"]
         vmirror_idx = actions.ACTION_BY_NAME["vmirror"]
-        _, selected, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
-        assert valid and selected
+        _, selected, selected_region, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID)
+        assert valid and selected[0]
 
-        _, selected_after, _, valid = actions.execute(vmirror_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, selected)
+        _, selected_after, selected_region_after, _, valid = actions.execute(
+            vmirror_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, selected, selected_region
+        )
         assert valid
-        assert selected_after is None
+        assert selected_after == {0: None, 1: None}
+        assert selected_region_after == {0: None, 1: None}
 
     def test_crop_to_selection_is_invalid_with_no_current_selection(self):
         # ADR-0015: same "act_on_selection" invalidity rule as commit_selection.
         idx = actions.ACTION_BY_NAME["crop_to_selection"]
-        new_grid, new_selected, _decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        new_grid, new_selected, _new_selected_region, _decoded, valid = actions.execute(
+            idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID
+        )
         assert not valid
         assert new_grid == OBJECTS_GRID
-        assert new_selected is None
+        assert new_selected[0] is None
 
     def test_crop_to_selection_preserves_the_selection_unlike_an_ordinary_transform(self):
         # ADR-0015: `act_on_selection` actions don't clear the selection
@@ -220,24 +236,124 @@ class TestExecuteSelectionThreading:
         # act_on_selection or the original selection stays usable afterward.
         select_idx = actions.ACTION_BY_NAME["select_smallest"]
         crop_idx = actions.ACTION_BY_NAME["crop_to_selection"]
-        grid, selected, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+        grid, selected, selected_region, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID)
         assert valid
-        grid, selected_after, _, valid = actions.execute(crop_idx, (0,) * actions.MAX_ARITY, grid, selected)
+        grid, selected_after, selected_region_after, _, valid = actions.execute(
+            crop_idx, (0,) * actions.MAX_ARITY, grid, selected, selected_region
+        )
         assert valid
         assert grid == ((3,),)
         assert selected_after == selected
+        assert selected_region_after == selected_region
 
     def test_a_failed_ordinary_transform_leaves_the_selection_untouched(self):
         select_idx = actions.ACTION_BY_NAME["select_largest"]
         fill_cell_idx = actions.ACTION_BY_NAME["fill_cell"]
-        _, selected, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
-        assert valid and selected
+        _, selected, selected_region, _, valid = actions.execute(select_idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID)
+        assert valid and selected[0]
 
         # fill_cell's row/col args decode to out-of-bounds coordinates for this grid.
         out_of_bounds_raw = (0, 29, 29, 0)
-        _, selected_after, _, valid = actions.execute(fill_cell_idx, out_of_bounds_raw, OBJECTS_GRID, selected)
+        _, selected_after, selected_region_after, _, valid = actions.execute(
+            fill_cell_idx, out_of_bounds_raw, OBJECTS_GRID, selected, selected_region
+        )
         assert not valid
         assert selected_after == selected
+        assert selected_region_after == selected_region
+
+
+# ADR-0020: region-scoped dual-selection mechanism - direct `execute()`-level
+# coverage of the new kinds' invalid paths, which none of the 8 curated
+# fixture tasks exercises (they're all "happy path", always valid).
+REGION_GRID = (
+    (1, 1, 1, 1),
+    (0, 0, 0, 0),
+    (1, 1, 1, 1),
+    (0, 0, 0, 0),
+)  # tophalf == bottomhalf's own content, so a color-1 select in each region
+# lands on the same local coordinates - a real (non-empty) intersection.
+
+
+def _select_region(slot, region, color, grid=REGION_GRID, selected=None, selected_region=None):
+    idx = actions.ACTION_BY_NAME["select_by_color_in_region"]
+    raw_args = (slot, region, color) + (0,) * (actions.MAX_ARITY - 3)
+    return actions.execute(idx, raw_args, grid, selected, selected_region)
+
+
+class TestRegionScopedDualSelection:
+    """ADR-0020: `select_by_color_in_region`/`combine_slots`/
+    `fill_new_canvas`/`fill_onto_region` and the 3 new `Action.kind`
+    values' invalid paths."""
+
+    def test_select_by_color_in_region_writes_into_the_named_slot_only(self):
+        _, selected, selected_region, _, valid = _select_region(1, 0, 1)  # slot b, tophalf, color 1
+        assert valid
+        assert selected == {0: None, 1: frozenset({(0, 0), (0, 1), (0, 2), (0, 3)})}
+        assert selected_region == {0: None, 1: 0}
+
+    def test_select_by_color_in_region_is_invalid_when_nothing_found_in_that_region(self):
+        _, selected, _selected_region, _, valid = _select_region(0, 0, 9)  # color 9 not present
+        assert not valid
+        assert selected == {0: None, 1: None}  # unchanged
+
+    def test_combine_slots_intersects_both_regions_and_clears_slot_b(self):
+        grid, selected, selected_region, _, valid = _select_region(0, 0, 1)  # slot a, tophalf
+        assert valid
+        grid, selected, selected_region, _, valid = _select_region(1, 1, 1, grid, selected, selected_region)  # slot b, bottomhalf
+        assert valid
+
+        combine_idx = actions.ACTION_BY_NAME["combine_slots"]
+        raw_args = (0,) * actions.MAX_ARITY  # op=0 -> intersect
+        _, combined, combined_region, _, valid = actions.execute(combine_idx, raw_args, grid, selected, selected_region)
+        assert valid
+        assert combined[0] == frozenset({(0, 0), (0, 1), (0, 2), (0, 3)})
+        assert combined[1] is None
+        assert combined_region == {0: 0, 1: None}  # slot a keeps its own region tag (tophalf)
+
+    def test_combine_slots_is_invalid_with_an_unpopulated_slot(self):
+        grid, selected, selected_region, _, valid = _select_region(0, 0, 1)  # only slot a populated
+        assert valid
+        combine_idx = actions.ACTION_BY_NAME["combine_slots"]
+        _, _, _, _, valid = actions.execute(combine_idx, (0,) * actions.MAX_ARITY, grid, selected, selected_region)
+        assert not valid
+
+    def test_combine_slots_is_invalid_when_the_two_regions_shapes_dont_match(self):
+        # tophalf (2x4) vs. lefthalf (4x2) of the same 4x4 grid - not
+        # comparable positions, even though both selects individually
+        # succeed.
+        grid, selected, selected_region, _, valid = _select_region(0, 0, 1)  # slot a, tophalf
+        assert valid
+        grid, selected, selected_region, _, valid = _select_region(1, 2, 0, grid, selected, selected_region)  # slot b, lefthalf, color 0
+        assert valid
+        combine_idx = actions.ACTION_BY_NAME["combine_slots"]
+        _, _, _, _, valid = actions.execute(combine_idx, (0,) * actions.MAX_ARITY, grid, selected, selected_region)
+        assert not valid
+
+    def test_fill_new_canvas_paints_slot_as_selection_onto_a_fresh_canvas(self):
+        grid, selected, selected_region, _, valid = _select_region(0, 0, 1)  # slot a, tophalf, color 1
+        assert valid
+        fill_idx = actions.ACTION_BY_NAME["fill_new_canvas"]
+        raw_args = (0, 5, 1, 3) + (0,) * (actions.MAX_ARITY - 4)  # bg=0, fill=5, h=2, w=4
+        new_grid, selected_after, _, _, valid = actions.execute(fill_idx, raw_args, grid, selected, selected_region)
+        assert valid
+        assert new_grid == ((5, 5, 5, 5), (0, 0, 0, 0))
+        assert selected_after == selected  # act_on_selection never clears/updates selection
+
+    def test_fill_onto_region_paints_slot_as_selection_onto_its_tagged_region(self):
+        grid, selected, selected_region, _, valid = _select_region(0, 0, 1)  # slot a, tophalf, color 1
+        assert valid
+        fill_idx = actions.ACTION_BY_NAME["fill_onto_region"]
+        raw_args = (9,) + (0,) * (actions.MAX_ARITY - 1)  # fill=9
+        new_grid, _, _, _, valid = actions.execute(fill_idx, raw_args, grid, selected, selected_region)
+        assert valid
+        assert new_grid == ((9, 9, 9, 9), (0, 0, 0, 0))  # tophalf, its color-1 cells recolored 9
+
+    def test_fill_onto_region_is_invalid_with_no_current_selection(self):
+        fill_idx = actions.ACTION_BY_NAME["fill_onto_region"]
+        new_grid, selected, _, _, valid = actions.execute(fill_idx, (0,) * actions.MAX_ARITY, REGION_GRID)
+        assert not valid
+        assert new_grid == REGION_GRID
+        assert selected == {0: None, 1: None}
 
 
 # ADR-0012: rest of the object-selection menu.
@@ -293,9 +409,9 @@ def test_paint_selected_at_stamps_the_selection_without_removing_the_original():
 def test_execute_threads_decoded_args_into_a_select_action():
     idx = actions.ACTION_BY_NAME["select_by_color"]
     raw_args = (2,) + (0,) * (actions.MAX_ARITY - 1)
-    _, selected, decoded, valid = actions.execute(idx, raw_args, OBJECTS_GRID, None)
+    _, selected, _selected_region, decoded, valid = actions.execute(idx, raw_args, OBJECTS_GRID)
     assert valid
-    assert selected == frozenset({(1, 1), (2, 1)})
+    assert selected[0] == frozenset({(1, 1), (2, 1)})
     assert decoded == {"color": 2}
 
 
@@ -451,36 +567,42 @@ def test_stamp_selected_reuses_the_selection_across_several_calls():
     select_idx = actions.ACTION_BY_NAME["select_by_color"]
     stamp_idx = actions.ACTION_BY_NAME["stamp_selected"]
     raw_select = (2,) + (0,) * (actions.MAX_ARITY - 1)
-    grid, selected, _, valid = actions.execute(select_idx, raw_select, OBJECTS_GRID, None)
+    grid, selected, selected_region, _, valid = actions.execute(select_idx, raw_select, OBJECTS_GRID)
     assert valid
 
     raw_stamp_down = (5, 0) + (0,) * (actions.MAX_ARITY - 2)
-    grid, selected_after_first, _, valid = actions.execute(stamp_idx, raw_stamp_down, grid, selected)
+    grid, selected_after_first, selected_region_after_first, _, valid = actions.execute(
+        stamp_idx, raw_stamp_down, grid, selected, selected_region
+    )
     assert valid
     assert selected_after_first == selected  # still usable for a second stamp
 
     raw_stamp_up = (6, 1) + (0,) * (actions.MAX_ARITY - 2)
-    grid, selected_after_second, _, valid = actions.execute(stamp_idx, raw_stamp_up, grid, selected_after_first)
+    grid, selected_after_second, _selected_region_after_second, _, valid = actions.execute(
+        stamp_idx, raw_stamp_up, grid, selected_after_first, selected_region_after_first
+    )
     assert valid
     assert selected_after_second == selected
 
 
 def test_stamp_selected_is_invalid_with_no_current_selection():
     idx = actions.ACTION_BY_NAME["stamp_selected"]
-    new_grid, new_selected, _decoded, valid = actions.execute(idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID, None)
+    new_grid, new_selected, _new_selected_region, _decoded, valid = actions.execute(
+        idx, (0,) * actions.MAX_ARITY, OBJECTS_GRID
+    )
     assert not valid
     assert new_grid == OBJECTS_GRID
-    assert new_selected is None
+    assert new_selected[0] is None
 
 
 def test_stamp_selected_direction_arg_decodes_mod_8():
     # Raw direction args >= 8 wrap around to the same 8-entry menu, mirroring
     # move_selected's own DIRECTION_ARG mod-4 wraparound.
     idx = actions.ACTION_BY_NAME["stamp_selected"]
-    selected = frozenset({(1, 1), (2, 1)})
+    selected = {0: frozenset({(1, 1), (2, 1)}), 1: None}
     for raw_direction, expected_decoded in ((0, 0), (7, 7), (8, 0), (15, 7)):
         raw_args = (0, raw_direction) + (0,) * (actions.MAX_ARITY - 2)
-        _, _, decoded, valid = actions.execute(idx, raw_args, OBJECTS_GRID, selected)
+        _, _, _, decoded, valid = actions.execute(idx, raw_args, OBJECTS_GRID, selected)
         assert valid
         assert decoded["direction"] == expected_decoded
 

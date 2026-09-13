@@ -83,8 +83,9 @@ def test_load_demonstration_recovers_a_select_then_act_on_selection_program(tmp_
     # selected - its input selection channel must be non-empty and must
     # match the env's own post-select-step selection state exactly.
     episode = read_episode(run_dir.parent, run_dir.name, "best-program")
-    selected_after_select = episode["steps"][0]["selected"]
+    selected_after_select = episode["steps"][0]["selected"]["a"]
     assert selected_after_select  # sanity: select_largest actually selected something
+    assert episode["steps"][0]["selected"]["b"] is None  # ADR-0020: slot "b" untouched
     expected_mask = np.zeros((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8)
     for i, j in selected_after_select:
         expected_mask[i, j] = 1

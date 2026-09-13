@@ -33,8 +33,8 @@ def test_reset_starts_with_no_selection():
     env = ArcEnv()
     obs, info = env.reset(task_id="67a3c6ac", pair_index=0)
     assert (obs[1] == 0).all()
-    assert env.get_selected() is None
-    assert info["selected"] is None
+    assert env.get_selected() == {"a": None, "b": None}
+    assert info["selected"] == {"a": None, "b": None}
 
 
 def test_get_selected_and_info_reflect_a_successful_select_action():
@@ -42,8 +42,9 @@ def test_get_selected_and_info_reflect_a_successful_select_action():
     env.reset(task_id="1f85a75f", pair_index=0)
     _obs, _reward, _terminated, _truncated, info = env.step(action("select_largest"))
     selected = env.get_selected()
-    assert selected  # non-empty
-    assert selected == sorted(selected)  # sorted [row, col] pairs, per get_selected's contract
+    assert selected["a"]  # non-empty
+    assert selected["a"] == sorted(selected["a"])  # sorted [row, col] pairs, per get_selected's contract
+    assert selected["b"] is None
     assert info["selected"] == selected
 
 

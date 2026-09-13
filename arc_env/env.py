@@ -51,15 +51,21 @@ def _pad_grid(grid: tuple) -> np.ndarray:
     return obs
 
 
-def _selected_mask(selected) -> np.ndarray:
-    """ADR-0011: a (30, 30) binary channel marking currently-selected cells,
-    0 everywhere when nothing is selected - the fixed-shape stand-in for
-    "what's selected" that never needs to represent how many objects exist."""
+def _selected_mask(selected: dict) -> np.ndarray:
+    """ADR-0011/ADR-0020: a (30, 30) channel marking currently-selected
+    cells, 0 everywhere when nothing is selected - the fixed-shape stand-in
+    for "what's selected" that never needs to represent how many objects
+    exist. `selected` is the 2-key `{0: ..., 1: ...}` dict (slot "a"/"b");
+    slot 0/"a"'s cells are marked `1`, then slot 1/"b"'s cells are marked
+    `2` - slot "b" is drawn second, so it wins on any overlap."""
 
     mask = np.zeros((actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8)
-    if selected:
-        for i, j in selected:
+    if selected.get(0):
+        for i, j in selected[0]:
             mask[i, j] = 1
+    if selected.get(1):
+        for i, j in selected[1]:
+            mask[i, j] = 2
     return mask
 
 
@@ -74,8 +80,9 @@ class ArcEnv(gym.Env):
         super().__init__()
         self.max_steps = max_steps
 
-        # ADR-0011: 2 channels - the grid (0-9 colors, PAD_VALUE for padding)
-        # and a binary "currently selected" mask, same fixed (30, 30) shape.
+        # ADR-0011/ADR-0020: 2 channels - the grid (0-9 colors, PAD_VALUE for
+        # padding) and a "currently selected" mask (values in {0, 1, 2}: 0
+        # unselected, 1 slot "a", 2 slot "b"), same fixed (30, 30) shape.
         self.observation_space = spaces.Box(
             low=0, high=PAD_VALUE, shape=(2, actions.MAX_GRID_DIM, actions.MAX_GRID_DIM), dtype=np.int8
         )
@@ -95,7 +102,8 @@ class ArcEnv(gym.Env):
         self._pair_index = None
         self._step_count = 0
         self._diff_mask = None
-        self._selected = None
+        self._selected = {0: None, 1: None}
+        self._selected_region = {0: None, 1: None}
 
     def reset(
         self,
@@ -122,7 +130,8 @@ class ArcEnv(gym.Env):
         self._pair_index = pair_index
         self._step_count = 0
         self._diff_mask = reward_mod.compute_diff_mask(pair.input, pair.output)
-        self._selected = None
+        self._selected = {0: None, 1: None}
+        self._selected_region = {0: None, 1: None}
 
         return _make_obs(self._grid, self._selected), self._info()
 
@@ -140,11 +149,12 @@ class ArcEnv(gym.Env):
         raw_args = tuple(int(action[f"arg{i + 1}"]) for i in range(arity))
 
         prev_grid = self._grid
-        new_grid, new_selected, decoded_args, valid = actions.execute(
-            primitive_index, raw_args, self._grid, self._selected
+        new_grid, new_selected, new_selected_region, decoded_args, valid = actions.execute(
+            primitive_index, raw_args, self._grid, self._selected, self._selected_region
         )
         self._grid = new_grid
         self._selected = new_selected
+        self._selected_region = new_selected_region
         self._step_count += 1
 
         exact_match = self._grid == self._target
@@ -169,13 +179,19 @@ class ArcEnv(gym.Env):
         """The actual (unpadded) current grid - for episode logging/replay."""
         return self._grid
 
-    def get_selected(self) -> list | None:
-        """The currently selected patch's cells, as a sorted `[row, col]`
-        list for JSON logging (`arc_env.episode_log`) - `None` when nothing
-        is selected. `self._selected` itself is a `frozenset`, not directly
-        JSON-serializable."""
+    def get_selected(self) -> dict:
+        """The current dual-slot selection, as `{"a": [[row, col], ...] |
+        None, "b": [[row, col], ...] | None}` for JSON logging
+        (`arc_env.episode_log`) - each slot's list is sorted, `None` when
+        that slot has nothing selected. This is the one place the internal
+        int-keyed (`0`/`1`) `self._selected` dict translates to the
+        external string keys (`"a"`/`"b"`) - `self._selected`'s values are
+        `frozenset`s, not directly JSON-serializable."""
 
-        return sorted([i, j] for i, j in self._selected) if self._selected else None
+        return {
+            "a": sorted([i, j] for i, j in self._selected[0]) if self._selected.get(0) else None,
+            "b": sorted([i, j] for i, j in self._selected[1]) if self._selected.get(1) else None,
+        }
 
     def _info(self) -> dict:
         return {

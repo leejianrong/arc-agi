@@ -135,6 +135,16 @@ is a fully self-contained, zero-arg composition of `dsl.leastcolor`/
 agent-chosen args at all. Unlocks two more curated tasks: `5582e5ca`
 (`canvas_mostcolor`) and `aabf363d` (`swap_two_least_colors`). See
 ADR-0019 for the full design.
+
+ADR-0020 adds a second named selection slot (`0`="a", `1`="b") and a small
+region-scoping menu on top of the existing single-selection mechanism:
+`select_by_color_in_region` (writes into either slot, tagging its region),
+`combine_slots` (set-op-combines both slots into slot "a"), `fill_new_canvas`
+(paints slot "a"'s selection onto a fresh canvas - reuses the existing
+`"act_on_selection"` kind unmodified), and `fill_onto_region` (paints slot
+"a"'s selection back onto its tagged region). Unlocks 8 more curated tasks
+sharing a "combine indices from two halves via a set op" shape. See
+ADR-0020 for the full design.
 """
 
 from collections import Counter
@@ -184,12 +194,27 @@ def _decode_stamp_direction(raw: int) -> int:
     return raw % 8  # index into _STAMP_DIRECTIONS below
 
 
+def _decode_slot(raw: int) -> int:
+    return raw % 2  # index into the 2-key `selected`/`selected_region` dicts (0="a", 1="b")
+
+
+def _decode_region(raw: int) -> int:
+    return raw % 4  # index into _REGIONS below
+
+
+def _decode_combine_op(raw: int) -> int:
+    return raw % 3  # index into _COMBINE_OPS below
+
+
 COLOR_ARG = lambda name: ArgSpec(name, "color", _decode_color)
 FACTOR_ARG = lambda name: ArgSpec(name, "factor", _decode_factor)
 COORD_ARG = lambda name: ArgSpec(name, "coord", _decode_coord)
 DIM_ARG = lambda name: ArgSpec(name, "dim", _decode_dim)
 DIRECTION_ARG = lambda name: ArgSpec(name, "direction", _decode_direction)
 STAMP_DIRECTION_ARG = lambda name: ArgSpec(name, "direction", _decode_stamp_direction)
+SLOT_ARG = lambda name: ArgSpec(name, "slot", _decode_slot)
+REGION_ARG = lambda name: ArgSpec(name, "region", _decode_region)
+COMBINE_OP_ARG = lambda name: ArgSpec(name, "combine_op", _decode_combine_op)
 
 # ADR-0012: a small fixed menu of cardinal directions for `move_selected`,
 # mirroring `arc-dsl`'s own DOWN/UP/LEFT/RIGHT constants - kept as a curated
@@ -214,6 +239,15 @@ _STAMP_DIRECTIONS = (
     constants.DOWN_LEFT,
 )
 
+# ADR-0020: the 4-way region-scoping menu for `select_by_color_in_region`/
+# `fill_onto_region` - the 4 already-curated whole-grid-crop transforms,
+# reused here as the region-cropping step rather than duplicated.
+_REGIONS = (dsl.tophalf, dsl.bottomhalf, dsl.lefthalf, dsl.righthalf)  # index 0-3
+
+# ADR-0020: the 3-way set-op menu for `combine_slots`, used by name (not
+# index) in `_combine_slots` below.
+_COMBINE_OPS = ("intersect", "union", "symdiff")  # index 0-2
+
 
 @dataclass(frozen=True)
 class Action:
@@ -224,9 +258,21 @@ class Action:
     `kind` (ADR-0011): `"transform"` (default - today's `Grid [, args] ->
     Grid`, unaffected by the selection mechanism) - `fn(grid, *decoded_args)
     -> Grid`; `"select"` - `fn(grid) -> Indices`, updates the current
-    selection without touching the grid, invalid (no-op) if it finds
-    nothing to select; `"act_on_selection"` - `fn(grid, selected,
-    *decoded_args) -> Grid`, invalid if there is no current selection.
+    selection (slot `0`/"a") without touching the grid, invalid (no-op) if
+    it finds nothing to select; `"act_on_selection"` - `fn(grid, selected,
+    *decoded_args) -> Grid`, invalid if there is no current selection in
+    slot `0`/"a".
+
+    ADR-0020 adds three more kinds, all part of the region-scoped dual-slot
+    selection mechanism (slots keyed by int `0`="a"/`1`="b" internally):
+    `"select_region"` - `fn(grid, region, color) -> Indices`, writes into
+    whichever slot the decoded `slot` arg names, tagging that slot's region
+    too; `"combine_selection"` - `fn(op, selected_a, selected_b) ->
+    Indices`, combines both slots via a set op into slot `0`/"a", clearing
+    slot `1`/"b"; `"act_on_region_selection"` - `fn(grid, selected,
+    region, *decoded_args) -> Grid`, like `"act_on_selection"` but also
+    passed slot `0`/"a"'s tagged region, invalid if that slot or its region
+    tag is unset.
     """
 
     name: str
@@ -406,6 +452,41 @@ def _stamp_selected(grid: Grid, selected, color: int, direction_index: int) -> G
     return dsl.fill(grid, color, dsl.shift(selected, _STAMP_DIRECTIONS[direction_index]))
 
 
+# ADR-0020: region-scoped select - crops `grid` to one of the 4 `_REGIONS`
+# before finding `color`'s cell locations, rather than searching the whole
+# grid the way `select_by_color` does. Which slot ("a"/"b") this writes into
+# is decided by `execute()`'s `"select_region"` branch, not this fn itself.
+def _select_by_color_in_region(grid: Grid, region: int, color: int):
+    return dsl.ofcolor(_REGIONS[region](grid), color)
+
+
+# ADR-0020: combines the two selection slots via a chosen set operation.
+# Deliberately no falsy-check on the result here (unlike `"select"`'s own
+# branch) - an empty combined selection (e.g. an empty intersection) is a
+# legitimate outcome, not "nothing found".
+def _combine_slots(op: int, selected_a, selected_b):
+    name = _COMBINE_OPS[op]
+    if name == "intersect":
+        return dsl.intersection(selected_a, selected_b)
+    if name == "union":
+        return dsl.combine(selected_a, selected_b)
+    return dsl.difference(dsl.combine(selected_a, selected_b), dsl.intersection(selected_a, selected_b))  # symdiff
+
+
+# ADR-0020: `kind="act_on_selection"` (the existing kind, unmodified) -
+# builds a fresh canvas and fills slot 0/"a"'s selection onto it. Unlike
+# `_canvas`, this reads the current selection rather than ignoring `grid`.
+def _fill_new_canvas(grid: Grid, selected, bg_color: int, fill_color: int, height: int, width: int) -> Grid:
+    return dsl.fill(dsl.canvas(bg_color, (height, width)), fill_color, selected)
+
+
+# ADR-0020: `kind="act_on_region_selection"` - fills slot 0/"a"'s selection
+# onto the region it was tagged with (not the whole grid), the one place
+# this mechanism needs the region tag rather than just the indices.
+def _fill_onto_region(grid: Grid, selected, region: int, fill_color: int) -> Grid:
+    return dsl.fill(_REGIONS[region](grid), fill_color, selected)
+
+
 # Zero-arg grid transforms.
 ZERO_ARG = [
     Action("identity", dsl.identity),
@@ -522,10 +603,57 @@ ACT_ON_SELECTION = [
         (COLOR_ARG("color"), STAMP_DIRECTION_ARG("direction")),
         kind="act_on_selection",
     ),
+    # ADR-0020: `kind="act_on_selection"` unchanged - this action only ever
+    # touches slot 0/"a", same as every other action in this list.
+    Action(
+        "fill_new_canvas",
+        _fill_new_canvas,
+        (COLOR_ARG("bg_color"), COLOR_ARG("fill_color"), DIM_ARG("height"), DIM_ARG("width")),
+        kind="act_on_selection",
+    ),
 ]
 
-ACTIONS: list = ZERO_ARG + ONE_ARG + TWO_ARG + THREE_ARG + FOUR_ARG + SELECT + ACT_ON_SELECTION
+# ADR-0020: region-scoped select - writes into whichever of the 2 named
+# slots (`slot`) the agent picks, tagging that slot's region too.
+SELECT_REGION = [
+    Action(
+        "select_by_color_in_region",
+        _select_by_color_in_region,
+        (SLOT_ARG("slot"), REGION_ARG("region"), COLOR_ARG("color")),
+        kind="select_region",
+    ),
+]
+
+# ADR-0020: combines both selection slots via a chosen set op into slot
+# 0/"a", clearing slot 1/"b".
+COMBINE_SELECTION = [
+    Action("combine_slots", _combine_slots, (COMBINE_OP_ARG("op"),), kind="combine_selection"),
+]
+
+# ADR-0020: acts on slot 0/"a"'s selection *and* its tagged region (not the
+# whole grid) - see `_fill_onto_region`'s own docstring above.
+ACT_ON_REGION_SELECTION = [
+    Action("fill_onto_region", _fill_onto_region, (COLOR_ARG("fill_color"),), kind="act_on_region_selection"),
+]
+
+ACTIONS: list = (
+    ZERO_ARG
+    + ONE_ARG
+    + TWO_ARG
+    + THREE_ARG
+    + FOUR_ARG
+    + SELECT
+    + SELECT_REGION
+    + ACT_ON_SELECTION
+    + COMBINE_SELECTION
+    + ACT_ON_REGION_SELECTION
+)
 ACTION_BY_NAME = {a.name: i for i, a in enumerate(ACTIONS)}
+# ADR-0020: `fill_new_canvas` (arity 4) and `select_by_color_in_region`
+# (arity 3) both stay <= 4, so MAX_ARITY (from `commit`'s 4 args) is
+# unchanged - asserted here rather than just noted, since a future action
+# accidentally widening it would silently change PPO's action-head shape.
+assert max(a.arity for a in ACT_ON_REGION_SELECTION + SELECT_REGION + COMBINE_SELECTION) <= 4
 MAX_ARITY = max(a.arity for a in ACTIONS)
 RAW_ARG_RANGE = 30  # matches ARC's max grid dimension; also covers colors/factors with room to spare
 
@@ -536,27 +664,50 @@ def _grid_shape(grid: Grid) -> tuple:
     return (len(grid), len(grid[0]) if grid else 0)
 
 
-def execute(primitive_index: int, raw_args: tuple, grid: Grid, selected=None) -> tuple:
-    """Execute one action against `grid` (and, per ADR-0011, the current
-    object `selected`, if any).
+def execute(
+    primitive_index: int,
+    raw_args: tuple,
+    grid: Grid,
+    selected: dict | None = None,
+    selected_region: dict | None = None,
+) -> tuple:
+    """Execute one action against `grid` (and, per ADR-0011/ADR-0020, the
+    current dual-slot selection state, if any).
+
+    `selected`/`selected_region` are 2-key dicts keyed by int `0`="a"/
+    `1`="b" (ADR-0020) - `None` (the default) means "no selection made
+    yet" and is normalized to `{0: None, 1: None}` at the top of this
+    function. `selected` holds each slot's `Indices`; `selected_region`
+    holds each slot's tagged region index (into `_REGIONS`), set only by
+    `"select_region"` and read only by `"act_on_region_selection"`/
+    `"combine_selection"`.
 
     A `"select"` action's `fn` now also receives any decoded args (ADR-0012:
     `select_by_color`'s `color`), same as `"transform"`/`"act_on_selection"`
     already did - a no-op for ADR-0011's original zero-arg selectors.
 
-    Returns `(new_grid, new_selected, decoded_args, valid)`. `decoded_args`
-    is a dict of the actual (post-`decode`) argument values, present even
-    when `valid` is False, for logging. On invalid input (bad primitive
-    index, out-of-bounds coordinate, a transform that would exceed the
-    30x30 canvas or collapse a grid dimension to zero, a `"select"` action
-    finding nothing to select, or an `"act_on_selection"` action with no
-    current selection), `new_grid`/`new_selected` are `grid`/`selected`
+    Returns `(new_grid, new_selected, new_selected_region, decoded_args,
+    valid)`. `decoded_args` is a dict of the actual (post-`decode`)
+    argument values, present even when `valid` is False, for logging. On
+    invalid input (bad primitive index, out-of-bounds coordinate, a
+    transform that would exceed the 30x30 canvas or collapse a grid
+    dimension to zero, a `"select"`/`"select_region"` action finding
+    nothing to select, an `"act_on_selection"`/`"act_on_region_selection"`
+    action with no current selection/region tag in slot 0/"a", or a
+    `"combine_selection"` action with either slot unpopulated or a region-
+    shape mismatch between the two slots), `new_grid`/`new_selected`/
+    `new_selected_region` are `grid`/`selected`/`selected_region`
     unchanged and `valid` is False - the env applies the no-op-with-penalty
     behavior (Q7).
     """
 
+    if selected is None:
+        selected = {0: None, 1: None}
+    if selected_region is None:
+        selected_region = {0: None, 1: None}
+
     if not (0 <= primitive_index < len(ACTIONS)):
-        return grid, selected, {}, False
+        return grid, selected, selected_region, {}, False
 
     action = ACTIONS[primitive_index]
     decoded = {
@@ -565,22 +716,82 @@ def execute(primitive_index: int, raw_args: tuple, grid: Grid, selected=None) ->
     }
 
     if action.kind == "select":
-        new_selected = action.fn(grid, *decoded.values())
-        if not new_selected:
-            return grid, selected, decoded, False
-        return grid, new_selected, decoded, True
+        # Only ever touches slot 0/"a" - a plain whole-grid select has no
+        # region concept, so `selected_region` passes through unchanged.
+        new_val = action.fn(grid, *decoded.values())
+        if not new_val:
+            return grid, selected, selected_region, decoded, False
+        return grid, {**selected, 0: new_val}, selected_region, decoded, True
+
+    if action.kind == "select_region":
+        # ADR-0020: `decoded` has keys `slot`, `region`, `color` (declared
+        # order) - `slot` picks a *dict key*, not a `fn` arg, so it's
+        # popped out before calling `fn` (which only takes `region`,
+        # `color`).
+        slot = decoded["slot"]
+        new_val = action.fn(grid, decoded["region"], decoded["color"])
+        if not new_val:
+            return grid, selected, selected_region, decoded, False
+        return (
+            grid,
+            {**selected, slot: new_val},
+            {**selected_region, slot: decoded["region"]},
+            decoded,
+            True,
+        )
+
+    if action.kind == "combine_selection":
+        # ADR-0020: invalid if either slot is unpopulated, either slot's
+        # region tag is unset, or the two slots' region-crops of the
+        # *current* grid don't have matching shapes (comparable positions
+        # only when both are halves of the same grid). No falsy-check on
+        # the combined result itself - an empty intersection is a
+        # legitimate outcome, not "nothing found".
+        if (
+            not selected.get(0)
+            or not selected.get(1)
+            or selected_region.get(0) is None
+            or selected_region.get(1) is None
+        ):
+            return grid, selected, selected_region, decoded, False
+        if _grid_shape(_REGIONS[selected_region[0]](grid)) != _grid_shape(_REGIONS[selected_region[1]](grid)):
+            return grid, selected, selected_region, decoded, False
+        combined = action.fn(decoded["op"], selected[0], selected[1])
+        return (
+            grid,
+            {**selected, 0: combined, 1: None},
+            {**selected_region, 1: None},
+            decoded,
+            True,
+        )
 
     if action.kind == "act_on_selection":
-        if not selected:
-            return grid, selected, decoded, False
+        # Reads/writes slot 0/"a" only - unchanged behavior for every
+        # already-shipped `act_on_selection` action.
+        if not selected.get(0):
+            return grid, selected, selected_region, decoded, False
         try:
-            new_grid = action.fn(grid, selected, *decoded.values())
+            new_grid = action.fn(grid, selected[0], *decoded.values())
         except Exception:  # noqa: BLE001
-            return grid, selected, decoded, False
+            return grid, selected, selected_region, decoded, False
         new_h, new_w = _grid_shape(new_grid)
         if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
-            return grid, selected, decoded, False
-        return new_grid, selected, decoded, True
+            return grid, selected, selected_region, decoded, False
+        # Selection state passes through unchanged - these actions never
+        # clear or update it (same as before ADR-0020).
+        return new_grid, selected, selected_region, decoded, True
+
+    if action.kind == "act_on_region_selection":
+        if not selected.get(0) or selected_region.get(0) is None:
+            return grid, selected, selected_region, decoded, False
+        try:
+            new_grid = action.fn(grid, selected[0], selected_region[0], *decoded.values())
+        except Exception:  # noqa: BLE001
+            return grid, selected, selected_region, decoded, False
+        new_h, new_w = _grid_shape(new_grid)
+        if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
+            return grid, selected, selected_region, decoded, False
+        return new_grid, selected, selected_region, decoded, True
 
     h, w = _grid_shape(grid)
 
@@ -588,17 +799,17 @@ def execute(primitive_index: int, raw_args: tuple, grid: Grid, selected=None) ->
         if spec.kind == "coord":
             axis_len = h if spec.name == "row" else w
             if not (0 <= value < axis_len):
-                return grid, selected, decoded, False
+                return grid, selected, selected_region, decoded, False
         elif spec.kind == "factor":
             if action.name in ("hupscale", "upscale") and w * value > MAX_GRID_DIM:
-                return grid, selected, decoded, False
+                return grid, selected, selected_region, decoded, False
             if action.name in ("vupscale", "upscale") and h * value > MAX_GRID_DIM:
-                return grid, selected, decoded, False
+                return grid, selected, selected_region, decoded, False
 
     if action.name == "commit" and (
         decoded["row"] + decoded["height"] > h or decoded["col"] + decoded["width"] > w
     ):
-        return grid, selected, decoded, False
+        return grid, selected, selected_region, decoded, False
 
     try:
         new_grid = action.fn(grid, *decoded.values())
@@ -607,14 +818,15 @@ def execute(primitive_index: int, raw_args: tuple, grid: Grid, selected=None) ->
         # crash - guards against any edge case in a DSL primitive we didn't
         # anticipate (e.g. a degenerate grid shape) on top of the explicit
         # bounds checks above.
-        return grid, selected, decoded, False
+        return grid, selected, selected_region, decoded, False
 
     new_h, new_w = _grid_shape(new_grid)
     if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
-        return grid, selected, decoded, False
+        return grid, selected, selected_region, decoded, False
 
-    # ADR-0011: a successful ordinary transform invalidates any stale
-    # selection (its indices may no longer correspond to meaningful cells
-    # after a rotation/resize/etc.) - re-selecting is cheap, a silently
-    # wrong stale selection surviving an unrelated edit is not.
-    return new_grid, None, decoded, True
+    # ADR-0011/ADR-0020: a successful ordinary transform invalidates any
+    # stale selection in *both* slots (its indices may no longer correspond
+    # to meaningful cells after a rotation/resize/etc.) - re-selecting is
+    # cheap, a silently wrong stale selection surviving an unrelated edit is
+    # not.
+    return new_grid, {0: None, 1: None}, {0: None, 1: None}, decoded, True

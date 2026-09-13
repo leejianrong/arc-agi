@@ -9,7 +9,7 @@ function state(overrides: Partial<PlayState> = {}): PlayState {
     pair_index: 0,
     grid: [[0]],
     target_grid: [[0]],
-    selected: null,
+    selected: { a: null, b: null },
     terminated: false,
     truncated: false,
     valid_action: true,

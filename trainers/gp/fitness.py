@@ -44,9 +44,12 @@ def run_program(program: Program, grid: tuple, target: tuple | None = None) -> t
     if target is not None and grid == target:
         return grid
 
-    selected = None
+    selected = {0: None, 1: None}
+    selected_region = {0: None, 1: None}
     for primitive_index, raw_args in program:
-        new_grid, selected, _, valid = actions.execute(primitive_index, raw_args, grid, selected)
+        new_grid, selected, selected_region, _, valid = actions.execute(
+            primitive_index, raw_args, grid, selected, selected_region
+        )
         grid = new_grid
         is_commit = (
             valid and 0 <= primitive_index < len(actions.ACTIONS)
