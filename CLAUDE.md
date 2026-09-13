@@ -27,8 +27,8 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 47 actions as of
-  ADR-0020: structural transforms including the 4 self-concatenation
+  `arc-dsl`-primitive action space (`actions.py` — 53 actions as of
+  ADR-0021: structural transforms including the 4 self-concatenation
   actions, `fill_cell`, `canvas`, `canvas_mostcolor`,
   `swap_two_least_colors`, `commit`, plus the object-selection
   mechanism's 14 actions (`select_largest`/`select_smallest`/
@@ -55,9 +55,13 @@ Planning artifacts (read these before making architectural changes):
   keyed internally by int 0/1) via 4 more actions —
   `select_by_color_in_region`, `combine_slots` (intersect/union/symdiff),
   `fill_new_canvas`, `fill_onto_region` — unlocking 8 more curated tasks
-  that combine indices from two grid halves via a set op), the
-  task loader (`task_loader.py` — 48 curated tasks, 19 same-shape
-  + 29 variable-shape), `env.py` (2-channel observation:
+  that combine indices from two grid halves via a set op; and ADR-0021 adds
+  6 more derived actions — `select_leastcolor`, `select_all`,
+  `select_by_size`, `select_largest_multicolor_no_diag`,
+  `switch_least_most_colors`, `fractal_expand_cellwise` — unlocking 7 more
+  curated tasks), the
+  task loader (`task_loader.py` — 55 curated tasks, 21 same-shape
+  + 34 variable-shape), `env.py` (2-channel observation:
   grid + selection mask, now with values in {0,1,2} per ADR-0020's dual
   slots; `get_selected()` exposes the selection for episode
   logging), ADR-0005's dense reward (`reward.py`), extra

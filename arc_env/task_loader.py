@@ -103,6 +103,19 @@ without losing the selection) this design doesn't add, so it stays
 uncurated - see ADR-0020's Decision section for the full explanation. 19
 same-shape + 29 variable-shape = 48 total.
 
+ADR-0021 (2026-09-13) adds 7 more tasks via 6 new low-risk derived actions
+(`select_leastcolor`, `select_all`, `select_by_size`,
+`select_largest_multicolor_no_diag`, `switch_least_most_colors`,
+`fractal_expand_cellwise` - see `arc_env/actions.py`): `c909285e`,
+`b94a9452`, `a740d043` (variable-shape), `42a50994` (same-shape) were
+surfaced by F13 Stage 1's play audit; `007bbfb7`, `80af3007` (variable-
+shape), `8f2ea7aa` (same-shape) were found during ADR-0020's own audit.
+`007bbfb7` corrects an earlier miscategorization - F13 Stage 1 had filed it
+as needing a "hold two live grid states" mechanism, but it's actually a
+pure function of the input grid alone, fully reproducible as one bundled
+`fractal_expand_cellwise` call - see ADR-0021's Context for the full
+correction. 21 same-shape + 34 variable-shape = 55 total.
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -366,6 +379,40 @@ CURATED_TASK_IDS = {
         ("combine_slots", (1,)),  # union
         ("fill_onto_region", (6,)),  # fills onto slot a's region (lefthalf), color 6
     ],
+    # ADR-0021: 6 new derived actions - see `arc_env/actions.py`'s module
+    # docstring for what each does.
+    "c909285e": [
+        ("select_leastcolor", ()),
+        ("crop_to_selection", ()),
+    ],
+    "b94a9452": [
+        ("select_largest_multicolor_no_diag", ()),
+        ("crop_to_selection", ()),
+        ("switch_least_most_colors", ()),
+    ],
+    "a740d043": [
+        ("select_all", ()),
+        ("crop_to_selection", ()),
+        ("replace", (1, 0)),
+    ],
+    "42a50994": [
+        ("select_by_size", (1,)),
+        ("delete_selected", ()),
+    ],
+    "007bbfb7": [
+        ("fractal_expand_cellwise", (3,)),
+    ],
+    "80af3007": [
+        ("select_largest", ()),
+        ("crop_to_selection", ()),
+        ("fractal_expand_cellwise", (3,)),
+        ("downscale", (3,)),
+    ],
+    "8f2ea7aa": [
+        ("select_all", ()),
+        ("crop_to_selection", ()),
+        ("fractal_expand_cellwise", (3,)),
+    ],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -378,6 +425,8 @@ VARIABLE_SHAPE_TASK_IDS = {
     "1c786137", "2013d3e2", "28bf18c6", "7468f01a", "f25fbde4",
     "6430c8c4", "94f9d214", "ce4f8723", "f2829549", "fafffa47",
     "99b1bc43", "3428a4f5", "dae9d2b5",
+    # ADR-0021.
+    "c909285e", "b94a9452", "a740d043", "007bbfb7", "80af3007",
 }
 
 

@@ -145,6 +145,34 @@ region-scoping menu on top of the existing single-selection mechanism:
 "a"'s selection back onto its tagged region). Unlocks 8 more curated tasks
 sharing a "combine indices from two halves via a set op" shape. See
 ADR-0020 for the full design.
+
+ADR-0021 lands 6 more low-risk derived actions - no new mechanism, no new
+`Action.kind`, just new `Action` entries the same way `fill_cell`/`canvas`/
+`canvas_mostcolor`/`swap_two_least_colors`/the 4 self-concat actions were
+each added before. Four are `kind="select"`: `select_leastcolor` (the
+`canvas_mostcolor`/`swap_two_least_colors` "derived, not agent-chosen"
+pattern applied to `select_by_color` - the target color is `dsl.leastcolor
+(grid)` instead of a fixed arg); `select_all` (selects every object,
+reusing the existing `(True, True, True)` connectivity); `select_by_size`
+(a new `SIZE_ARG`, decoding `raw + 1` exactly like `DIM_ARG`, filtering
+objects by `dsl.sizefilter`); and `select_largest_multicolor_no_diag` (a
+fifth `objects(...)` connectivity variant, `(univalued=False, diagonal=
+False, without_bg=True)`, distinct from all four existing variants). The
+other two are `kind="transform"`: `switch_least_most_colors` (`dsl.switch
+(grid, dsl.leastcolor(grid), dsl.mostcolor(grid))`, the narrow follow-up
+`swap_two_least_colors`'s own docstring already named as a candidate) and
+`fractal_expand_cellwise(factor)` (tiles the grid `factor` times in both
+dimensions via repeated `hconcat`/`vconcat`, then `cellwise`-combines that
+tiling with an `upscale(grid, factor)` copy - the classic ARC "fractal
+expansion" motif, reusing the existing `FACTOR_ARG`). Together these unlock
+7 more curated tasks: `c909285e`, `b94a9452`, `a740d043`, `42a50994`
+(surfaced by F13 Stage 1's play audit) plus `007bbfb7`, `80af3007`,
+`8f2ea7aa` (found during ADR-0020's own audit). `007bbfb7` in particular
+corrects an earlier miscategorization: F13 Stage 1 had filed it as needing
+the "hold two live grid states" mechanism, but it's actually a pure
+function of the input grid alone, fully reproducible as one bundled
+derived action (`fractal_expand_cellwise`) - see ADR-0021's Context for the
+full correction. See ADR-0021 for the full design.
 """
 
 from collections import Counter
@@ -186,6 +214,10 @@ def _decode_dim(raw: int) -> int:
     return raw + 1  # {1, ..., 30} - RAW_ARG_RANGE is 30, so this covers the full canvas
 
 
+def _decode_size(raw: int) -> int:
+    return raw + 1  # {1, ..., 30} - mirrors DIM_ARG's own decode exactly
+
+
 def _decode_direction(raw: int) -> int:
     return raw % 4  # index into _DIRECTIONS below
 
@@ -210,6 +242,7 @@ COLOR_ARG = lambda name: ArgSpec(name, "color", _decode_color)
 FACTOR_ARG = lambda name: ArgSpec(name, "factor", _decode_factor)
 COORD_ARG = lambda name: ArgSpec(name, "coord", _decode_coord)
 DIM_ARG = lambda name: ArgSpec(name, "dim", _decode_dim)
+SIZE_ARG = lambda name: ArgSpec(name, "size", _decode_size)
 DIRECTION_ARG = lambda name: ArgSpec(name, "direction", _decode_direction)
 STAMP_DIRECTION_ARG = lambda name: ArgSpec(name, "direction", _decode_stamp_direction)
 SLOT_ARG = lambda name: ArgSpec(name, "slot", _decode_slot)
@@ -310,6 +343,13 @@ def _swap_two_least_colors(grid: Grid) -> Grid:
     return dsl.replace(g2, b, a)
 
 
+# ADR-0021: another fully self-contained, zero-arg composition - swaps the
+# grid's least-common and most-common colors directly (unlike
+# `_swap_two_least_colors`, which operates on the two least-common colors).
+def _switch_least_most_colors(grid: Grid) -> Grid:
+    return dsl.switch(grid, dsl.leastcolor(grid), dsl.mostcolor(grid))
+
+
 def _commit(grid: Grid, row: int, col: int, height: int, width: int) -> Grid:
     return dsl.crop(grid, (row, col), (height, width))
 
@@ -331,6 +371,28 @@ def _vconcat_self_hmirror_top(grid: Grid) -> Grid:
 
 def _vconcat_self_hmirror_bottom(grid: Grid) -> Grid:
     return dsl.vconcat(grid, dsl.hmirror(grid))
+
+
+# ADR-0021: tiles `grid` `factor` times in both dimensions via repeated
+# `hconcat`/`vconcat` - the same self-concatenation style as the 4 actions
+# just above, generalized from "concat once, optionally mirrored" to "concat
+# `factor - 1` more times, unmirrored". Used only as `_fractal_expand_
+# cellwise`'s helper below, not registered as its own action.
+def _tile_factor(grid: Grid, factor: int) -> Grid:
+    row = grid
+    for _ in range(factor - 1):
+        row = dsl.hconcat(row, grid)
+    tiled = row
+    for _ in range(factor - 1):
+        tiled = dsl.vconcat(tiled, row)
+    return tiled
+
+
+# ADR-0021: the classic ARC "fractal expansion" motif - `cellwise`-combines
+# an `upscale(grid, factor)` copy with a `factor`x`factor` tiling of the
+# original grid, background 0. A pure function of the current grid alone.
+def _fractal_expand_cellwise(grid: Grid, factor: int) -> Grid:
+    return dsl.cellwise(dsl.upscale(grid, factor), _tile_factor(grid, factor), 0)
 
 
 # ADR-0011 Phase 2 Slice 1: object selection. `_OBJECTS` fixes `dsl.objects`'s
@@ -407,6 +469,19 @@ def _select_largest_multicolor(grid: Grid):
     return dsl.toindices(dsl.argmax(objs, dsl.size)) if objs else frozenset()
 
 
+# ADR-0021: a fifth `objects(...)` connectivity variant - `univalued=False`
+# (like `_objects_multicolor`) but `diagonal=False` (like `_objects_no_diag`)
+# - a genuinely distinct combination from all 4 curated above, confirmed by
+# direct comparison. See module docstring.
+def _objects_multicolor_no_diag(grid: Grid):
+    return dsl.objects(grid, False, False, True)
+
+
+def _select_largest_multicolor_no_diag(grid: Grid):
+    objs = _objects_multicolor_no_diag(grid)
+    return dsl.toindices(dsl.argmax(objs, dsl.size)) if objs else frozenset()
+
+
 # ADR-0012: the rest of ADR-0011's deferred menu. Unlike Slice 1's selectors,
 # `select_by_color` takes a `color` argument - `execute()`'s `"select"`
 # branch now passes decoded args through, same as every other action kind
@@ -421,6 +496,33 @@ def _select_unique_color(grid: Grid):
     counts = Counter(dsl.color(obj) for obj in objs)
     unique_objs = frozenset(obj for obj in objs if counts[dsl.color(obj)] == 1)
     return dsl.toindices(dsl.merge(unique_objs)) if unique_objs else frozenset()
+
+
+# ADR-0021: `canvas_mostcolor`/`swap_two_least_colors`'s "derived, not
+# agent-chosen" pattern applied to `select_by_color` - the target color is
+# `dsl.leastcolor(grid)` instead of a fixed arg, since it varies per
+# train/test pair for this action's fixture task. See module docstring.
+def _select_leastcolor(grid: Grid):
+    color = dsl.leastcolor(grid)
+    objs = dsl.colorfilter(_objects(grid), color)
+    return dsl.toindices(dsl.merge(objs)) if objs else frozenset()
+
+
+# ADR-0021: selects every object in the grid - the "always select
+# everything" selector, reusing the existing `(True, True, True)`
+# connectivity.
+def _select_all(grid: Grid):
+    objs = _objects(grid)
+    return dsl.toindices(dsl.merge(objs)) if objs else frozenset()
+
+
+# ADR-0021: filters objects by size (`dsl.sizefilter`) rather than picking
+# one extreme via `argmax`/`argmin` - the criterion is still fixed internally
+# per action (a scalar `size` arg, mirroring `select_by_color`'s own
+# `color` arg), never an agent-chosen `Callable`.
+def _select_by_size(grid: Grid, size: int):
+    objs = dsl.sizefilter(_objects(grid), size)
+    return dsl.toindices(dsl.merge(objs)) if objs else frozenset()
 
 
 def _delete_selected(grid: Grid, selected) -> Grid:
@@ -511,6 +613,9 @@ ZERO_ARG = [
     # ADR-0019: zero-arg (everything derived from the grid) - see module
     # docstring and `_swap_two_least_colors`'s own docstring above.
     Action("swap_two_least_colors", _swap_two_least_colors),
+    # ADR-0021: zero-arg, derived - see `_switch_least_most_colors`'s own
+    # docstring above and the module docstring.
+    Action("switch_least_most_colors", _switch_least_most_colors),
 ]
 
 # One-arg (scale factor) grid transforms.
@@ -519,6 +624,10 @@ ONE_ARG = [
     Action("vupscale", dsl.vupscale, (FACTOR_ARG("factor"),)),
     Action("downscale", dsl.downscale, (FACTOR_ARG("factor"),)),
     Action("upscale", dsl.upscale, (FACTOR_ARG("factor"),)),
+    # ADR-0021: one existing `FACTOR_ARG`, derived (not a bare 1:1 `dsl`
+    # call) - see `_fractal_expand_cellwise`'s own docstring above and the
+    # module docstring.
+    Action("fractal_expand_cellwise", _fractal_expand_cellwise, (FACTOR_ARG("factor"),)),
 ]
 
 # Two-arg (color pair) grid transforms.
@@ -574,6 +683,12 @@ SELECT = [
     # `univalued=False` one curated (see `_select_largest_multicolor`'s own
     # docstring above).
     Action("select_largest_multicolor", _select_largest_multicolor, kind="select"),
+    # ADR-0021: 4 more derived selectors - see their own docstrings above
+    # and the module docstring.
+    Action("select_leastcolor", _select_leastcolor, kind="select"),
+    Action("select_all", _select_all, kind="select"),
+    Action("select_by_size", _select_by_size, (SIZE_ARG("size"),), kind="select"),
+    Action("select_largest_multicolor_no_diag", _select_largest_multicolor_no_diag, kind="select"),
 ]
 ACT_ON_SELECTION = [
     Action("commit_selection", _commit_selection, kind="act_on_selection"),

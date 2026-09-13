@@ -21,7 +21,7 @@ GRIDS = [
 # tests instead.
 DERIVED_ZERO_ARG_NAMES = {
     "hconcat_self", "hconcat_self_vmirror", "vconcat_self_hmirror_top", "vconcat_self_hmirror_bottom",
-    "swap_two_least_colors",
+    "swap_two_least_colors", "switch_least_most_colors",
 }
 DIRECT_ZERO_ARG = [a for a in actions.ZERO_ARG if a.name not in DERIVED_ZERO_ARG_NAMES]
 
@@ -30,6 +30,13 @@ DIRECT_ZERO_ARG = [a for a in actions.ZERO_ARG if a.name not in DERIVED_ZERO_ARG
 # generic TWO_ARG 1:1 check below for the same reason.
 DERIVED_TWO_ARG_NAMES = {"canvas_mostcolor"}
 DIRECT_TWO_ARG = [a for a in actions.TWO_ARG if a.name not in DERIVED_TWO_ARG_NAMES]
+
+# ADR-0021's `fractal_expand_cellwise` is likewise derived (`dsl.cellwise`
+# plus `dsl.upscale` plus the `_tile_factor` helper, not a bare
+# `dsl.fractal_expand_cellwise`) - excluded from the generic ONE_ARG 1:1
+# check below for the same reason.
+DERIVED_ONE_ARG_NAMES = {"fractal_expand_cellwise"}
+DIRECT_ONE_ARG = [a for a in actions.ONE_ARG if a.name not in DERIVED_ONE_ARG_NAMES]
 
 
 @pytest.mark.parametrize("action", DIRECT_ZERO_ARG, ids=lambda a: a.name)
@@ -67,7 +74,7 @@ def test_vconcat_self_hmirror_bottom_matches_dsl_vconcat_with_hmirror_second(gri
     assert action.fn(grid) == dsl.vconcat(grid, dsl.hmirror(grid))
 
 
-@pytest.mark.parametrize("action", actions.ONE_ARG, ids=lambda a: a.name)
+@pytest.mark.parametrize("action", DIRECT_ONE_ARG, ids=lambda a: a.name)
 def test_one_arg_action_matches_direct_dsl_call(action):
     grid = ((1, 2, 3, 4), (5, 6, 7, 8))
     dsl_fn = getattr(dsl, action.name)
@@ -643,3 +650,113 @@ def test_swap_two_least_colors_matches_the_derived_dsl_composition_directly():
     b = dsl.leastcolor(g2)
     expected = dsl.replace(g2, b, a)
     assert action.fn(grid) == expected
+
+
+# ADR-0021: 6 more derived actions - see `arc_env/actions.py`'s module
+# docstring for what each does.
+
+
+def test_select_leastcolor_picks_the_grids_least_common_color():
+    # Background 0 is most common; of the two objects, color 3 (1 cell) is
+    # rarer than color 2 (2 cells) - `select_leastcolor` should pick the
+    # single "3" cell, not the "2" object `select_largest`/`select_smallest`
+    # would pick.
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_leastcolor"]]
+    assert action.fn(OBJECTS_GRID) == frozenset({(1, 3)})
+
+
+def test_select_leastcolor_returns_empty_for_a_grid_with_no_objects():
+    blank = ((0, 0), (0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_leastcolor"]]
+    assert action.fn(blank) == frozenset()
+
+
+def test_select_all_selects_every_object_in_the_grid():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_all"]]
+    assert action.fn(OBJECTS_GRID) == frozenset({(1, 1), (2, 1), (1, 3)})
+
+
+def test_select_by_size_picks_only_objects_of_the_given_size():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_by_size"]]
+    assert action.fn(OBJECTS_GRID, 1) == frozenset({(1, 3)})  # the 1-cell "3" object
+    assert action.fn(OBJECTS_GRID, 2) == frozenset({(1, 1), (2, 1)})  # the 2-cell "2" object
+
+
+def test_select_by_size_returns_empty_when_no_object_has_that_size():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_by_size"]]
+    assert action.fn(OBJECTS_GRID, 5) == frozenset()
+
+
+# A diagonal staircase of 4 differently-colored single cells (2, 3, 4, 6),
+# plus an edge-adjacent 2-cell "5" pair. Since `univalued=False`, adjacency
+# alone (not color) decides merging - `select_largest_multicolor` (diagonal=
+# True) merges the whole staircase into one 4-cell object, bigger than the
+# "5" pair; `select_largest_multicolor_no_diag` (diagonal=False) splits the
+# staircase into four isolated 1-cell objects, so the edge-adjacent "5" pair
+# (2 cells) becomes the largest instead - mirroring the existing
+# `select_largest`/`select_largest_no_diag` contrast on `DIAGONAL_CHAIN_GRID`.
+MULTICOLOR_DIAGONAL_GRID = (
+    (2, 0, 0, 0, 5),
+    (0, 3, 0, 0, 5),
+    (0, 0, 4, 0, 0),
+    (0, 0, 0, 6, 0),
+)
+
+
+def test_select_largest_multicolor_no_diag_treats_diagonally_adjacent_cells_as_separate_objects():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest_multicolor_no_diag"]]
+    assert action.fn(MULTICOLOR_DIAGONAL_GRID) == frozenset({(0, 4), (1, 4)})
+
+
+def test_select_largest_multicolor_merges_the_diagonal_staircase_on_the_same_grid():
+    # Contrast case: the existing (diagonal=True) selector picks the bigger,
+    # diagonally-merged staircase instead, on this exact same grid.
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest_multicolor"]]
+    assert action.fn(MULTICOLOR_DIAGONAL_GRID) == frozenset({(0, 0), (1, 1), (2, 2), (3, 3)})
+
+
+def test_select_largest_multicolor_no_diag_returns_empty_for_a_grid_with_no_objects():
+    blank = ((0, 0), (0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["select_largest_multicolor_no_diag"]]
+    assert action.fn(blank) == frozenset()
+
+
+def test_switch_least_most_colors_swaps_the_grids_least_and_most_common_colors():
+    # 1 is most common (6 of 9 cells); of the rest, 2 (1 cell) is rarer than
+    # 3 (2 cells), so 2 is least common - switch swaps 1 and 2 directly
+    # (unlike `swap_two_least_colors`, which operates on the two rarest
+    # colors).
+    grid = ((1, 1, 2), (1, 3, 3), (1, 1, 1))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["switch_least_most_colors"]]
+    assert action.fn(grid) == ((2, 2, 1), (2, 3, 3), (2, 2, 2))
+
+
+def test_switch_least_most_colors_matches_the_derived_dsl_composition_directly():
+    grid = ((4, 4, 4), (4, 7, 7), (4, 4, 4))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["switch_least_most_colors"]]
+    expected = dsl.switch(grid, dsl.leastcolor(grid), dsl.mostcolor(grid))
+    assert action.fn(grid) == expected
+
+
+def test_fractal_expand_cellwise_tiles_and_upscales_for_factor_2():
+    grid = ((1, 2), (3, 4))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fractal_expand_cellwise"]]
+    assert action.fn(grid, 2) == (
+        (1, 0, 0, 2),
+        (0, 0, 0, 0),
+        (0, 0, 0, 0),
+        (3, 0, 0, 4),
+    )
+
+
+def test_fractal_expand_cellwise_tiles_and_upscales_for_factor_3():
+    grid = ((1, 0), (0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fractal_expand_cellwise"]]
+    assert action.fn(grid, 3) == (
+        (1, 0, 1, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (1, 0, 1, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+    )

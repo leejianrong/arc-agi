@@ -82,6 +82,8 @@ def _encode(spec: actions.ArgSpec, value: int) -> int:
         return value - 2
     if spec.kind == "dim":
         return value - 1
+    if spec.kind == "size":
+        return value - 1  # ADR-0021: same decode as "dim" (raw + 1)
     if spec.kind in ("slot", "region", "combine_op"):
         return value  # ADR-0020: all decode via `raw % N`, identity here too
     return value  # "coord"/"direction": decode is the identity (mod 4 for direction)
