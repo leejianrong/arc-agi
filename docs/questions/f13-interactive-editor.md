@@ -1,9 +1,8 @@
 # F13: the interactive "Photoshop-like" editor
 
-**Status:** decided (user, 2026-09-06), staged. Stage 0 built 2026-09-06
-(ADR-0017). Stage 1 done 2026-09-13. Stage 2 in progress (Buckets A and B
-landed 2026-09-13, ADR-0021/ADR-0022; the "hold the pre-crop original
-grid" cluster stays open).
+**Status:** decided (user, 2026-09-06), staged and complete. Stage 0 built
+2026-09-06 (ADR-0017). Stage 1 done 2026-09-13. Stage 2 done 2026-09-14
+(Buckets A, B, and C landed across ADR-0021/ADR-0022/ADR-0023).
 
 Should we build an interactive editor where a human solves ARC-AGI-1 tasks
 by hand, with a constrained toolset mirroring the curated action space,
@@ -126,10 +125,24 @@ existing `act_on_region_selection` kind - cheaper than first framed, no
 new kind needed once the selection-clearing question was sidestepped by
 fusing rather than adding a bare region-scoped `replace`).
 
-**Still open:** `7c008303`/`a68b268e`/`928ad970`/`017c7c7b` (the "hold the
-pre-crop original grid" need, Family 2's real roster) as its own
-still-undecided design question, the same weight as the original
-multi-selection/cross-grid mechanism decision.
+**Bucket C landed 2026-09-14 (ADR-0023):** the "hold the pre-crop original
+grid" framing for `7c008303`/`a68b268e`/`928ad970`/`017c7c7b` turned out to
+be a mis-scoping, the same class of correction ADR-0021 already made once
+for `007bbfb7`. A broader audit (extending past just these 4) plus a
+rigorous `re-arc`-generalization check (brute-force arg search against 30
+fresh instances per task, not just the real json) found: `928ad970`,
+`a68b268e`, and one more candidate the broader audit surfaced
+(`eb281b96`) are ordinary derived actions, no new mechanism needed, all
+verified 30/30 general. `7c008303`, a second broader-audit candidate
+(`c9f8e694`), and `017c7c7b` are a genuine no-go - each task's known-correct
+solver reproduces its own real json but collapses under `re-arc`'s broader
+instance space (1/30, 6/30, 1/30 respectively even under brute-force arg
+search), needing real new structural-detection logic (not a mechanism) for
+a 1-task-each payoff. Confirmed with the user as not worth building. See
+ADR-0023 for the full audit and verification.
+
+Stage 2's backlog is now fully resolved (landed or explicitly no-go). F13
+as a whole is complete.
 
 **Landed by:** ADR-0017, `docs/research/f13-stage1-play-audit.md`,
-ADR-0021, ADR-0022.
+ADR-0021, ADR-0022, ADR-0023.

@@ -105,9 +105,21 @@ attempted here. **Both landed 2026-09-13 (ADR-0022):** a 3-way region
 split plus a new `fill_slot_onto_region` action for `cf98881b`; a fused
 `replace_region_and_fill` action (reusing the existing `act_on_region_
 selection` kind, no new selection-survives-a-transform precedent needed)
-for `1b2d62fb`. `7c008303`, `a68b268e`, `928ad970`, `017c7c7b` remain
-uncurated, needing the still-separate "hold the pre-crop original"
-capability - untouched by ADR-0022.
+for `1b2d62fb`.
 
-**Landed by:** ADR-0020 (design); implementation tracked on the Pandan
-board's multi-selection epic, not yet merged as of this write-up.
+`7c008303`, `a68b268e`, `928ad970`, `017c7c7b` (the "hold the pre-crop
+original" cluster) turned out **not** to need this mechanism, or any new
+mechanism, at all - **2026-09-14, ADR-0023**: the "pre-crop original"
+framing assumed the solver's own multi-step decomposition was the only way
+to reach these tasks, but a `"transform"`-kind action's `fn` is an ordinary
+atomic Python function that can reference the grid as many times as it
+needs internally. `928ad970` and `a68b268e` landed as plain derived
+actions (verified to generalize 30/30 against fresh `re-arc` instances,
+not just the real json); `7c008303`/`017c7c7b` (plus a third task the
+broader audit surfaced, `c9f8e694`) are a no-go for an unrelated reason -
+each solver is narrower than `re-arc`'s own generative concept of its task.
+See ADR-0023 for the full audit.
+
+**Landed by:** ADR-0020 (design), ADR-0022 (follow-ups), ADR-0023 (closes
+out the originally-deferred cluster with a cheaper answer than this
+design's own scope decision anticipated).

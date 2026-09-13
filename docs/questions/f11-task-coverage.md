@@ -223,14 +223,26 @@ All 3 tasks remain uncurated. No code changed this pass.
 
 ## Where this feeds next
 
-`7c008303` and `a68b268e` still need the multi-selection/cross-grid
-mechanism this file keeps deferring. F13's Stage 1 pass
+`7c008303` and `a68b268e` still needed the multi-selection/cross-grid
+mechanism this file kept deferring. F13's Stage 1 pass
 (`docs/questions/f13-interactive-editor.md`) independently found more
-evidence for a broader version of the same gap: the real requirement looks
+evidence for a broader version of the same gap: the real requirement looked
 like "more than one live grid state, addressed and recombined somehow,"
-not the narrower "more than one named selection." That's now a live
-design thread, tracked outside this register (see the pandan board's
-multi-selection epic).
+not the narrower "more than one named selection." That fed F14's
+region-scoped dual-selection design (ADR-0020), which explicitly scoped
+`7c008303`/`a68b268e` out as needing a different, heavier capability
+("hold the pre-crop original grid alongside a derived crop").
+
+**2026-09-14 resolution (ADR-0023):** a broader audit + rigorous
+`re-arc`-generalization check found that framing was wrong - neither task
+needs a new mechanism at all. `a68b268e` landed as one ordinary derived
+action (`fill_quadrant_from_colors`, 3 `COLOR_ARG`s, verified 30/30 against
+fresh `re-arc` instances); `7c008303` turned out to be a no-go for a
+different reason than originally thought - not "needs more state," but
+"its known-correct solver is narrower than `re-arc`'s own generative
+concept of the task" (1/30 even under brute-force arg search), the same
+disposition as `select_tallest`/`1c786137` and `9ecd008a`. See ADR-0023 for
+the full audit and verification.
 
 **Landed by:** ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0015, ADR-0016,
-ADR-0019.
+ADR-0019, ADR-0023.
