@@ -6,7 +6,9 @@ watch a trained agent "play" a task step-by-step like a game.
 
 Planning artifacts (read these before making architectural changes):
 - `docs/QUESTIONS.md` — decision register: every open question, its status, and
-  its answer.
+  its answer. A few questions carry a long running history instead of a short
+  one; those live in their own file under `docs/questions/`, linked from the
+  register row.
 - `docs/PLAN.md`, `docs/SLICES.md`, `docs/adr/` — the agreed plan, vertical
   slices, and the ADRs behind them. Implement against these; don't
   re-litigate a decision that's already recorded there.
