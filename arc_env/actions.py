@@ -192,6 +192,29 @@ doesn't consume the selection it needs to leave alive (the exact shape
 ADR-0015's `9ecd008a` no-go already ruled out). Together these unlock 2
 more curated tasks: `cf98881b` (3-way split + `fill_slot_onto_region`) and
 `1b2d62fb` (`replace_region_and_fill`). See ADR-0022 for the full design.
+
+ADR-0023 (Bucket C) lands 3 more derived `"transform"`-kind actions, no new
+mechanism, no new `Action.kind` - a broader audit (prompted by F13 Stage 2's
+last deferred cluster, "Bucket C") found that none of that cluster's tasks
+actually needs a third-generation selection mechanism ("hold the pre-crop
+original grid alongside a derived crop"); every genuine win is reachable as
+an ordinary derived action that references `grid` more than once inside one
+atomic function body, the same correction ADR-0021 already made once for
+`007bbfb7`/`80af3007`/`8f2ea7aa`. `fill_inbox_by_dot_color(dot_color)` (one
+`COLOR_ARG`) finds `dot_color`'s cells, takes their bounding subgrid, and
+fills the *interior* box (`dsl.inbox`) with that subgrid's own trimmed
+least-common color; `fill_quadrant_from_colors(color_ul, color_ur,
+color_ll)` (three `COLOR_ARG`s) splits the grid into quadrants and fills
+each of 3 quadrants' own color onto the 4th (bottom-right) quadrant,
+sequentially; `repeat_mirror_tile()` (zero-arg, fully derived) `vconcat`s
+the grid with its own hmirror (minus the shared edge row) twice. Unlocks 3
+more curated tasks: `928ad970`, `a68b268e`, `eb281b96`. Of the 6 candidates
+the broadened audit considered, `7c008303`, `c9f8e694`, and `017c7c7b`
+reproduce their own task's real json but collapse on `re-arc`'s broader
+instance space (each needs real structural-detection logic - a divider's
+row/col, a variable embedding offset/period - not a parameterization swap)
+and stay uncurated as a reasoned no-go. See ADR-0023 for the full audit and
+verification methodology.
 """
 
 from collections import Counter
@@ -399,6 +422,48 @@ def _swap_two_least_colors(grid: Grid) -> Grid:
 # `_swap_two_least_colors`, which operates on the two least-common colors).
 def _switch_least_most_colors(grid: Grid) -> Grid:
     return dsl.switch(grid, dsl.leastcolor(grid), dsl.mostcolor(grid))
+
+
+# ADR-0023 (Bucket C): 3 more derived actions, no new mechanism - each a
+# fixed, deterministic pipeline that references `grid` more than once inside
+# one atomic function body (a "transform"-kind `fn(grid, *args) -> Grid` can
+# compute a crop-derived value *and* a separately-derived value from the same
+# grid and combine them in one step, with zero exposed intermediate state -
+# see the module docstring and ADR-0023's Context for the audit that
+# established this).
+#
+# `fill_inbox_by_dot_color(dot_color)` - one agent-chosen `COLOR_ARG`: finds
+# the cells of that color, takes their bounding subgrid, and fills the
+# *interior* box (`dsl.inbox`) with that subgrid's own trimmed least-common
+# color. Unlocks `928ad970`.
+def _fill_inbox_by_dot_color(grid: Grid, dot_color: int) -> Grid:
+    dots = dsl.ofcolor(grid, dot_color)
+    box = dsl.subgrid(dots, grid)
+    fill_color = dsl.leastcolor(dsl.trim(box))
+    return dsl.fill(grid, fill_color, dsl.inbox(dots))
+
+
+# `fill_quadrant_from_colors(color_ul, color_ur, color_ll)` - three
+# agent-chosen `COLOR_ARG`s: splits the grid into quadrants, then reads each
+# of 3 quadrants' own color and fills its found indices onto the 4th
+# (bottom-right) quadrant, sequentially. Unlocks `a68b268e`.
+def _fill_quadrant_from_colors(grid: Grid, color_ul: int, color_ur: int, color_ll: int) -> Grid:
+    top, bottom = dsl.tophalf(grid), dsl.bottomhalf(grid)
+    ul, ur = dsl.lefthalf(top), dsl.righthalf(top)
+    ll, lr = dsl.lefthalf(bottom), dsl.righthalf(bottom)
+    result = lr
+    for color, quad in ((color_ll, ll), (color_ur, ur), (color_ul, ul)):
+        result = dsl.fill(result, color, dsl.ofcolor(quad, color))
+    return result
+
+
+# `repeat_mirror_tile()` - zero-arg, fully derived (no agent-chosen args at
+# all, matching `swap_two_least_colors`'s precedent): `vconcat`s the grid
+# with its own hmirror (minus the shared edge row) twice. Unlocks
+# `eb281b96`.
+def _repeat_mirror_tile(grid: Grid) -> Grid:
+    go = dsl.vconcat(grid, dsl.hmirror(grid[:-1]))
+    return dsl.vconcat(go, dsl.hmirror(go[:-1]))
 
 
 def _commit(grid: Grid, row: int, col: int, height: int, width: int) -> Grid:
@@ -685,6 +750,9 @@ ZERO_ARG = [
     # ADR-0021: zero-arg, derived - see `_switch_least_most_colors`'s own
     # docstring above and the module docstring.
     Action("switch_least_most_colors", _switch_least_most_colors),
+    # ADR-0023 (Bucket C): zero-arg, fully derived - see
+    # `_repeat_mirror_tile`'s own docstring above and the module docstring.
+    Action("repeat_mirror_tile", _repeat_mirror_tile),
 ]
 
 # One-arg (scale factor) grid transforms.
@@ -697,6 +765,12 @@ ONE_ARG = [
     # call) - see `_fractal_expand_cellwise`'s own docstring above and the
     # module docstring.
     Action("fractal_expand_cellwise", _fractal_expand_cellwise, (FACTOR_ARG("factor"),)),
+    # ADR-0023 (Bucket C): also arity 1 by grouping-by-arity convention, but
+    # (like `canvas_mostcolor`'s DIM_ARG pair in TWO_ARG below) its one slot
+    # is a `COLOR_ARG`, not this group's usual `FACTOR_ARG` - see
+    # `_fill_inbox_by_dot_color`'s own docstring above and the module
+    # docstring.
+    Action("fill_inbox_by_dot_color", _fill_inbox_by_dot_color, (COLOR_ARG("dot_color"),)),
 ]
 
 # Two-arg (color pair) grid transforms.
@@ -715,6 +789,14 @@ TWO_ARG = [
 THREE_ARG = [
     Action("fill_cell", _fill_cell, (COLOR_ARG("color"), COORD_ARG("row"), COORD_ARG("col"))),
     Action("canvas", _canvas, (COLOR_ARG("value"), DIM_ARG("height"), DIM_ARG("width"))),
+    # ADR-0023 (Bucket C): three `COLOR_ARG`s - see
+    # `_fill_quadrant_from_colors`'s own docstring above and the module
+    # docstring.
+    Action(
+        "fill_quadrant_from_colors",
+        _fill_quadrant_from_colors,
+        (COLOR_ARG("color_ul"), COLOR_ARG("color_ur"), COLOR_ARG("color_ll")),
+    ),
 ]
 
 # Four-arg (row, col, height, width) crop-and-end-episode (ADR-0002's

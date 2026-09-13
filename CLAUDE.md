@@ -27,8 +27,8 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 55 actions as of
-  ADR-0022: structural transforms including the 4 self-concatenation
+  `arc-dsl`-primitive action space (`actions.py` — 58 actions as of
+  ADR-0023: structural transforms including the 4 self-concatenation
   actions, `fill_cell`, `canvas`, `canvas_mostcolor`,
   `swap_two_least_colors`, `commit`, plus the object-selection
   mechanism's 14 actions (`select_largest`/`select_smallest`/
@@ -62,9 +62,27 @@ Planning artifacts (read these before making architectural changes):
   curated tasks; and ADR-0022 widens the region menu from 4 halves to 7
   entries (adding `left_third`/`middle_third`/`right_third`) and adds 2
   more actions, `fill_slot_onto_region` and `replace_region_and_fill`,
-  unlocking 2 more curated tasks), the
-  task loader (`task_loader.py` — 57 curated tasks, 21 same-shape
-  + 36 variable-shape), `env.py` (2-channel observation:
+  unlocking 2 more curated tasks; and ADR-0023 (Bucket C) adds 3 more
+  derived `"transform"`-kind actions, no new mechanism, no new
+  `Action.kind` — `fill_inbox_by_dot_color` (finds an agent-chosen dot
+  color's cells, takes their bounding subgrid, and fills the *interior* box
+  with that subgrid's own trimmed least-common color),
+  `fill_quadrant_from_colors` (reads each of 3 quadrants' own agent-chosen
+  color and fills its found indices onto the 4th, bottom-right quadrant,
+  sequentially), and `repeat_mirror_tile` (zero-arg, fully derived:
+  `vconcat`s the grid with its own hmirror, minus the shared edge row,
+  twice) — unlocking 3 more curated tasks. A broader audit prompted by F13
+  Stage 2's last deferred cluster ("Bucket C") found none of that cluster's
+  tasks actually needs a third-generation selection mechanism ("hold the
+  pre-crop original grid alongside a derived crop"); every genuine win was
+  reachable as an ordinary derived action referencing `grid` more than once
+  inside one atomic function body, the same correction ADR-0021 already
+  made once for `007bbfb7`/`80af3007`/`8f2ea7aa` — `7c008303`, `c9f8e694`,
+  and `017c7c7b` remain uncurated, a reasoned no-go (each needs real
+  structural-detection logic to generalize past its own fixed json, not a
+  parameterization swap)), the
+  task loader (`task_loader.py` — 60 curated tasks, 22 same-shape
+  + 38 variable-shape), `env.py` (2-channel observation:
   grid + selection mask, now with values in {0,1,2} per ADR-0020's dual
   slots; `get_selected()` exposes the selection for episode
   logging), ADR-0005's dense reward (`reward.py`), extra
