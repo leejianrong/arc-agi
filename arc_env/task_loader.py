@@ -128,6 +128,20 @@ actions.py`. Unlocks 2 more variable-shape tasks: `cf98881b` (3-way split +
 named as follow-ups in ADR-0020's own Consequences. 21 same-shape + 36
 variable-shape = 57 total. See ADR-0022 for the full design.
 
+ADR-0023 (Bucket C, 2026-09-14) adds 3 more tasks via 3 new derived
+`"transform"`-kind actions, no new mechanism (`fill_inbox_by_dot_color`,
+`fill_quadrant_from_colors`, `repeat_mirror_tile` - see `arc_env/
+actions.py`'s module docstring): `928ad970` (`fill_inbox_by_dot_color`) is
+same-shape; `a68b268e` (`fill_quadrant_from_colors`, shrinks to one
+quadrant) and `eb281b96` (`repeat_mirror_tile`, triples height) are both
+variable-shape. A broader audit prompted by F13 Stage 2's last deferred
+cluster ("Bucket C") found 3 more superficially similar candidates -
+`7c008303`, `c9f8e694`, `017c7c7b` - that reproduce their own task's real
+json but collapse on `re-arc`'s broader instance space, so they stay
+uncurated as a reasoned no-go rather than a still-open thread. 22 same-shape
++ 38 variable-shape = 60 total. See ADR-0023 for the full audit and
+verification methodology.
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -442,6 +456,12 @@ CURATED_TASK_IDS = {
         ("combine_slots", (0,)),                     # intersect -> slot a, region tag a stays lefthalf
         ("replace_region_and_fill", (9, 0, 8)),      # replacee=9, replacer=0, fill=8
     ],
+    # ADR-0023 (Bucket C): 3 new derived "transform"-kind actions, no new
+    # mechanism. See `arc_env/actions.py`'s module docstring for what each
+    # does.
+    "928ad970": [("fill_inbox_by_dot_color", (5,))],
+    "a68b268e": [("fill_quadrant_from_colors", (7, 4, 8))],
+    "eb281b96": [("repeat_mirror_tile", ())],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -458,6 +478,9 @@ VARIABLE_SHAPE_TASK_IDS = {
     "c909285e", "b94a9452", "a740d043", "007bbfb7", "80af3007",
     # ADR-0022.
     "cf98881b", "1b2d62fb",
+    # ADR-0023: `a68b268e` shrinks to one quadrant, `eb281b96` triples
+    # height - `928ad970` stays same-shape (not added here).
+    "a68b268e", "eb281b96",
 }
 
 

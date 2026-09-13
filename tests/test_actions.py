@@ -23,6 +23,8 @@ GRIDS = [
 DERIVED_ZERO_ARG_NAMES = {
     "hconcat_self", "hconcat_self_vmirror", "vconcat_self_hmirror_top", "vconcat_self_hmirror_bottom",
     "swap_two_least_colors", "switch_least_most_colors",
+    # ADR-0023 (Bucket C).
+    "repeat_mirror_tile",
 }
 DIRECT_ZERO_ARG = [a for a in actions.ZERO_ARG if a.name not in DERIVED_ZERO_ARG_NAMES]
 
@@ -35,8 +37,13 @@ DIRECT_TWO_ARG = [a for a in actions.TWO_ARG if a.name not in DERIVED_TWO_ARG_NA
 # ADR-0021's `fractal_expand_cellwise` is likewise derived (`dsl.cellwise`
 # plus `dsl.upscale` plus the `_tile_factor` helper, not a bare
 # `dsl.fractal_expand_cellwise`) - excluded from the generic ONE_ARG 1:1
-# check below for the same reason.
-DERIVED_ONE_ARG_NAMES = {"fractal_expand_cellwise"}
+# check below for the same reason. ADR-0023's `fill_inbox_by_dot_color` is
+# also derived (`dsl.ofcolor`/`dsl.subgrid`/`dsl.leastcolor`/`dsl.trim`/
+# `dsl.inbox`/`dsl.fill`, not a bare `dsl.fill_inbox_by_dot_color`) and its
+# one `ArgSpec` is a `COLOR_ARG`, not this group's usual `FACTOR_ARG` - the
+# generic check's `dsl_fn(grid, factor)` call wouldn't apply here either
+# way, so it's excluded too.
+DERIVED_ONE_ARG_NAMES = {"fractal_expand_cellwise", "fill_inbox_by_dot_color"}
 DIRECT_ONE_ARG = [a for a in actions.ONE_ARG if a.name not in DERIVED_ONE_ARG_NAMES]
 
 
@@ -875,3 +882,95 @@ def test_fractal_expand_cellwise_tiles_and_upscales_for_factor_3():
         (0, 0, 0, 0, 0, 0),
         (0, 0, 0, 0, 0, 0),
     )
+
+
+# ADR-0023 (Bucket C): 3 more derived actions - see `arc_env/actions.py`'s
+# module docstring for what each does.
+
+# Four color-5 "dots" at the corners of a 5x5 grid; the interior box
+# (`dsl.inbox` of those dots) is the outline of the inner 3x3 - one cell in
+# from each dot. The inner 3x3 is mostly color 2 with a single color-3 cell
+# at its center, so `dsl.leastcolor(dsl.trim(box))` (the box is the whole
+# grid here, so `trim` strips its own outer border down to that same inner
+# 3x3) picks 3, and filling the inbox outline with 3 nets out to the whole
+# inner 3x3 reading 3 (the center cell was already 3).
+INBOX_DOT_GRID = (
+    (5, 0, 0, 0, 5),
+    (0, 2, 2, 2, 0),
+    (0, 2, 3, 2, 0),
+    (0, 2, 2, 2, 0),
+    (5, 0, 0, 0, 5),
+)
+
+
+def test_fill_inbox_by_dot_color_fills_the_box_interior_with_its_own_least_color():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_inbox_by_dot_color"]]
+    result = action.fn(INBOX_DOT_GRID, 5)
+    assert result == (
+        (5, 0, 0, 0, 5),
+        (0, 3, 3, 3, 0),
+        (0, 3, 3, 3, 0),
+        (0, 3, 3, 3, 0),
+        (5, 0, 0, 0, 5),
+    )
+
+
+def test_fill_inbox_by_dot_color_matches_the_derived_dsl_composition_directly():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_inbox_by_dot_color"]]
+    dots = dsl.ofcolor(INBOX_DOT_GRID, 5)
+    box = dsl.subgrid(dots, INBOX_DOT_GRID)
+    expected = dsl.fill(INBOX_DOT_GRID, dsl.leastcolor(dsl.trim(box)), dsl.inbox(dots))
+    assert action.fn(INBOX_DOT_GRID, 5) == expected
+
+
+# A 4x4 grid split into 4 2x2 quadrants: UL has a single color-7 cell, UR a
+# single color-4 cell, LL a single color-8 cell, LR (the base the result
+# builds from) is blank. `fill_quadrant_from_colors(7, 4, 8)` reads each of
+# UL/UR/LL's own designated color's local indices and paints them onto LR
+# at the same local positions, sequentially (LL first, then UR, then UL).
+QUADRANT_GRID = (
+    (7, 0, 0, 0),
+    (0, 0, 0, 4),
+    (0, 8, 0, 0),
+    (0, 0, 0, 0),
+)
+
+
+def test_fill_quadrant_from_colors_paints_each_quadrants_own_color_onto_the_fourth():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_quadrant_from_colors"]]
+    result = action.fn(QUADRANT_GRID, 7, 4, 8)
+    assert result == ((7, 8), (0, 4))
+
+
+def test_fill_quadrant_from_colors_leaves_the_fourth_quadrants_own_content_alone_when_no_colors_found():
+    # None of UL/UR/LL contain their designated color, so LR (the base the
+    # result builds from) comes back exactly as it started.
+    grid = (
+        (0, 0, 0, 0),
+        (0, 0, 0, 0),
+        (0, 0, 0, 0),
+        (0, 0, 9, 0),
+    )  # LR quadrant (rows 2-3, cols 2-3) has a lone color-9 cell at local (1, 0)
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_quadrant_from_colors"]]
+    result = action.fn(grid, 7, 4, 8)
+    assert result == ((0, 0), (9, 0))
+
+
+def test_repeat_mirror_tile_vconcats_the_grid_with_its_own_hmirror_twice():
+    grid = ((1, 2), (3, 4))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["repeat_mirror_tile"]]
+    assert action.fn(grid) == (
+        (1, 2),
+        (3, 4),
+        (1, 2),
+        (3, 4),
+        (1, 2),
+    )
+
+
+def test_repeat_mirror_tile_matches_the_derived_dsl_composition_directly():
+    grid = ((5, 6, 7), (8, 9, 1))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["repeat_mirror_tile"]]
+    go = dsl.vconcat(grid, dsl.hmirror(grid[:-1]))
+    expected = dsl.vconcat(go, dsl.hmirror(go[:-1]))
+    assert action.fn(grid) == expected
