@@ -27,8 +27,8 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 72 actions as of
-  ADR-0025: structural transforms including the 4 self-concatenation
+  `arc-dsl`-primitive action space (`actions.py` — 85 actions as of
+  ADR-0026: structural transforms including the 4 self-concatenation
   actions, `fill_cell`, `canvas`, `canvas_mostcolor`,
   `swap_two_least_colors`, `commit`, plus the object-selection
   mechanism's 14 actions (`select_largest`/`select_smallest`/
@@ -138,10 +138,68 @@ Planning artifacts (read these before making architectural changes):
   itself, not fixable by any action-level design, and left them uncurated
   same as prior ADRs' no-gos; 6 more `free_by_name` candidates (`11852cab`,
   `3618c87e`, `47c1f68c`, `aedd82e4`, `cce03e0d`, `e98196ab`) were also
-  checked and found not to generalize. See ADR-0025 for the full audit,
-  the
-  task loader (`task_loader.py` — 77 curated tasks, 29 same-shape
-  + 48 variable-shape), `env.py` (2-channel observation:
+  checked and found not to generalize. See ADR-0025 for the full audit; and
+  ADR-0026 (a same-day follow-up working the audit's next-highest-value
+  bucket, `two_new_primitives`, folded together with one leftover
+  `one_new_primitive` task too small to be its own pass) adds 13 more
+  zero-arg `"transform"`-kind actions, no new mechanism, no new
+  `Action.kind`, and 10 more brand-new `arc-dsl` primitives: `numcolors`,
+  `backdrop`, `outbox`, `shoot`, `center`, `normalize`, `leastcommon`,
+  `box`, `hfrontier`, `connect`. The dominant finding this pass, more
+  pronounced than ADR-0025's: for most candidates the literal solver's
+  *choice of primitive* — not just its hardcoded constants — was wrong for
+  `re-arc`'s actual generative concept, so every design below was traced
+  against the actual `re-arc` generator source, not just a closer solver
+  read — e.g. `67a423a3`'s real design needs `outbox` over a
+  perpendicular-band intersection, not `neighbors` around a single hole
+  cell, and `7b7f7511`'s real rule is a `tophalf`==`bottomhalf` structural-
+  equality check, not a `portrait` (aspect-ratio) branch.
+  `canvas_by_symmetry` builds a 1x1 canvas colored by whether the grid is
+  symmetric under any of `hmirror`/`vmirror`/`dmirror`/`cmirror`;
+  `tophalf_or_lefthalf_by_equality` returns `tophalf` if it equals
+  `bottomhalf`, else `lefthalf`; `mirror_crop_by_rectangle_marker`
+  auto-detects the marker color as whichever color's own cells form an
+  exact solid rectangle and crops that color's bbox out of whichever of
+  `hmirror`/`vmirror` no longer contains it; `diagonal_canvas_by_object_
+  count` builds an NxN canvas (N = foreground object count) colored by the
+  grid's own `mostcolor`/`leastcolor`, diagonal-filled in plain Python;
+  `canvas_row_by_foreground_count` builds a 1-row canvas sized and colored
+  by the grid's one foreground color's own cell count;
+  `bar_chart_canvas_by_size4_count` builds a fixed-total-5 "bar chart"
+  canvas from a count of size-4 objects; `upscale_by_numcolors_minus_one`
+  (`dsl.upscale(grid, dsl.numcolors(grid) - 1)`) is shared by two tasks;
+  `fill_outbox_of_band_intersection` finds two perpendicular color-bands by
+  column/row bounding-box span (not connectivity-object identity, which
+  fragments once one band cuts across the other) and rings their
+  intersection's `outbox` with a fixed color; `shoot_diagonals_from_
+  objects` shoots a diagonal from every same-colored object's own
+  `ulcorner` (not one merged blob per color); `stamp_shape_at_singleton_
+  echoes` normalizes an anchor shape and stamps it — shifted by each
+  singleton marker echo's own center minus the anchor's own center, traced
+  directly from the `re-arc` generator rather than the literal solver's
+  fixed offset — at every singleton echo of the marker color;
+  `crop_to_leastcommon_quadrant` returns whichever of the grid's 4
+  quadrants is the statistical mode by value; `fill_backdrop_and_box_by_
+  rarity` auto-detects the dot/background colors by rarity and classifies
+  the remaining two colors into outline vs. interior by adjacency-to-
+  background (thickness-independent, unlike a rarity ranking or a
+  shape-equality test) before filling the merged bbox's interior/outline;
+  `mirror_border_decoration` classifies two marker dots by position (not
+  fixed color identity) and draws each half's own three-sided border plus
+  a through-dot frontier. Unlocks 14 more curated tasks: `44f52bb0`,
+  `7b7f7511`, `ff805c23`, `d0f5fe59`, `d631b094`, `1fad071e`, `ac0a08a4`,
+  `b91ae062`, `67a423a3`, `5c0a986e`, `88a10436`, `88a62173`, `b548a754`
+  (~96.7% on fresh `re-arc`, a documented degenerate edge case matching
+  ADR-0025's `f76d97a5` precedent), `1bfc4729`. One candidate (`77fdfe62`)
+  was checked and left uncurated: even the literal official solver crashes
+  against fresh `re-arc` instances, since its hardcoded marker color is
+  actually randomly chosen per instance — the real generator concept needs
+  genuine structural detection, not a parameterization fix, same
+  disposition as `7c008303`/`c9f8e694`/`017c7c7b`/ADR-0025's `3de23699`.
+  See ADR-0026 for the full audit, verification numbers, and every
+  design's exact composition. The
+  task loader (`task_loader.py` — 91 curated tasks, 34 same-shape
+  + 57 variable-shape), `env.py` (2-channel observation:
   grid + selection mask, now with values in {0,1,2} per ADR-0020's dual
   slots; `get_selected()` exposes the selection for episode
   logging), ADR-0005's dense reward (`reward.py`), extra

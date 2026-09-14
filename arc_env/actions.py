@@ -311,6 +311,138 @@ candidates (`11852cab`, `3618c87e`, `47c1f68c`, `aedd82e4`, `cce03e0d`,
 `e98196ab`) were also checked and found not to generalize. Action count: 62
 -> 72. Curated tasks: 67 -> 77. See ADR-0025 for the full audit,
 verification numbers, and every rejected-candidate writeup.
+
+ADR-0026 (a same-day follow-up to ADR-0025) lands 13 more derived
+`"transform"`-kind actions, no new mechanism, no new `Action.kind` - the
+`two_new_primitives` bucket (16 tasks, 2 already dispositioned no-go by
+ADR-0023), folded together with one leftover `one_new_primitive` task
+(`67a423a3`) too small to be its own pass. 10 `arc-dsl` primitives get
+their first curated use: `numcolors`, `backdrop`, `outbox`, `shoot`,
+`center`, `normalize`, `leastcommon`, `box`, `hfrontier`, `connect`. **The
+dominant finding this pass, more pronounced than ADR-0025's**: for most
+candidates, the literal solver's *choice of primitive* - not just its
+hardcoded constants - was wrong for `re-arc`'s actual generative concept;
+every design below was verified against the actual `re-arc` generator
+source, not just a closer solver read.
+
+`canvas_by_symmetry()` (zero-arg) builds a 1x1 canvas colored `1` if the
+grid is symmetric under any of `hmirror`/`vmirror`/`dmirror`/`cmirror`,
+else `7` - corrects the literal solver's `vmirror`-only check (`re-arc`
+applies a random post-hoc rotation/reflection, so the symmetry can land on
+any axis); unlocks `44f52bb0`. `tophalf_or_lefthalf_by_equality()`
+(zero-arg) returns `tophalf(grid)` if `tophalf(grid) == bottomhalf(grid)`,
+else `lefthalf(grid)` - corrects the literal solver's `portrait`/`branch`
+read entirely (the real invariant is a structural equality check between
+the two candidate halves, not grid aspect ratio, which is only 17/30 on
+`re-arc`); unlocks `7b7f7511`. `mirror_crop_by_rectangle_marker()`
+(zero-arg) auto-detects the marker color as whichever palette color's own
+cells form an exact solid rectangle (`ofcolor(grid, c) == backdrop(ofcolor
+(grid, c))`, new `backdrop` primitive, shared with
+`fill_backdrop_and_box_by_rarity` below), crops that color's bbox out of
+both `hmirror(grid)` and `vmirror(grid)`, and picks whichever crop no
+longer contains the marker color - corrects the literal solver's hardcoded
+marker color `1` (0/30 uncorrected); unlocks `ff805c23`.
+`diagonal_canvas_by_object_count()` (zero-arg) builds an NxN canvas (N =
+`dsl.objects(grid, T, F, T)` foreground object count) colored by the
+grid's own `mostcolor` (background)/`leastcolor` (diagonal fill) - not the
+literal solver's hardcoded `0`/`8`, fixture coincidences - diagonal-filled
+via a plain Python `frozenset` (no `dsl.shoot` needed, the diagonal is a
+simple `range`); unlocks `d0f5fe59`. `canvas_row_by_foreground_count()`
+(zero-arg) builds a 1-row canvas, sized and colored by the grid's one
+non-zero foreground color's own cell count (`next(v for row... if v != 0)`,
+the same auto-detect ADR-0025's `fill_nonsingleton_foreground` established
+- not `dsl.other`, which isn't a curated primitive and isn't needed here);
+background `0` is a genuine `re-arc` generator invariant for this task
+(confirmed against generator source), unlike most of this pass's other
+hardcodes; unlocks `d631b094`. `bar_chart_canvas_by_size4_count()`
+(zero-arg) builds a fixed-total-5 "bar chart" canvas (N cells of color `1`
+beside `5-N` cells of the grid's own `mostcolor`, N = count of size-4
+objects of color `1`) - corrects the literal solver's hardcoded background
+`0` to `mostcolor`; the fixed total `5` and fill color `1` are genuine
+generator invariants, not fixture coincidences; unlocks `1fad071e`.
+`upscale_by_numcolors_minus_one()` (zero-arg) is `dsl.upscale(grid, dsl.
+numcolors(grid) - 1)` (new `numcolors` primitive) - one shared action for
+both `ac0a08a4` and `b91ae062`: `ac0a08a4`'s literal solver (`upscale(I, 9
+- colorcount(I, 0))`) only matches its own real fixture by coincidence (all
+its real grids are 3x3 with a literal-0 background, 1/28 on fresh
+`re-arc`), but the actual shared invariant behind *both* tasks is
+identical (`numcolors(grid) - 1`); unlocks `ac0a08a4` and `b91ae062`.
+
+`fill_outbox_of_band_intersection()` (zero-arg) finds the two perpendicular
+color-bands by column/row bounding-box span (not connectivity-object
+identity, which fragments once one band cuts across the other - a band can
+itself be more than one row/column wide), takes their intersection
+rectangle, and fills its `outbox` (new primitive - the ring of cells one
+step outside a patch's bbox) with `4` - corrects the literal solver's
+`neighbors`-of-one-hole-cell read entirely (the single-hole-cell framing
+doesn't survive band/band intersections generally); unlocks `67a423a3`.
+`shoot_diagonals_from_objects()` (zero-arg), for every object of color `1`
+and every object of color `2` (not one merged blob per color, the literal
+solver's read), shoots a diagonal (`dsl.shoot`, new primitive) from that
+object's own `ulcorner` (already curated - `lrcorner` turns out unneeded
+once processed per-object, since shooting further back along the same
+infinite line repaints already-correct cells); unlocks `5c0a986e`.
+`stamp_shape_at_singleton_echoes()` (zero-arg) auto-detects the marker
+color as any singleton object's color (not the literal solver's hardcoded
+`5`), normalizes the anchor shape's indices to the origin (`dsl.normalize`,
+new), and stamps it - shifted by each singleton echo's own `dsl.center`
+(new) minus the *normalized anchor's own* `dsl.center` (not the literal
+solver's fixed `NEG_UNITY` offset, which only matches by fixture
+coincidence when the anchor's own bbox happens to center at `(1, 1)`; the
+general placement is `echo_center - anchor_center`, traced directly from
+`re-arc`'s generator, which places each echo dot at exactly
+`center(shift(anchor, loc))`) - at **every** singleton echo of the marker
+color (not just `first()`, the literal solver's read); unlocks `88a10436`.
+`crop_to_leastcommon_quadrant()` (zero-arg) splits the grid into 4
+quadrants (via already-curated `lefthalf`/`righthalf`/`tophalf`/
+`bottomhalf`), returns whichever quadrant's own full content is `dsl.
+leastcommon` (new primitive - statistical mode by value, over the 4
+quadrant-grids) among the 4 - `re-arc`'s generator structurally guarantees
+exactly one quadrant differs (no tie case reachable); unlocks `88a62173`.
+`fill_backdrop_and_box_by_rarity()` (zero-arg) auto-detects the "dot"
+marker color as the grid's own `leastcolor` (not the literal solver's
+hardcoded `8`) and the background as `mostcolor` (not hardcoded `0`),
+classifies the two remaining non-background colors into outline vs.
+interior by which one has a cell 4-adjacent to a background cell (not by a
+second/third `leastcolor` rarity ranking, the literal solver's read - the
+interior is not reliably rarer than the outline's perimeter, and a purely
+shape-based "is this color's own bbox equal to its own outline" test is
+also unreliable whenever the interior degenerates to 2-cells-thick in
+either dimension, which `re-arc`'s size range makes common, not rare; the
+interior is always strictly enclosed by the outline regardless of
+thickness, so adjacency-to-background is the one thickness-independent
+signal), then fills the merged foreground bbox's interior (`dsl.backdrop`,
+new, shared with `mirror_crop_by_rectangle_marker` above) with the
+interior color and its outline (`dsl.box`, new) with the outline color;
+unlocks `b548a754` at 290/300 (96.7%) on fresh `re-arc` - the shortfall is
+a genuine, narrow degenerate case (not a design defect): when the interior
+region shrinks to its geometric minimum *and* its cell count ties with the
+dot's own single-cell count, `leastcolor` can't unambiguously separate
+"the cutoff-marker dot" from "a legitimately rare 1-cell interior," the
+same class of acceptable, documented shortfall as `f76d97a5`'s 99% (ADR-
+0025). `mirror_border_decoration()` (zero-arg) classifies the two marker
+dots by *position* (row `< h/2` vs. `>= h/2`, not fixed color identity, the
+literal solver's implicit assumption), then per half: fills the through-dot
+horizontal line at that dot's own row (`dsl.hfrontier`, new) with that
+dot's color, and draws that half's own outer three-sided border (the
+half's own outer edge - top edge for the top half, bottom edge for the
+bottom half - plus both side columns for that half's own row range) via
+`dsl.connect` (new) segments - the literal solver's whole-grid `dsl.box`
+(all 4 edges of the *entire* grid) and fixed `hfrontier((2, 0))` (hardcoded
+row 2) are both wrong: `re-arc`'s generator never draws the *inner* shared
+edge between the two halves, and each dot's own row varies per instance,
+traced directly from generator source; unlocks `1bfc4729`.
+
+Unlocks `44f52bb0`, `7b7f7511`, `ff805c23`, `d0f5fe59`, `d631b094`,
+`1fad071e`, `ac0a08a4`, `b91ae062`, `67a423a3`, `5c0a986e`, `88a10436`,
+`88a62173`, `b548a754`, `1bfc4729` - 14 tasks, 13 new actions (one,
+`upscale_by_numcolors_minus_one`, shared by `ac0a08a4`/`b91ae062`). Action
+count: 72 -> 85. Curated tasks: 77 -> 91. See ADR-0026 for the full audit,
+verification numbers, the one rejected candidate (`77fdfe62` - even the
+literal official solver crashes against fresh `re-arc` instances, since its
+hardcoded marker color is actually randomly chosen per instance; the real
+generator concept needs genuine structural detection, not a
+parameterization fix), and every design's exact composition.
 """
 
 from collections import Counter
@@ -797,6 +929,223 @@ def _recolor_objects_by_size(grid: Grid) -> Grid:
     return dsl.fill(result, 1, dsl.merge(dsl.sizefilter(objs, 3)))
 
 
+# ADR-0026: 13 more derived `"transform"`-kind actions, no new mechanism, no
+# new `Action.kind` - 10 `arc-dsl` primitives get their first curated use:
+# `numcolors`, `backdrop`, `outbox`, `shoot`, `center`, `normalize`,
+# `leastcommon`, `box`, `hfrontier`, `connect`. See the module docstring for
+# the full audit (each corrects the literal solver's choice of primitive,
+# not just its constants - verified against the actual `re-arc` generator
+# source, not just a closer solver read).
+#
+# `canvas_by_symmetry()` - a 1x1 canvas colored 1 if the grid is symmetric
+# under any of hmirror/vmirror/dmirror/cmirror, else 7. Unlocks `44f52bb0`.
+def _canvas_by_symmetry(grid: Grid) -> Grid:
+    symmetric = (
+        dsl.hmirror(grid) == grid
+        or dsl.vmirror(grid) == grid
+        or dsl.dmirror(grid) == grid
+        or dsl.cmirror(grid) == grid
+    )
+    return dsl.canvas(1 if symmetric else 7, (1, 1))
+
+
+# `tophalf_or_lefthalf_by_equality()` - `tophalf(grid)` if `tophalf(grid) ==
+# bottomhalf(grid)`, else `lefthalf(grid)`. Unlocks `7b7f7511`.
+def _tophalf_or_lefthalf_by_equality(grid: Grid) -> Grid:
+    top, bottom = dsl.tophalf(grid), dsl.bottomhalf(grid)
+    return top if top == bottom else dsl.lefthalf(grid)
+
+
+# `mirror_crop_by_rectangle_marker()` - auto-detects the marker color as
+# whichever palette color's own cells form an exact solid rectangle, crops
+# that color's bbox out of both hmirror(grid) and vmirror(grid), and picks
+# whichever crop no longer contains the marker color. Unlocks `ff805c23`.
+def _mirror_crop_by_rectangle_marker(grid: Grid) -> Grid:
+    marker = next(
+        c for c in dsl.palette(grid)
+        if dsl.ofcolor(grid, c) and dsl.ofcolor(grid, c) == dsl.backdrop(dsl.ofcolor(grid, c))
+    )
+    idx = dsl.ofcolor(grid, marker)
+    hcrop = dsl.subgrid(idx, dsl.hmirror(grid))
+    vcrop = dsl.subgrid(idx, dsl.vmirror(grid))
+    return vcrop if marker in dsl.palette(hcrop) else hcrop
+
+
+# `diagonal_canvas_by_object_count()` - an NxN canvas (N = foreground object
+# count), colored by the grid's own mostcolor (background)/leastcolor
+# (diagonal), diagonal-filled via a plain Python frozenset. Unlocks
+# `d0f5fe59`.
+def _diagonal_canvas_by_object_count(grid: Grid) -> Grid:
+    n = len(dsl.objects(grid, True, False, True))
+    canvas_ = dsl.canvas(dsl.mostcolor(grid), (n, n))
+    diagonal = frozenset((i, i) for i in range(n))
+    return dsl.fill(canvas_, dsl.leastcolor(grid), diagonal)
+
+
+# `canvas_row_by_foreground_count()` - a 1-row canvas, sized and colored by
+# the grid's one non-zero foreground color's own cell count. Unlocks
+# `d631b094`.
+def _canvas_row_by_foreground_count(grid: Grid) -> Grid:
+    fg = next(v for row in grid for v in row if v != 0)
+    count = sum(1 for row in grid for v in row if v == fg)
+    return dsl.canvas(fg, (1, count))
+
+
+# `bar_chart_canvas_by_size4_count()` - a fixed-total-5 "bar chart" canvas
+# (N cells of color 1 beside 5-N cells of the grid's own mostcolor, N =
+# count of size-4 objects of color 1). Unlocks `1fad071e`.
+def _bar_chart_canvas_by_size4_count(grid: Grid) -> Grid:
+    objs = dsl.objects(grid, True, False, True)
+    size4_ones = dsl.sizefilter(dsl.colorfilter(objs, 1), 4)
+    n = dsl.size(size4_ones)
+    bar = dsl.canvas(1, (1, n))
+    rest = dsl.canvas(dsl.mostcolor(grid), (1, 5 - n))
+    return dsl.hconcat(bar, rest)
+
+
+# `upscale_by_numcolors_minus_one()` - `dsl.upscale(grid, dsl.numcolors
+# (grid) - 1)` (new `numcolors` primitive). One shared action for both
+# `ac0a08a4` and `b91ae062`. Unlocks both.
+def _upscale_by_numcolors_minus_one(grid: Grid) -> Grid:
+    return dsl.upscale(grid, dsl.numcolors(grid) - 1)
+
+
+# `fill_outbox_of_band_intersection()` - finds the two perpendicular
+# color-bands by column/row bounding-box span (a band may itself be more
+# than one row/column wide), takes their intersection rectangle, and fills
+# its outbox (new primitive - the ring of cells one step outside a patch's
+# bbox) with 4. Unlocks `67a423a3`.
+def _fill_outbox_of_band_intersection(grid: Grid) -> Grid:
+    height, width = len(grid), len(grid[0])
+    bg = dsl.mostcolor(grid)
+    band_rows = band_cols = None
+    for color in dsl.palette(grid):
+        if color == bg:
+            continue
+        cells = dsl.ofcolor(grid, color)
+        if not cells:
+            continue
+        rows = {r for r, _ in cells}
+        cols = {c for _, c in cells}
+        if (max(cols) - min(cols) + 1) == width:
+            band_rows = range(min(rows), max(rows) + 1)
+        elif (max(rows) - min(rows) + 1) == height:
+            band_cols = range(min(cols), max(cols) + 1)
+    intersection = frozenset((r, c) for r in band_rows for c in band_cols)
+    return dsl.fill(grid, 4, dsl.outbox(intersection))
+
+
+# `shoot_diagonals_from_objects()` - for every object of color 1 and every
+# object of color 2 (not one merged blob per color), shoots a diagonal
+# (new `shoot` primitive) from that object's own ulcorner (`lrcorner` turns
+# out unneeded once processed per-object - shooting further back along the
+# same infinite line just repaints already-correct cells). Unlocks
+# `5c0a986e`.
+def _shoot_diagonals_from_objects(grid: Grid) -> Grid:
+    objs = dsl.objects(grid, True, False, True)
+    result = grid
+    for obj in dsl.colorfilter(objs, 1):
+        result = dsl.fill(result, 1, dsl.shoot(dsl.ulcorner(obj), constants.NEG_UNITY))
+    for obj in dsl.colorfilter(objs, 2):
+        result = dsl.fill(result, 2, dsl.shoot(dsl.ulcorner(obj), constants.UNITY))
+    return result
+
+
+# `stamp_shape_at_singleton_echoes()` - auto-detects the marker color as
+# any singleton object's color, normalizes the anchor shape's indices to
+# the origin (new `normalize` primitive), and stamps it - shifted by each
+# singleton echo's own center (new `center` primitive) minus the
+# normalized anchor's own center - at every singleton echo of the marker
+# color. Unlocks `88a10436`.
+def _stamp_shape_at_singleton_echoes(grid: Grid) -> Grid:
+    objs = dsl.objects(grid, False, False, True)
+    marker_color = dsl.color(dsl.first(dsl.sizefilter(objs, 1)))
+    marker_objs = dsl.colorfilter(objs, marker_color)
+    anchor = dsl.first(dsl.difference(objs, marker_objs))
+    normalized = dsl.normalize(anchor)
+    anchor_center = dsl.center(normalized)
+    result = grid
+    for obj in marker_objs:
+        echo_center = dsl.center(obj)
+        offset = (echo_center[0] - anchor_center[0], echo_center[1] - anchor_center[1])
+        result = dsl.paint(result, dsl.shift(normalized, offset))
+    return result
+
+
+# `crop_to_leastcommon_quadrant()` - splits the grid into 4 quadrants (via
+# already-curated lefthalf/righthalf/tophalf/bottomhalf), returns whichever
+# quadrant's own full content is the statistical mode by value (new
+# `leastcommon` primitive - `re-arc`'s generator structurally guarantees
+# exactly one quadrant differs, no tie case reachable). Unlocks `88a62173`.
+def _crop_to_leastcommon_quadrant(grid: Grid) -> Grid:
+    left, right = dsl.lefthalf(grid), dsl.righthalf(grid)
+    quadrants = (dsl.tophalf(left), dsl.tophalf(right), dsl.bottomhalf(left), dsl.bottomhalf(right))
+    return dsl.leastcommon(quadrants)
+
+
+# `fill_backdrop_and_box_by_rarity()` - auto-detects the "dot" marker color
+# as the grid's own leastcolor and the background as mostcolor, classifies
+# the two remaining non-background colors into outline vs. interior by
+# which one has a cell 4-adjacent to a background cell (the interior is
+# always strictly enclosed by the outline regardless of thickness, so
+# adjacency-to-background is thickness-independent, unlike a rarity
+# ranking or a shape-equality test), then fills the merged foreground
+# bbox's interior (new `backdrop` primitive) with the interior color and
+# its outline (new `box` primitive) with the outline color. Unlocks
+# `b548a754` (~96.7% on `re-arc` - see module docstring for the documented
+# degenerate edge case).
+def _fill_backdrop_and_box_by_rarity(grid: Grid) -> Grid:
+    bg = dsl.mostcolor(grid)
+    bg_cells = dsl.ofcolor(grid, bg)
+    merged = dsl.merge(dsl.objects(grid, True, False, True))
+    dot_color = dsl.leastcolor(grid)
+    outline_color = interior_color = None
+    for c in dsl.palette(grid):
+        if c in (bg, dot_color):
+            continue
+        cells = dsl.ofcolor(grid, c)
+        touches_bg = any(n in bg_cells for cell in cells for n in dsl.dneighbors(cell))
+        if touches_bg:
+            outline_color = c
+        else:
+            interior_color = c
+    result = dsl.fill(grid, interior_color, dsl.backdrop(merged))
+    return dsl.fill(result, outline_color, dsl.box(merged))
+
+
+# `mirror_border_decoration()` - classifies the two marker dots by
+# position (row < h/2 vs. >= h/2, not fixed color identity), then per half:
+# fills the through-dot horizontal line at that dot's own row (new
+# `hfrontier` primitive) with that dot's color, and draws that half's own
+# outer three-sided border (that half's own outer edge plus both side
+# columns for that half's own row range) via new `connect` primitive
+# segments. Unlocks `1bfc4729`.
+def _mirror_border_decoration(grid: Grid) -> Grid:
+    height, width = len(grid), len(grid[0])
+    half = height // 2
+    bg = dsl.mostcolor(grid)
+    top_color = bottom_color = None
+    top_loc = bottom_loc = None
+    for c in dsl.palette(grid):
+        if c == bg:
+            continue
+        loc = next(iter(dsl.ofcolor(grid, c)))
+        if loc[0] < half:
+            top_color, top_loc = c, loc
+        else:
+            bottom_color, bottom_loc = c, loc
+    result = grid
+    result = dsl.fill(result, top_color, dsl.hfrontier(top_loc))
+    result = dsl.fill(result, bottom_color, dsl.hfrontier(bottom_loc))
+    result = dsl.fill(result, top_color, dsl.connect((0, 0), (0, width - 1)))
+    result = dsl.fill(result, bottom_color, dsl.connect((height - 1, 0), (height - 1, width - 1)))
+    result = dsl.fill(result, top_color, dsl.connect((0, 0), (half - 1, 0)))
+    result = dsl.fill(result, top_color, dsl.connect((0, width - 1), (half - 1, width - 1)))
+    result = dsl.fill(result, bottom_color, dsl.connect((half, 0), (height - 1, 0)))
+    result = dsl.fill(result, bottom_color, dsl.connect((half, width - 1), (height - 1, width - 1)))
+    return result
+
+
 # ADR-0011 Phase 2 Slice 1: object selection. `_OBJECTS` fixes `dsl.objects`'s
 # (univalued, diagonal, without_bg) triple to the one variant this pass
 # curates (see that ADR's module-level rationale for why only one variant is
@@ -1059,6 +1408,21 @@ ZERO_ARG = [
     Action("paint_vmirrored_righthalf_onto_lefthalf", _paint_vmirrored_righthalf_onto_lefthalf),
     Action("fill_nonsingleton_foreground", _fill_nonsingleton_foreground),
     Action("recolor_objects_by_size", _recolor_objects_by_size),
+    # ADR-0026: 13 more derived zero-arg actions - see each helper's own
+    # docstring above and the module docstring.
+    Action("canvas_by_symmetry", _canvas_by_symmetry),
+    Action("tophalf_or_lefthalf_by_equality", _tophalf_or_lefthalf_by_equality),
+    Action("mirror_crop_by_rectangle_marker", _mirror_crop_by_rectangle_marker),
+    Action("diagonal_canvas_by_object_count", _diagonal_canvas_by_object_count),
+    Action("canvas_row_by_foreground_count", _canvas_row_by_foreground_count),
+    Action("bar_chart_canvas_by_size4_count", _bar_chart_canvas_by_size4_count),
+    Action("upscale_by_numcolors_minus_one", _upscale_by_numcolors_minus_one),
+    Action("fill_outbox_of_band_intersection", _fill_outbox_of_band_intersection),
+    Action("shoot_diagonals_from_objects", _shoot_diagonals_from_objects),
+    Action("stamp_shape_at_singleton_echoes", _stamp_shape_at_singleton_echoes),
+    Action("crop_to_leastcommon_quadrant", _crop_to_leastcommon_quadrant),
+    Action("fill_backdrop_and_box_by_rarity", _fill_backdrop_and_box_by_rarity),
+    Action("mirror_border_decoration", _mirror_border_decoration),
 ]
 
 # One-arg (scale factor) grid transforms.

@@ -175,6 +175,39 @@ fresh `re-arc` instances, each for its own precise structural reason - left
 uncurated, same disposition as prior ADRs' no-gos. 29 same-shape + 48
 variable-shape = 77 total. See ADR-0025 for the full audit.
 
+ADR-0026 (a same-day follow-up to ADR-0025) adds 14 more tasks via 13 new
+derived actions (one, `upscale_by_numcolors_minus_one`, shared by two
+tasks) - 10 `arc-dsl` primitives get their first curated use (`numcolors`,
+`backdrop`, `outbox`, `shoot`, `center`, `normalize`, `leastcommon`, `box`,
+`hfrontier`, `connect` - see `arc_env/actions.py`'s module docstring):
+`44f52bb0` (`canvas_by_symmetry`), `7b7f7511`
+(`tophalf_or_lefthalf_by_equality`), `ff805c23`
+(`mirror_crop_by_rectangle_marker`), `d0f5fe59`
+(`diagonal_canvas_by_object_count`), `d631b094`
+(`canvas_row_by_foreground_count`), `1fad071e`
+(`bar_chart_canvas_by_size4_count`), `ac0a08a4`/`b91ae062` (both
+`upscale_by_numcolors_minus_one`), `67a423a3`
+(`fill_outbox_of_band_intersection`), `5c0a986e`
+(`shoot_diagonals_from_objects`), `88a10436`
+(`stamp_shape_at_singleton_echoes`), `88a62173`
+(`crop_to_leastcommon_quadrant`), `b548a754`
+(`fill_backdrop_and_box_by_rarity`), `1bfc4729`
+(`mirror_border_decoration`). `67a423a3`, `5c0a986e`, `88a10436`,
+`b548a754`, `1bfc4729` are same-shape (5); `44f52bb0`, `7b7f7511`,
+`ff805c23`, `d0f5fe59`, `d631b094`, `1fad071e`, `ac0a08a4`, `b91ae062`,
+`88a62173` are variable-shape (9). The dominant finding this pass, more
+pronounced than ADR-0025's: for most candidates, the literal solver's
+*choice of primitive* - not just its hardcoded constants - was wrong for
+`re-arc`'s actual generative concept, requiring the actual `re-arc`
+generator source traced for nearly every candidate, not just a closer
+solver read. 1 candidate (`77fdfe62`) rejected: even the literal official
+solver crashes against fresh `re-arc` instances, since its hardcoded marker
+color is actually randomly chosen per instance - the real generator
+concept needs genuine structural detection, not a parameterization fix,
+same disposition as `7c008303`/`c9f8e694`/`017c7c7b`/ADR-0025's `3de23699`.
+34 same-shape + 57 variable-shape = 91 total. See ADR-0026 for the full
+audit, verification numbers, and every design's exact composition.
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -517,6 +550,22 @@ CURATED_TASK_IDS = {
     "e3497940": [("paint_vmirrored_righthalf_onto_lefthalf", ())],
     "67385a82": [("fill_nonsingleton_foreground", ())],
     "e8593010": [("recolor_objects_by_size", ())],
+    # ADR-0026: 13 new derived actions (one shared by two tasks). See
+    # `arc_env/actions.py`'s module docstring for what each does.
+    "44f52bb0": [("canvas_by_symmetry", ())],
+    "7b7f7511": [("tophalf_or_lefthalf_by_equality", ())],
+    "ff805c23": [("mirror_crop_by_rectangle_marker", ())],
+    "d0f5fe59": [("diagonal_canvas_by_object_count", ())],
+    "d631b094": [("canvas_row_by_foreground_count", ())],
+    "1fad071e": [("bar_chart_canvas_by_size4_count", ())],
+    "ac0a08a4": [("upscale_by_numcolors_minus_one", ())],
+    "b91ae062": [("upscale_by_numcolors_minus_one", ())],
+    "67a423a3": [("fill_outbox_of_band_intersection", ())],
+    "5c0a986e": [("shoot_diagonals_from_objects", ())],
+    "88a10436": [("stamp_shape_at_singleton_echoes", ())],
+    "88a62173": [("crop_to_leastcommon_quadrant", ())],
+    "b548a754": [("fill_backdrop_and_box_by_rarity", ())],
+    "1bfc4729": [("mirror_border_decoration", ())],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -544,6 +593,11 @@ VARIABLE_SHAPE_TASK_IDS = {
     # dimensions squared, `e3497940` halves to lefthalf's own shape) - the
     # other 7 are same-shape (not added here).
     "90c28cc7", "c3e719e8", "e3497940",
+    # ADR-0026: 9 of the 14 new tasks are variable-shape (`67a423a3`,
+    # `5c0a986e`, `88a10436`, `b548a754`, `1bfc4729` stay same-shape, not
+    # added here).
+    "44f52bb0", "7b7f7511", "ff805c23", "d0f5fe59", "d631b094",
+    "1fad071e", "ac0a08a4", "b91ae062", "88a62173",
 }
 
 
