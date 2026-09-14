@@ -244,5 +244,24 @@ concept of the task" (1/30 even under brute-force arg search), the same
 disposition as `select_tallest`/`1c786137` and `9ecd008a`. See ADR-0023 for
 the full audit and verification.
 
+## ADR-0024: the `free_by_name` re-check (2026-09-14)
+
+A same-day follow-up: re-ran the audit against the post-ADR-0023 baseline
+(60 curated) and re-checked its 20 `free_by_name` tasks by hand (the
+bucket the audit's own docstring flags as "reachable by primitive name
+alone, not a guarantee"). 7 shared one of three fixed geometric-tiling
+shapes (2 identical-solver pairs plus 2 singletons), landed as 4 new
+zero-arg derived actions, verified 30/30 general against fresh `re-arc`
+instances each: `quad_rotate_tile` (`46442a0e`, `7fe24cdd`),
+`quad_mirror_tile` (`3af2c5a8`, `62c24649`, `67e8384a`),
+`stack3_vmirror_tile` (`8d5021e8`), and `left_third` (`2dee498d` - this one
+needed zero new logic at all, just exposing ADR-0022's existing internal
+`_left_third` region helper as its own standalone action). Two more
+candidates (`0520fde7`, `a699fb00`) were checked and found not to
+generalize (1/30, 5/30) - same disposition as this file's earlier no-gos,
+not pursued further. Curated tasks went 60 → 67. See ADR-0024 for the full
+account, including the 11 `free_by_name` tasks still unexamined past a
+first read.
+
 **Landed by:** ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0015, ADR-0016,
-ADR-0019, ADR-0023.
+ADR-0019, ADR-0023, ADR-0024.
