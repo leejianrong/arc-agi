@@ -27,8 +27,8 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 58 actions as of
-  ADR-0023: structural transforms including the 4 self-concatenation
+  `arc-dsl`-primitive action space (`actions.py` — 62 actions as of
+  ADR-0024: structural transforms including the 4 self-concatenation
   actions, `fill_cell`, `canvas`, `canvas_mostcolor`,
   `swap_two_least_colors`, `commit`, plus the object-selection
   mechanism's 14 actions (`select_largest`/`select_smallest`/
@@ -80,9 +80,25 @@ Planning artifacts (read these before making architectural changes):
   made once for `007bbfb7`/`80af3007`/`8f2ea7aa` — `7c008303`, `c9f8e694`,
   and `017c7c7b` remain uncurated, a reasoned no-go (each needs real
   structural-detection logic to generalize past its own fixed json, not a
-  parameterization swap)), the
-  task loader (`task_loader.py` — 60 curated tasks, 22 same-shape
-  + 38 variable-shape), `env.py` (2-channel observation:
+  parameterization swap)); and ADR-0024 (a re-check of the `free_by_name`
+  bucket the ADR-0023 audit left unexamined) adds 4 more zero-arg
+  `"transform"`-kind actions, no new mechanism, no new `Action.kind` —
+  `quad_rotate_tile` (2x2-tiles the grid with its own `rot90`/`rot270`/
+  `rot180`), `quad_mirror_tile` (stacks `hconcat_self_vmirror`'s own block
+  with that block's `hmirror`), `stack3_vmirror_tile` (a related but
+  distinct tiling — concat order and stack count differ enough that it
+  isn't reducible to `quad_mirror_tile`), and `left_third` (zero new logic
+  at all: it's ADR-0022's existing private `_left_third` helper, already
+  used internally by the region-scoping menu's `_REGIONS`, now also
+  exposed as its own standalone action) — unlocking 7 more curated tasks
+  (`46442a0e`/`7fe24cdd` via `quad_rotate_tile`, `3af2c5a8`/`62c24649`/
+  `67e8384a` via `quad_mirror_tile`, `8d5021e8` via `stack3_vmirror_tile`,
+  `2dee498d` via `left_third`); two more `free_by_name` candidates
+  (`0520fde7`, `a699fb00`) were checked and found not to generalize
+  against fresh `re-arc` instances, left uncurated same as ADR-0023's
+  no-gos, the
+  task loader (`task_loader.py` — 67 curated tasks, 22 same-shape
+  + 45 variable-shape), `env.py` (2-channel observation:
   grid + selection mask, now with values in {0,1,2} per ADR-0020's dual
   slots; `get_selected()` exposes the selection for episode
   logging), ADR-0005's dense reward (`reward.py`), extra
