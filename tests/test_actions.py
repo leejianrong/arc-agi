@@ -1713,3 +1713,113 @@ def test_mirror_border_decoration_matches_the_derived_dsl_composition_directly()
     expected = dsl.fill(expected, bottom_color, dsl.connect((half, 0), (height - 1, 0)))
     expected = dsl.fill(expected, bottom_color, dsl.connect((half, width - 1), (height - 1, width - 1)))
     assert action.fn(grid) == expected
+
+
+# ADR-0026 hardening: two of the new actions (`fill_backdrop_and_box_by_
+# rarity`, `mirror_border_decoration`) auto-detect colors by scanning the
+# grid's palette - on a grid that lacks the structure they expect (e.g. no
+# distinct outline/interior color pair, or no marker dot in one half), a
+# naive implementation left an unassigned `None` reaching `dsl.fill`, which
+# silently produced a grid with `None` cells instead of raising. That only
+# blew up much later in `arc_env/env.py`'s observation encoding (caught by
+# the slow PPO e2e tests, whose real rollouts apply the *full* action space
+# to `67a3c6ac`'s own grids, not just each action's target task). The fix is
+# twofold: each function now raises on its own "found nothing" branch, and
+# `execute()` has a generic `_is_valid_grid` backstop that rejects any
+# malformed grid as an invalid no-op (Q7) at the same layer that already
+# checks the result's shape.
+
+
+def test_fill_backdrop_and_box_by_rarity_never_produces_none_cells_on_an_unrelated_grid():
+    # A grid shaped like `67a3c6ac`'s (few colors, no distinct outline/
+    # interior color pair to classify) - the exact family that broke this
+    # action before the fix. The bare function must raise rather than return
+    # a grid with `None` cells.
+    grid = (
+        (8, 8, 8, 8, 8, 8),
+        (8, 0, 0, 0, 0, 8),
+        (8, 0, 0, 0, 0, 8),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 3, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_backdrop_and_box_by_rarity"]]
+    with pytest.raises(ValueError):
+        action.fn(grid)
+
+
+def test_mirror_border_decoration_never_produces_none_cells_on_an_unrelated_grid():
+    # Only one marker dot (no second dot in the other half) - the bare
+    # function must raise rather than return a grid with `None` cells.
+    grid = (
+        (0, 0, 0, 0),
+        (0, 5, 0, 0),
+        (0, 0, 0, 0),
+        (0, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["mirror_border_decoration"]]
+    with pytest.raises(ValueError):
+        action.fn(grid)
+
+
+# Per action, a grid that genuinely lacks the structure that action needs -
+# `fill_backdrop_and_box_by_rarity` has no distinct outline/interior color
+# pair; `mirror_border_decoration` has only one marker dot (nothing in the
+# other half).
+_STRUCTURELESS_GRIDS = {
+    "fill_backdrop_and_box_by_rarity": (
+        (8, 8, 8, 8, 8, 8),
+        (8, 0, 0, 0, 0, 8),
+        (8, 0, 0, 0, 0, 8),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 3, 0, 0, 0),
+    ),
+    "mirror_border_decoration": (
+        (0, 0, 0, 0),
+        (0, 5, 0, 0),
+        (0, 0, 0, 0),
+        (0, 0, 0, 0),
+    ),
+}
+
+
+@pytest.mark.parametrize("action_name", sorted(_STRUCTURELESS_GRIDS))
+def test_execute_treats_a_structureless_grid_as_an_invalid_no_op(action_name):
+    # Through the real `execute()` path: an action that can't do its job on
+    # this grid comes back as an invalid no-op (grid unchanged, valid False),
+    # never a grid containing `None`, matching Q7's invalid-action contract.
+    grid = _STRUCTURELESS_GRIDS[action_name]
+    index = actions.ACTION_BY_NAME[action_name]
+    new_grid, _, _, _, valid = actions.execute(index, (), grid, None, None)
+    assert valid is False
+    assert new_grid == grid
+
+
+def test_is_valid_grid_rejects_malformed_grids():
+    # The generic backstop `execute()` funnels every action result through -
+    # a `None` cell, an out-of-range color, a ragged row, or a degenerate
+    # shape must all be rejected, so any action (existing or future) that
+    # produces one is treated as an invalid no-op rather than corrupting
+    # downstream observation encoding.
+    assert actions._is_valid_grid(((1, 2), (3, 4))) is True
+    assert actions._is_valid_grid(((0, 9), (5, 5))) is True
+    assert actions._is_valid_grid(((1, None), (3, 4))) is False
+    assert actions._is_valid_grid(((1, 2), (3, 10))) is False  # color > 9
+    assert actions._is_valid_grid(((1, 2), (3, -1))) is False  # color < 0
+    assert actions._is_valid_grid(((1, 2), (3, 4, 5))) is False  # ragged
+    assert actions._is_valid_grid(()) is False  # empty
+
+
+def test_execute_rejects_an_action_that_returns_a_none_cell(monkeypatch):
+    # A generic guard test: patch any transform action to return a grid with
+    # a `None` cell and confirm `execute()` rejects it as invalid (no-op),
+    # rather than passing the malformed grid downstream. `identity` is a
+    # zero-arg transform, so this exercises the ordinary-transform branch.
+    index = actions.ACTION_BY_NAME["identity"]
+    original = actions.ACTIONS[index]
+    patched = actions.Action(original.name, lambda grid: ((0, None), (1, 2)), original.args, original.kind)
+    patched_actions = list(actions.ACTIONS)
+    patched_actions[index] = patched
+    monkeypatch.setattr(actions, "ACTIONS", patched_actions)
+    new_grid, _, _, _, valid = actions.execute(index, (), ((1, 2), (3, 4)), None, None)
+    assert valid is False
+    assert new_grid == ((1, 2), (3, 4))

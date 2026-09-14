@@ -1109,6 +1109,15 @@ def _fill_backdrop_and_box_by_rarity(grid: Grid) -> Grid:
             outline_color = c
         else:
             interior_color = c
+    if outline_color is None or interior_color is None:
+        # Fewer than 2 non-background, non-dot colors to classify - not this
+        # task's shape (e.g. a random/unrelated grid hit during PPO
+        # exploration, not just re-arc's own instance space for `b548a754`).
+        # Raise so `execute()`'s existing try/except treats this as an
+        # invalid no-op rather than silently `dsl.fill`ing `None` into the
+        # grid - see the `select_tallest`/`1c786137` precedent in the module
+        # docstring for why this class of bug matters.
+        raise ValueError("fill_backdrop_and_box_by_rarity: could not classify outline/interior colors")
     result = dsl.fill(grid, interior_color, dsl.backdrop(merged))
     return dsl.fill(result, outline_color, dsl.box(merged))
 
@@ -1134,6 +1143,15 @@ def _mirror_border_decoration(grid: Grid) -> Grid:
             top_color, top_loc = c, loc
         else:
             bottom_color, bottom_loc = c, loc
+    if top_color is None or bottom_color is None:
+        # No non-background color found in one of the two halves - not this
+        # task's two-dot shape (e.g. a random/unrelated grid hit during PPO
+        # exploration, not just re-arc's own instance space for `1bfc4729`).
+        # Raise so `execute()`'s existing try/except treats this as an
+        # invalid no-op rather than silently `dsl.fill`ing `None` into the
+        # grid - see the `select_tallest`/`1c786137` precedent in the module
+        # docstring for why this class of bug matters.
+        raise ValueError("mirror_border_decoration: could not find a marker dot in each half")
     result = grid
     result = dsl.fill(result, top_color, dsl.hfrontier(top_loc))
     result = dsl.fill(result, bottom_color, dsl.hfrontier(bottom_loc))
@@ -1626,6 +1644,36 @@ def _grid_shape(grid: Grid) -> tuple:
     return (len(grid), len(grid[0]) if grid else 0)
 
 
+# ADR-0026 hardening: a derived action can have a bug where some "found
+# nothing to classify" branch leaves a Python variable unassigned (`None`)
+# and that value reaches `dsl.fill`/etc. directly instead of an int color -
+# `dsl.fill` doesn't validate its `value` arg, so this produces a grid with
+# `None` cells *without raising*, meaning the `except Exception` immediately
+# around each `action.fn(...)` call below never catches it (there's nothing
+# to catch - the call returns "successfully"). The bug only surfaces much
+# later, in `arc_env/env.py`'s observation encoding, once a `None` cell hits
+# `int()`. `_is_valid_grid` closes that gap at the one place every action
+# result already funnels through for its shape check, so any action - this
+# one, an existing one, or a future one - that produces a malformed grid is
+# treated as an invalid no-op (Q7) instead of corrupting downstream state.
+# Caught in practice by `tests/test_train_ppo.py`/`test_warm_start_e2e.py`'s
+# real PPO rollouts: those explore the *full* action space against
+# `67a3c6ac`'s own grids, not just each new action's own target task's
+# grids, so `fill_backdrop_and_box_by_rarity`/`mirror_border_decoration`
+# (ADR-0026) got called on a grid without a distinct outline/interior (or
+# top/bottom marker dot) to classify - now guarded at the source too (see
+# each function's own docstring above), this is the systemic backstop for
+# any similar gap this or a future ADR's action might have.
+def _is_valid_grid(grid: Grid) -> bool:
+    h, w = _grid_shape(grid)
+    if h == 0 or w == 0 or h > MAX_GRID_DIM or w > MAX_GRID_DIM:
+        return False
+    return all(
+        len(row) == w and all(isinstance(v, int) and 0 <= v <= 9 for v in row)
+        for row in grid
+    )
+
+
 def execute(
     primitive_index: int,
     raw_args: tuple,
@@ -1652,9 +1700,12 @@ def execute(
     valid)`. `decoded_args` is a dict of the actual (post-`decode`)
     argument values, present even when `valid` is False, for logging. On
     invalid input (bad primitive index, out-of-bounds coordinate, a
-    transform that would exceed the 30x30 canvas or collapse a grid
-    dimension to zero, a `"select"`/`"select_region"` action finding
-    nothing to select, an `"act_on_selection"`/`"act_on_region_selection"`
+    transform that would exceed the 30x30 canvas, collapse a grid
+    dimension to zero, or (ADR-0026 hardening) produce a malformed grid -
+    a non-rectangular shape or a cell that isn't an int color in 0-9, the
+    `_is_valid_grid` check every action result funnels through - a
+    `"select"`/`"select_region"` action finding nothing to select, an
+    `"act_on_selection"`/`"act_on_region_selection"`
     action with no current selection/region tag in slot 0/"a", a
     `"combine_selection"` action with either slot unpopulated or a region-
     shape mismatch between the two slots, or a `"fill_slot_onto_region"`
@@ -1738,8 +1789,7 @@ def execute(
             new_grid = action.fn(grid, selected[0], *decoded.values())
         except Exception:  # noqa: BLE001
             return grid, selected, selected_region, decoded, False
-        new_h, new_w = _grid_shape(new_grid)
-        if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
+        if not _is_valid_grid(new_grid):
             return grid, selected, selected_region, decoded, False
         # Selection state passes through unchanged - these actions never
         # clear or update it (same as before ADR-0020).
@@ -1752,8 +1802,7 @@ def execute(
             new_grid = action.fn(grid, selected[0], selected_region[0], *decoded.values())
         except Exception:  # noqa: BLE001
             return grid, selected, selected_region, decoded, False
-        new_h, new_w = _grid_shape(new_grid)
-        if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
+        if not _is_valid_grid(new_grid):
             return grid, selected, selected_region, decoded, False
         return new_grid, selected, selected_region, decoded, True
 
@@ -1772,8 +1821,7 @@ def execute(
             new_grid = action.fn(grid, selected[slot], target_region, decoded["fill_color"])
         except Exception:  # noqa: BLE001
             return grid, selected, selected_region, decoded, False
-        new_h, new_w = _grid_shape(new_grid)
-        if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
+        if not _is_valid_grid(new_grid):
             return grid, selected, selected_region, decoded, False
         return new_grid, selected, selected_region, decoded, True
 
@@ -1804,8 +1852,7 @@ def execute(
         # bounds checks above.
         return grid, selected, selected_region, decoded, False
 
-    new_h, new_w = _grid_shape(new_grid)
-    if new_h == 0 or new_w == 0 or new_h > MAX_GRID_DIM or new_w > MAX_GRID_DIM:
+    if not _is_valid_grid(new_grid):
         return grid, selected, selected_region, decoded, False
 
     # ADR-0011/ADR-0020: a successful ordinary transform invalidates any
