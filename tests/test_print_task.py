@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from print_task import (
     PALETTE,
     TaskNotFoundError,
+    _use_color,
     find_task_path,
     load_task,
     render_pair,
@@ -68,3 +69,17 @@ def test_palette_has_ten_colors_matching_viz_frontend():
     assert len(PALETTE) == 10
     assert PALETTE[0] == (0, 0, 0)
     assert PALETTE[1] == (0, 116, 217)
+
+
+def test_use_color_precedence(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    # Neither flag, no TTY: plain.
+    assert _use_color(no_color_flag=False, color_flag=False) is False
+    # --color forces it on even without a TTY.
+    assert _use_color(no_color_flag=False, color_flag=True) is True
+    # --no-color wins even over --color.
+    assert _use_color(no_color_flag=True, color_flag=True) is False
+    # NO_COLOR wins over --color too.
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert _use_color(no_color_flag=False, color_flag=True) is False

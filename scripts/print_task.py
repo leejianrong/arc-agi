@@ -12,11 +12,16 @@ ADR-0007's "follow apps/js's palette conventions" decision - kept in sync by
 hand, same as that TS file already is with the CSS). Falls back to a plain
 bracketed-digit rendering when stdout isn't a TTY, `--no-color` is passed, or
 `NO_COLOR` is set (https://no-color.org) - piping to a file/log or a
-non-truecolor terminal still gets a readable grid.
+non-truecolor terminal still gets a readable grid. Pass `--color` to force
+truecolor escapes on regardless of TTY detection (e.g. when stdout is
+captured/piped by a harness that still renders the bytes in a real
+terminal, like this agent's own tool-output pane) - takes precedence over
+the TTY check but not over `--no-color`/`NO_COLOR`.
 
     uv run python scripts/print_task.py 928ad970
     uv run python scripts/print_task.py 928ad970 --pair train 0
     uv run python scripts/print_task.py 928ad970 --no-color
+    uv run python scripts/print_task.py 928ad970 --color
 """
 
 import argparse
@@ -72,10 +77,10 @@ def load_task(task_id: str) -> dict:
         return json.load(f)
 
 
-def _use_color(no_color_flag: bool) -> bool:
+def _use_color(no_color_flag: bool, color_flag: bool) -> bool:
     if no_color_flag or os.environ.get("NO_COLOR"):
         return False
-    return sys.stdout.isatty()
+    return color_flag or sys.stdout.isatty()
 
 
 def _render_grid_lines(grid: list, color: bool) -> list:
@@ -139,6 +144,7 @@ def main() -> None:
         help="print just one pair, e.g. --pair train 0 (default: every train and test pair)",
     )
     parser.add_argument("--no-color", action="store_true", help="force plain bracketed-digit rendering")
+    parser.add_argument("--color", action="store_true", help="force truecolor rendering regardless of TTY detection")
     args = parser.parse_args()
 
     split, pair_index = (None, None)
@@ -148,7 +154,7 @@ def main() -> None:
             parser.error("--pair's SPLIT must be 'train' or 'test'")
 
     try:
-        print_task(args.task_id, split, pair_index, color=_use_color(args.no_color))
+        print_task(args.task_id, split, pair_index, color=_use_color(args.no_color, args.color))
     except (ValueError, TaskNotFoundError) as e:
         parser.error(str(e))
 
