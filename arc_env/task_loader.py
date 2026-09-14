@@ -142,6 +142,19 @@ uncurated as a reasoned no-go rather than a still-open thread. 22 same-shape
 + 38 variable-shape = 60 total. See ADR-0023 for the full audit and
 verification methodology.
 
+ADR-0024 (2026-09-14) adds 7 more tasks via 4 new derived actions found in a
+re-check of the `free_by_name` bucket (`quad_rotate_tile`, `quad_mirror_tile`,
+`stack3_vmirror_tile`, `left_third` - see `arc_env/actions.py`'s module
+docstring): `46442a0e`/`7fe24cdd` (`quad_rotate_tile`), `3af2c5a8`/
+`62c24649`/`67e8384a` (`quad_mirror_tile`), `8d5021e8` (`stack3_vmirror_
+tile`), `2dee498d` (`left_third`, zero new logic - the same private
+`_left_third` helper ADR-0022 already added for the region-scoping menu).
+All 7 are variable-shape (every dimension changes). Two more candidates
+(`0520fde7`, `a699fb00`) were checked and found not to generalize against
+fresh `re-arc` instances - left uncurated, same disposition as ADR-0023's
+no-gos. 22 same-shape + 45 variable-shape = 67 total. See ADR-0024 for the
+full audit.
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -462,6 +475,15 @@ CURATED_TASK_IDS = {
     "928ad970": [("fill_inbox_by_dot_color", (5,))],
     "a68b268e": [("fill_quadrant_from_colors", (7, 4, 8))],
     "eb281b96": [("repeat_mirror_tile", ())],
+    # ADR-0024: 4 new derived actions from the `free_by_name` re-check. See
+    # `arc_env/actions.py`'s module docstring for what each does.
+    "46442a0e": [("quad_rotate_tile", ())],
+    "7fe24cdd": [("quad_rotate_tile", ())],
+    "3af2c5a8": [("quad_mirror_tile", ())],
+    "62c24649": [("quad_mirror_tile", ())],
+    "67e8384a": [("quad_mirror_tile", ())],
+    "8d5021e8": [("stack3_vmirror_tile", ())],
+    "2dee498d": [("left_third", ())],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -481,6 +503,9 @@ VARIABLE_SHAPE_TASK_IDS = {
     # ADR-0023: `a68b268e` shrinks to one quadrant, `eb281b96` triples
     # height - `928ad970` stays same-shape (not added here).
     "a68b268e", "eb281b96",
+    # ADR-0024: all 7 new tasks are variable-shape (every dimension changes).
+    "46442a0e", "7fe24cdd", "3af2c5a8", "62c24649", "67e8384a",
+    "8d5021e8", "2dee498d",
 }
 
 

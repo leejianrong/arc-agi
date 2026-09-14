@@ -25,6 +25,9 @@ DERIVED_ZERO_ARG_NAMES = {
     "swap_two_least_colors", "switch_least_most_colors",
     # ADR-0023 (Bucket C).
     "repeat_mirror_tile",
+    # ADR-0024: fixed geometric tilings, plus `left_third` (not a bare
+    # `dsl.left_third` - there is no such `dsl` function at all).
+    "quad_rotate_tile", "quad_mirror_tile", "stack3_vmirror_tile", "left_third",
 }
 DIRECT_ZERO_ARG = [a for a in actions.ZERO_ARG if a.name not in DERIVED_ZERO_ARG_NAMES]
 
@@ -974,3 +977,78 @@ def test_repeat_mirror_tile_matches_the_derived_dsl_composition_directly():
     go = dsl.vconcat(grid, dsl.hmirror(grid[:-1]))
     expected = dsl.vconcat(go, dsl.hmirror(go[:-1]))
     assert action.fn(grid) == expected
+
+
+# ADR-0024: 4 more derived actions from the `free_by_name` re-check.
+def test_quad_rotate_tile_tiles_the_grid_with_its_own_90_180_270_rotations():
+    grid = ((1, 2), (3, 4))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["quad_rotate_tile"]]
+    assert action.fn(grid) == (
+        (1, 2, 3, 1),
+        (3, 4, 4, 2),
+        (2, 4, 4, 3),
+        (1, 3, 2, 1),
+    )
+
+
+def test_quad_rotate_tile_matches_the_derived_dsl_composition_directly():
+    grid = ((5, 6, 7), (8, 9, 1))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["quad_rotate_tile"]]
+    r90, r180, r270 = dsl.rot90(grid), dsl.rot180(grid), dsl.rot270(grid)
+    expected = dsl.vconcat(dsl.hconcat(grid, r90), dsl.hconcat(r270, r180))
+    assert action.fn(grid) == expected
+
+
+def test_quad_mirror_tile_stacks_hconcat_self_vmirror_with_its_own_hmirror():
+    grid = ((1, 2), (3, 4))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["quad_mirror_tile"]]
+    assert action.fn(grid) == (
+        (1, 2, 2, 1),
+        (3, 4, 4, 3),
+        (3, 4, 4, 3),
+        (1, 2, 2, 1),
+    )
+
+
+def test_quad_mirror_tile_matches_the_derived_dsl_composition_directly():
+    grid = ((5, 6, 7), (8, 9, 1))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["quad_mirror_tile"]]
+    top = dsl.hconcat(grid, dsl.vmirror(grid))
+    expected = dsl.vconcat(top, dsl.hmirror(top))
+    assert action.fn(grid) == expected
+
+
+def test_stack3_vmirror_tile_is_distinct_from_quad_mirror_tile():
+    grid = ((1, 2), (3, 4))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["stack3_vmirror_tile"]]
+    assert action.fn(grid) == (
+        (4, 3, 3, 4),
+        (2, 1, 1, 2),
+        (2, 1, 1, 2),
+        (4, 3, 3, 4),
+        (4, 3, 3, 4),
+        (2, 1, 1, 2),
+    )
+
+
+def test_stack3_vmirror_tile_matches_the_derived_dsl_composition_directly():
+    grid = ((5, 6, 7), (8, 9, 1))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["stack3_vmirror_tile"]]
+    left = dsl.hconcat(dsl.vmirror(grid), grid)
+    stacked = dsl.vconcat(left, dsl.hmirror(left))
+    stacked = dsl.vconcat(stacked, left)
+    expected = dsl.hmirror(stacked)
+    assert action.fn(grid) == expected
+
+
+def test_left_third_action_is_the_literal_same_function_as_the_region_helper():
+    # `left_third` (the standalone action) must be the exact same function
+    # object as `_left_third` (ADR-0022's private region-scoping helper),
+    # not a second implementation that could drift from it.
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["left_third"]]
+    assert action.fn is _left_third
+
+
+def test_left_third_action_matches_the_existing_region_helper_usage():
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["left_third"]]
+    assert action.fn(THIRDS_GRID) == _left_third(THIRDS_GRID) == ((0, 1), (6, 7))

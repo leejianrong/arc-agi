@@ -215,6 +215,25 @@ instance space (each needs real structural-detection logic - a divider's
 row/col, a variable embedding offset/period - not a parameterization swap)
 and stay uncurated as a reasoned no-go. See ADR-0023 for the full audit and
 verification methodology.
+
+ADR-0024 lands 4 more derived actions, no new mechanism, no new
+`Action.kind` - a re-check of the `free_by_name` bucket the ADR-0023 audit
+left unexamined. Three are fixed geometric-tiling actions in the same
+"derived, not drawn from a solver 1:1" family as the 4 self-concat actions:
+`quad_rotate_tile()` (zero-arg) 2x2-tiles the grid with its own `rot90`/
+`rot270`/`rot180`; `quad_mirror_tile()` (zero-arg) stacks `hconcat_self_
+vmirror`'s own block with that block's `hmirror`; `stack3_vmirror_tile()`
+(zero-arg) is a related but distinct tiling (differs enough in concat order
+and stack count that it isn't reducible to `quad_mirror_tile`). The fourth,
+`left_third()`, is zero new logic at all: it's ADR-0022's existing private
+`_left_third` helper (already used internally by the region-scoping
+menu's `_REGIONS`), now also exposed as its own standalone zero-arg
+transform action. Unlocks 7 more curated tasks: `46442a0e`/`7fe24cdd`
+(`quad_rotate_tile`), `3af2c5a8`/`62c24649`/`67e8384a` (`quad_mirror_tile`),
+`8d5021e8` (`stack3_vmirror_tile`), `2dee498d` (`left_third`). Two other
+`free_by_name` candidates (`0520fde7`, `a699fb00`) were checked and found
+not to generalize against fresh `re-arc` instances - left uncurated, same
+disposition as ADR-0023's no-gos. See ADR-0024 for the full audit.
 """
 
 from collections import Counter
@@ -495,6 +514,36 @@ def _vconcat_self_hmirror_bottom(grid: Grid) -> Grid:
     return dsl.vconcat(grid, dsl.hmirror(grid))
 
 
+# ADR-0024: 3 more fixed geometric-tiling actions, same "derived, not drawn
+# from a solver 1:1" family as the 4 self-concat actions just above - each a
+# zero-arg `Grid -> Grid` pipeline that references `grid` more than once to
+# build a fixed tiling. See module docstring and ADR-0024's Context.
+#
+# `quad_rotate_tile()` - 2x2 tiling of `grid`, `rot90(grid)`, `rot270(grid)`,
+# `rot180(grid)`. Unlocks `46442a0e`, `7fe24cdd` (identical solvers).
+def _quad_rotate_tile(grid: Grid) -> Grid:
+    r90, r180, r270 = dsl.rot90(grid), dsl.rot180(grid), dsl.rot270(grid)
+    return dsl.vconcat(dsl.hconcat(grid, r90), dsl.hconcat(r270, r180))
+
+
+# `quad_mirror_tile()` - `hconcat_self_vmirror` (already exists as its own
+# action above) followed by stacking that block with its own `hmirror`.
+# Unlocks `3af2c5a8`, `62c24649`, `67e8384a` (identical solvers).
+def _quad_mirror_tile(grid: Grid) -> Grid:
+    top = dsl.hconcat(grid, dsl.vmirror(grid))
+    return dsl.vconcat(top, dsl.hmirror(top))
+
+
+# `stack3_vmirror_tile()` - a related but distinct tiling (concat order and
+# stack count differ enough that it isn't reducible to `quad_mirror_tile`,
+# confirmed by direct comparison). Unlocks `8d5021e8`.
+def _stack3_vmirror_tile(grid: Grid) -> Grid:
+    left = dsl.hconcat(dsl.vmirror(grid), grid)
+    stacked = dsl.vconcat(left, dsl.hmirror(left))
+    stacked = dsl.vconcat(stacked, left)
+    return dsl.hmirror(stacked)
+
+
 # ADR-0021: tiles `grid` `factor` times in both dimensions via repeated
 # `hconcat`/`vconcat` - the same self-concatenation style as the 4 actions
 # just above, generalized from "concat once, optionally mirrored" to "concat
@@ -759,6 +808,15 @@ ZERO_ARG = [
     # ADR-0023 (Bucket C): zero-arg, fully derived - see
     # `_repeat_mirror_tile`'s own docstring above and the module docstring.
     Action("repeat_mirror_tile", _repeat_mirror_tile),
+    # ADR-0024: 3 more fixed geometric-tiling actions, zero-arg - see each
+    # helper's own docstring above and the module docstring.
+    Action("quad_rotate_tile", _quad_rotate_tile),
+    Action("quad_mirror_tile", _quad_mirror_tile),
+    Action("stack3_vmirror_tile", _stack3_vmirror_tile),
+    # ADR-0024: `left_third` exposed as its own standalone transform action -
+    # the exact same `_left_third` helper ADR-0022 already defined above for
+    # the region-scoping menu (`_REGIONS`), not a duplicate. Zero new logic.
+    Action("left_third", _left_third),
 ]
 
 # One-arg (scale factor) grid transforms.
