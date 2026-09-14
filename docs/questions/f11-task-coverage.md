@@ -263,5 +263,51 @@ not pursued further. Curated tasks went 60 → 67. See ADR-0024 for the full
 account, including the 11 `free_by_name` tasks still unexamined past a
 first read.
 
+## ADR-0025: the `one_new_primitive` bucket + 3 more `free_by_name` (2026-09-14)
+
+A same-day follow-up to ADR-0024: re-ran the audit against the post-ADR-0024
+baseline (67 curated) and worked its two next-highest-value buckets.
+
+`free_by_name`'s 9 genuinely unexamined tasks (the other 4 were already
+dispositioned by prior ADRs) split 3 land / 6 no-go. The 3 that land each
+needed a *correction* to the literal solver's hardcoded constant (a
+specific color, a specific background value) into a grid-derived
+auto-detected value, since `re-arc`'s generator varies exactly the thing
+the literal solver hardcoded: `paint_vmirrored_righthalf_onto_lefthalf`
+(`e3497940`, no correction needed), `fill_nonsingleton_foreground`
+(`67385a82`, auto-detects foreground color instead of hardcoded `THREE`),
+`recolor_objects_by_size` (`e8593010`, auto-detects background instead of
+hardcoded `0`). The 6 no-gos (`11852cab`, `3618c87e`, `47c1f68c`,
+`aedd82e4`, `cce03e0d`, `e98196ab`) each reproduce their own real fixture
+exactly but collapse against `re-arc`'s broader instance space for a
+precise, task-specific structural reason - see ADR-0025's Rejected table.
+
+`one_new_primitive`'s 9 tasks split 7 land / 2 no-go, landing 5 new
+`arc-dsl` primitives (`delta`, `frontiers`, `palette`, `dedupe`,
+`asobject`) - `e9afcf9a` turned out to need *zero* new primitives once its
+literal solver's hardcoded crop shape was replaced with one derived from
+the grid itself, and `c3e719e8` turned out to need `asobject` (shared with
+`6d75e8bb`) rather than its literal solver's `asindices`. The 2 no-gos
+(`05f2a901`/`gravitate`, `3de23699`/`fgpartition`) initially looked like
+they'd land (96%/94% against fresh `re-arc` instances) but a dedicated
+root-cause follow-up found each failure mode inherent to the primitive
+itself, not fixable by any action-level design: `gravitate`'s
+first-Manhattan-distance-1 stopping rule disagrees with `re-arc`'s own
+true-overlap-then-back-off ground truth whenever the moving object is
+non-convex (common in this task's generator); `fgpartition`'s
+global-majority background heuristic is wrong often enough that even the
+*official, known-correct* `solvers.py` solver itself crashes or produces
+wrong output against `re-arc`'s own instance space for `3de23699` (traced
+directly, not inferred) - a structural-detection gap, not a parameterization
+one, same disposition as `7c008303`/`c9f8e694`/`017c7c7b`.
+
+This pass reconfirms (again) the pattern ADR-0023/ADR-0024 already
+established twice: name-level or first-pass-fixture-level agreement is not
+generalization, and the fix is sometimes "correct the hardcoded constant"
+(a real win) and sometimes "the primitive itself doesn't generalize here"
+(a reasoned no-go) - only a full `re-arc` sweep tells which. Curated tasks
+went 67 -> 77 (10 new tasks, 10 new actions). See ADR-0025 for the full
+audit, verification numbers, and rejected-candidate writeups.
+
 **Landed by:** ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0015, ADR-0016,
-ADR-0019, ADR-0023, ADR-0024.
+ADR-0019, ADR-0023, ADR-0024, ADR-0025.
