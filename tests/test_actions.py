@@ -5,7 +5,7 @@ directly, for representative inputs."""
 import pytest
 
 from arc_env import actions
-from arc_env._dsl import dsl
+from arc_env._dsl import constants, dsl
 from arc_env.actions import _left_third, _middle_third, _right_third
 
 GRIDS = [
@@ -34,6 +34,15 @@ DERIVED_ZERO_ARG_NAMES = {
     "dedupe_grid_both_axes", "fill_holes_in_object_bbox", "tile_by_mostcolor",
     "paint_vmirrored_righthalf_onto_lefthalf", "fill_nonsingleton_foreground",
     "recolor_objects_by_size",
+    # ADR-0026: 13 more derived zero-arg actions - none is a bare 1:1 `dsl`
+    # call either.
+    "canvas_by_symmetry", "tophalf_or_lefthalf_by_equality",
+    "mirror_crop_by_rectangle_marker", "diagonal_canvas_by_object_count",
+    "canvas_row_by_foreground_count", "bar_chart_canvas_by_size4_count",
+    "upscale_by_numcolors_minus_one", "fill_outbox_of_band_intersection",
+    "shoot_diagonals_from_objects", "stamp_shape_at_singleton_echoes",
+    "crop_to_leastcommon_quadrant", "fill_backdrop_and_box_by_rarity",
+    "mirror_border_decoration",
 }
 DIRECT_ZERO_ARG = [a for a in actions.ZERO_ARG if a.name not in DERIVED_ZERO_ARG_NAMES]
 
@@ -1298,3 +1307,519 @@ def test_recolor_objects_by_size_matches_the_derived_dsl_composition_directly():
     expected = dsl.fill(expected, 2, dsl.merge(dsl.sizefilter(objs, 2)))
     expected = dsl.fill(expected, 1, dsl.merge(dsl.sizefilter(objs, 3)))
     assert action.fn(grid) == expected
+
+
+# ADR-0026: 13 more derived actions, 10 new `arc-dsl` primitives (`numcolors`,
+# `backdrop`, `outbox`, `shoot`, `center`, `normalize`, `leastcommon`, `box`,
+# `hfrontier`, `connect`) get their first curated use.
+
+
+def test_canvas_by_symmetry_returns_1_for_a_symmetric_grid_else_7():
+    sym_grid = ((1, 2, 1),)  # a palindromic row is vmirror-symmetric
+    nonsym_grid = ((1, 2, 3), (4, 5, 6))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["canvas_by_symmetry"]]
+    assert action.fn(sym_grid) == ((1,),)
+    assert action.fn(nonsym_grid) == ((7,),)
+
+
+def test_canvas_by_symmetry_matches_the_derived_dsl_composition_directly():
+    grid = ((3, 3), (3, 3))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["canvas_by_symmetry"]]
+    symmetric = (
+        dsl.hmirror(grid) == grid
+        or dsl.vmirror(grid) == grid
+        or dsl.dmirror(grid) == grid
+        or dsl.cmirror(grid) == grid
+    )
+    expected = dsl.canvas(1 if symmetric else 7, (1, 1))
+    assert action.fn(grid) == expected
+
+
+def test_tophalf_or_lefthalf_by_equality_picks_tophalf_when_halves_match():
+    # tophalf == bottomhalf here, so tophalf wins.
+    grid = ((1, 2), (1, 2))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["tophalf_or_lefthalf_by_equality"]]
+    assert action.fn(grid) == ((1, 2),)
+
+
+def test_tophalf_or_lefthalf_by_equality_falls_back_to_lefthalf_otherwise():
+    grid = ((1, 2, 3, 4), (5, 6, 7, 8))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["tophalf_or_lefthalf_by_equality"]]
+    assert action.fn(grid) == ((1, 2), (5, 6))
+
+
+def test_tophalf_or_lefthalf_by_equality_matches_the_derived_dsl_composition_directly():
+    grid = ((9, 1, 2, 3), (4, 5, 6, 7))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["tophalf_or_lefthalf_by_equality"]]
+    top, bottom = dsl.tophalf(grid), dsl.bottomhalf(grid)
+    expected = top if top == bottom else dsl.lefthalf(grid)
+    assert action.fn(grid) == expected
+
+
+def test_mirror_crop_by_rectangle_marker_autodetects_the_marker_and_picks_a_crop():
+    # Color 1 is a solid 1x2 rectangle (the marker); color 3 is an L-shape
+    # (not a rectangle), so it's never mistaken for the marker.
+    grid = (
+        (0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0),
+        (0, 1, 1, 0, 0),
+        (3, 0, 0, 0, 0),
+        (3, 3, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["mirror_crop_by_rectangle_marker"]]
+    assert action.fn(grid) == ((0, 1),)
+
+
+def test_mirror_crop_by_rectangle_marker_matches_the_derived_dsl_composition_directly():
+    grid = (
+        (0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0),
+        (0, 2, 2, 0, 0),
+        (5, 0, 0, 0, 0),
+        (5, 5, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["mirror_crop_by_rectangle_marker"]]
+    marker = next(
+        c for c in dsl.palette(grid)
+        if dsl.ofcolor(grid, c) and dsl.ofcolor(grid, c) == dsl.backdrop(dsl.ofcolor(grid, c))
+    )
+    idx = dsl.ofcolor(grid, marker)
+    hcrop = dsl.subgrid(idx, dsl.hmirror(grid))
+    vcrop = dsl.subgrid(idx, dsl.vmirror(grid))
+    expected = vcrop if marker in dsl.palette(hcrop) else hcrop
+    assert action.fn(grid) == expected
+
+
+def test_diagonal_canvas_by_object_count_builds_an_nxn_diagonal_canvas():
+    # 3 objects of color 5 on a color-0 background -> a 3x3 canvas, 0
+    # background, 5 on the diagonal.
+    grid = (
+        (0, 0, 0, 0, 0),
+        (0, 5, 0, 5, 0),
+        (0, 0, 0, 0, 0),
+        (0, 5, 0, 0, 0),
+        (0, 0, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["diagonal_canvas_by_object_count"]]
+    assert action.fn(grid) == (
+        (5, 0, 0),
+        (0, 5, 0),
+        (0, 0, 5),
+    )
+
+
+def test_diagonal_canvas_by_object_count_matches_the_derived_dsl_composition_directly():
+    grid = ((0, 0, 0), (0, 7, 0), (7, 0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["diagonal_canvas_by_object_count"]]
+    n = len(dsl.objects(grid, True, False, True))
+    canvas_ = dsl.canvas(dsl.mostcolor(grid), (n, n))
+    diagonal = frozenset((i, i) for i in range(n))
+    expected = dsl.fill(canvas_, dsl.leastcolor(grid), diagonal)
+    assert action.fn(grid) == expected
+
+
+def test_canvas_row_by_foreground_count_sizes_and_colors_by_foreground_cell_count():
+    # 3 cells of the one non-zero color (6) -> a 1x3 row of 6.
+    grid = ((0, 0, 0), (0, 6, 0), (6, 0, 6))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["canvas_row_by_foreground_count"]]
+    assert action.fn(grid) == ((6, 6, 6),)
+
+
+def test_canvas_row_by_foreground_count_matches_the_derived_dsl_composition_directly():
+    grid = ((0, 4, 0), (4, 0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["canvas_row_by_foreground_count"]]
+    fg = next(v for row in grid for v in row if v != 0)
+    count = sum(1 for row in grid for v in row if v == fg)
+    expected = dsl.canvas(fg, (1, count))
+    assert action.fn(grid) == expected
+
+
+def test_bar_chart_canvas_by_size4_count_builds_a_fixed_total_5_bar_chart():
+    # One size-4 object of color 1 -> 1 cell of color 1 beside 4 cells of
+    # the grid's own mostcolor (0).
+    grid = ((1, 1, 0, 0), (1, 1, 0, 0), (0, 0, 0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["bar_chart_canvas_by_size4_count"]]
+    assert action.fn(grid) == ((1, 0, 0, 0, 0),)
+
+
+def test_bar_chart_canvas_by_size4_count_matches_the_derived_dsl_composition_directly():
+    grid = ((1, 1, 1, 1), (1, 1, 1, 1), (0, 0, 0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["bar_chart_canvas_by_size4_count"]]
+    objs = dsl.objects(grid, True, False, True)
+    size4_ones = dsl.sizefilter(dsl.colorfilter(objs, 1), 4)
+    n = dsl.size(size4_ones)
+    bar = dsl.canvas(1, (1, n))
+    rest = dsl.canvas(dsl.mostcolor(grid), (1, 5 - n))
+    expected = dsl.hconcat(bar, rest)
+    assert action.fn(grid) == expected
+
+
+def test_upscale_by_numcolors_minus_one_scales_by_numcolors_minus_one():
+    # 3 distinct colors (0, 1, 2) -> upscale by 2.
+    grid = ((0, 1), (2, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["upscale_by_numcolors_minus_one"]]
+    assert action.fn(grid) == (
+        (0, 0, 1, 1),
+        (0, 0, 1, 1),
+        (2, 2, 0, 0),
+        (2, 2, 0, 0),
+    )
+
+
+def test_upscale_by_numcolors_minus_one_matches_the_derived_dsl_composition_directly():
+    grid = ((0, 1, 2), (3, 0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["upscale_by_numcolors_minus_one"]]
+    expected = dsl.upscale(grid, dsl.numcolors(grid) - 1)
+    assert action.fn(grid) == expected
+
+
+def test_fill_outbox_of_band_intersection_rings_the_two_bands_crossing_point():
+    # A full-height column (color 3) crosses a full-width row (color 2) at
+    # (1, 1) - the outbox is the 8-cell ring around that single cell.
+    grid = (
+        (0, 3, 0, 0),
+        (2, 2, 2, 2),
+        (0, 3, 0, 0),
+        (0, 3, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_outbox_of_band_intersection"]]
+    assert action.fn(grid) == (
+        (4, 4, 4, 0),
+        (4, 2, 4, 2),
+        (4, 4, 4, 0),
+        (0, 3, 0, 0),
+    )
+
+
+def test_fill_outbox_of_band_intersection_matches_the_derived_dsl_composition_directly():
+    grid = (
+        (0, 0, 5, 0, 0),
+        (0, 0, 5, 0, 0),
+        (6, 6, 6, 6, 6),
+        (0, 0, 5, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_outbox_of_band_intersection"]]
+    intersection = frozenset({(2, 2)})
+    expected = dsl.fill(grid, 4, dsl.outbox(intersection))
+    assert action.fn(grid) == expected
+
+
+def test_shoot_diagonals_from_objects_shoots_from_each_objects_own_ulcorner():
+    # Color-1 object shoots up-left (NEG_UNITY) from its ulcorner; color-2
+    # object shoots down-right (UNITY) from its ulcorner.
+    grid = (
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 1, 1, 0, 0),
+        (0, 0, 1, 1, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["shoot_diagonals_from_objects"]]
+    assert action.fn(grid) == (
+        (1, 0, 0, 0, 0, 0),
+        (0, 1, 0, 0, 0, 0),
+        (0, 0, 1, 1, 0, 0),
+        (0, 0, 1, 1, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+    )
+
+
+def test_shoot_diagonals_from_objects_matches_the_derived_dsl_composition_directly():
+    grid = ((0, 0, 0, 0), (0, 2, 0, 0), (0, 0, 0, 0), (0, 0, 0, 1))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["shoot_diagonals_from_objects"]]
+    objs = dsl.objects(grid, True, False, True)
+    expected = grid
+    for obj in dsl.colorfilter(objs, 1):
+        expected = dsl.fill(expected, 1, dsl.shoot(dsl.ulcorner(obj), constants.NEG_UNITY))
+    for obj in dsl.colorfilter(objs, 2):
+        expected = dsl.fill(expected, 2, dsl.shoot(dsl.ulcorner(obj), constants.UNITY))
+    assert action.fn(grid) == expected
+
+
+def test_stamp_shape_at_singleton_echoes_stamps_the_anchor_at_every_marker_dot():
+    grid = (
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 6, 7, 0, 0, 0, 0, 0),
+        (0, 8, 9, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 5, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["stamp_shape_at_singleton_echoes"]]
+    assert action.fn(grid) == (
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 6, 7, 0, 0, 0, 0, 0),
+        (0, 8, 9, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 6, 7, 0, 0),
+        (0, 0, 0, 0, 8, 9, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+    )
+
+
+def test_stamp_shape_at_singleton_echoes_matches_the_derived_dsl_composition_directly():
+    grid = (
+        (0, 0, 0, 0, 0, 0),
+        (0, 3, 4, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 2, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["stamp_shape_at_singleton_echoes"]]
+    objs = dsl.objects(grid, False, False, True)
+    marker_color = dsl.color(dsl.first(dsl.sizefilter(objs, 1)))
+    marker_objs = dsl.colorfilter(objs, marker_color)
+    anchor = dsl.first(dsl.difference(objs, marker_objs))
+    normalized = dsl.normalize(anchor)
+    anchor_center = dsl.center(normalized)
+    expected = grid
+    for obj in marker_objs:
+        echo_center = dsl.center(obj)
+        offset = (echo_center[0] - anchor_center[0], echo_center[1] - anchor_center[1])
+        expected = dsl.paint(expected, dsl.shift(normalized, offset))
+    assert action.fn(grid) == expected
+
+
+def test_crop_to_leastcommon_quadrant_returns_the_odd_one_out_quadrant():
+    # 3 quadrants are solid color 1; the bottom-right is solid color 2 (the
+    # least-common content among the 4).
+    grid = (
+        (1, 1, 1, 1),
+        (1, 1, 1, 1),
+        (1, 1, 2, 2),
+        (1, 1, 2, 2),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["crop_to_leastcommon_quadrant"]]
+    assert action.fn(grid) == ((2, 2), (2, 2))
+
+
+def test_crop_to_leastcommon_quadrant_matches_the_derived_dsl_composition_directly():
+    grid = ((3, 3, 5, 5), (3, 3, 3, 3), (3, 3, 3, 3), (3, 3, 3, 3))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["crop_to_leastcommon_quadrant"]]
+    left, right = dsl.lefthalf(grid), dsl.righthalf(grid)
+    quadrants = (dsl.tophalf(left), dsl.tophalf(right), dsl.bottomhalf(left), dsl.bottomhalf(right))
+    expected = dsl.leastcommon(quadrants)
+    assert action.fn(grid) == expected
+
+
+def test_fill_backdrop_and_box_by_rarity_extends_the_box_to_include_the_dot():
+    # A complete 4x4 box (outline 4, interior 6) with a dot (9, the rarest
+    # color) below it - the merged bbox extends down to the dot's own row,
+    # and the box/interior colors are repainted across that larger extent.
+    grid = (
+        (0, 0, 0, 0, 0, 0, 0),
+        (0, 4, 4, 4, 4, 0, 0),
+        (0, 4, 6, 6, 4, 0, 0),
+        (0, 4, 6, 6, 4, 0, 0),
+        (0, 4, 4, 4, 4, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 9, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_backdrop_and_box_by_rarity"]]
+    assert action.fn(grid) == (
+        (0, 0, 0, 0, 0, 0, 0),
+        (0, 4, 4, 4, 4, 0, 0),
+        (0, 4, 6, 6, 4, 0, 0),
+        (0, 4, 6, 6, 4, 0, 0),
+        (0, 4, 6, 6, 4, 0, 0),
+        (0, 4, 6, 6, 4, 0, 0),
+        (0, 4, 6, 6, 4, 0, 0),
+        (0, 4, 4, 4, 4, 0, 0),
+    )
+
+
+def test_fill_backdrop_and_box_by_rarity_matches_the_derived_dsl_composition_directly():
+    grid = (
+        (0, 0, 0, 0, 0, 0),
+        (0, 2, 2, 2, 0, 0),
+        (0, 2, 7, 2, 0, 0),
+        (0, 2, 2, 2, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 5, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_backdrop_and_box_by_rarity"]]
+    bg = dsl.mostcolor(grid)
+    bg_cells = dsl.ofcolor(grid, bg)
+    merged = dsl.merge(dsl.objects(grid, True, False, True))
+    dot_color = dsl.leastcolor(grid)
+    outline_color = interior_color = None
+    for c in dsl.palette(grid):
+        if c in (bg, dot_color):
+            continue
+        cells = dsl.ofcolor(grid, c)
+        touches_bg = any(n in bg_cells for cell in cells for n in dsl.dneighbors(cell))
+        if touches_bg:
+            outline_color = c
+        else:
+            interior_color = c
+    expected = dsl.fill(grid, interior_color, dsl.backdrop(merged))
+    expected = dsl.fill(expected, outline_color, dsl.box(merged))
+    assert action.fn(grid) == expected
+
+
+def test_mirror_border_decoration_draws_each_halfs_own_border_and_dot_frontier():
+    grid = (
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 4, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 8, 0, 0),
+        (0, 0, 0, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["mirror_border_decoration"]]
+    assert action.fn(grid) == (
+        (4, 4, 4, 4, 4, 4),
+        (4, 4, 4, 4, 4, 4),
+        (4, 0, 0, 0, 0, 4),
+        (8, 0, 0, 0, 0, 8),
+        (8, 8, 8, 8, 8, 8),
+        (8, 8, 8, 8, 8, 8),
+    )
+
+
+def test_mirror_border_decoration_matches_the_derived_dsl_composition_directly():
+    grid = (
+        (0, 0, 0, 0),
+        (0, 3, 0, 0),
+        (0, 0, 0, 7),
+        (0, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["mirror_border_decoration"]]
+    height, width = len(grid), len(grid[0])
+    half = height // 2
+    bg = dsl.mostcolor(grid)
+    top_color = bottom_color = None
+    top_loc = bottom_loc = None
+    for c in dsl.palette(grid):
+        if c == bg:
+            continue
+        loc = next(iter(dsl.ofcolor(grid, c)))
+        if loc[0] < half:
+            top_color, top_loc = c, loc
+        else:
+            bottom_color, bottom_loc = c, loc
+    expected = grid
+    expected = dsl.fill(expected, top_color, dsl.hfrontier(top_loc))
+    expected = dsl.fill(expected, bottom_color, dsl.hfrontier(bottom_loc))
+    expected = dsl.fill(expected, top_color, dsl.connect((0, 0), (0, width - 1)))
+    expected = dsl.fill(expected, bottom_color, dsl.connect((height - 1, 0), (height - 1, width - 1)))
+    expected = dsl.fill(expected, top_color, dsl.connect((0, 0), (half - 1, 0)))
+    expected = dsl.fill(expected, top_color, dsl.connect((0, width - 1), (half - 1, width - 1)))
+    expected = dsl.fill(expected, bottom_color, dsl.connect((half, 0), (height - 1, 0)))
+    expected = dsl.fill(expected, bottom_color, dsl.connect((half, width - 1), (height - 1, width - 1)))
+    assert action.fn(grid) == expected
+
+
+# ADR-0026 hardening: two of the new actions (`fill_backdrop_and_box_by_
+# rarity`, `mirror_border_decoration`) auto-detect colors by scanning the
+# grid's palette - on a grid that lacks the structure they expect (e.g. no
+# distinct outline/interior color pair, or no marker dot in one half), a
+# naive implementation left an unassigned `None` reaching `dsl.fill`, which
+# silently produced a grid with `None` cells instead of raising. That only
+# blew up much later in `arc_env/env.py`'s observation encoding (caught by
+# the slow PPO e2e tests, whose real rollouts apply the *full* action space
+# to `67a3c6ac`'s own grids, not just each action's target task). The fix is
+# twofold: each function now raises on its own "found nothing" branch, and
+# `execute()` has a generic `_is_valid_grid` backstop that rejects any
+# malformed grid as an invalid no-op (Q7) at the same layer that already
+# checks the result's shape.
+
+
+def test_fill_backdrop_and_box_by_rarity_never_produces_none_cells_on_an_unrelated_grid():
+    # A grid shaped like `67a3c6ac`'s (few colors, no distinct outline/
+    # interior color pair to classify) - the exact family that broke this
+    # action before the fix. The bare function must raise rather than return
+    # a grid with `None` cells.
+    grid = (
+        (8, 8, 8, 8, 8, 8),
+        (8, 0, 0, 0, 0, 8),
+        (8, 0, 0, 0, 0, 8),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 3, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_backdrop_and_box_by_rarity"]]
+    with pytest.raises(ValueError):
+        action.fn(grid)
+
+
+def test_mirror_border_decoration_never_produces_none_cells_on_an_unrelated_grid():
+    # Only one marker dot (no second dot in the other half) - the bare
+    # function must raise rather than return a grid with `None` cells.
+    grid = (
+        (0, 0, 0, 0),
+        (0, 5, 0, 0),
+        (0, 0, 0, 0),
+        (0, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["mirror_border_decoration"]]
+    with pytest.raises(ValueError):
+        action.fn(grid)
+
+
+# Per action, a grid that genuinely lacks the structure that action needs -
+# `fill_backdrop_and_box_by_rarity` has no distinct outline/interior color
+# pair; `mirror_border_decoration` has only one marker dot (nothing in the
+# other half).
+_STRUCTURELESS_GRIDS = {
+    "fill_backdrop_and_box_by_rarity": (
+        (8, 8, 8, 8, 8, 8),
+        (8, 0, 0, 0, 0, 8),
+        (8, 0, 0, 0, 0, 8),
+        (0, 0, 0, 0, 0, 0),
+        (0, 0, 3, 0, 0, 0),
+    ),
+    "mirror_border_decoration": (
+        (0, 0, 0, 0),
+        (0, 5, 0, 0),
+        (0, 0, 0, 0),
+        (0, 0, 0, 0),
+    ),
+}
+
+
+@pytest.mark.parametrize("action_name", sorted(_STRUCTURELESS_GRIDS))
+def test_execute_treats_a_structureless_grid_as_an_invalid_no_op(action_name):
+    # Through the real `execute()` path: an action that can't do its job on
+    # this grid comes back as an invalid no-op (grid unchanged, valid False),
+    # never a grid containing `None`, matching Q7's invalid-action contract.
+    grid = _STRUCTURELESS_GRIDS[action_name]
+    index = actions.ACTION_BY_NAME[action_name]
+    new_grid, _, _, _, valid = actions.execute(index, (), grid, None, None)
+    assert valid is False
+    assert new_grid == grid
+
+
+def test_is_valid_grid_rejects_malformed_grids():
+    # The generic backstop `execute()` funnels every action result through -
+    # a `None` cell, an out-of-range color, a ragged row, or a degenerate
+    # shape must all be rejected, so any action (existing or future) that
+    # produces one is treated as an invalid no-op rather than corrupting
+    # downstream observation encoding.
+    assert actions._is_valid_grid(((1, 2), (3, 4))) is True
+    assert actions._is_valid_grid(((0, 9), (5, 5))) is True
+    assert actions._is_valid_grid(((1, None), (3, 4))) is False
+    assert actions._is_valid_grid(((1, 2), (3, 10))) is False  # color > 9
+    assert actions._is_valid_grid(((1, 2), (3, -1))) is False  # color < 0
+    assert actions._is_valid_grid(((1, 2), (3, 4, 5))) is False  # ragged
+    assert actions._is_valid_grid(()) is False  # empty
+
+
+def test_execute_rejects_an_action_that_returns_a_none_cell(monkeypatch):
+    # A generic guard test: patch any transform action to return a grid with
+    # a `None` cell and confirm `execute()` rejects it as invalid (no-op),
+    # rather than passing the malformed grid downstream. `identity` is a
+    # zero-arg transform, so this exercises the ordinary-transform branch.
+    index = actions.ACTION_BY_NAME["identity"]
+    original = actions.ACTIONS[index]
+    patched = actions.Action(original.name, lambda grid: ((0, None), (1, 2)), original.args, original.kind)
+    patched_actions = list(actions.ACTIONS)
+    patched_actions[index] = patched
+    monkeypatch.setattr(actions, "ACTIONS", patched_actions)
+    new_grid, _, _, _, valid = actions.execute(index, (), ((1, 2), (3, 4)), None, None)
+    assert valid is False
+    assert new_grid == ((1, 2), (3, 4))
