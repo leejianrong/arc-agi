@@ -309,5 +309,44 @@ generalization, and the fix is sometimes "correct the hardcoded constant"
 went 67 -> 77 (10 new tasks, 10 new actions). See ADR-0025 for the full
 audit, verification numbers, and rejected-candidate writeups.
 
+## ADR-0026: the `two_new_primitives` bucket (2026-09-14)
+
+A same-day follow-up to ADR-0025: `free_by_name` and `one_new_primitive`
+were both exhausted (everything left in either was an already-dispositioned
+no-go, except one fresh `one_new_primitive` task too small to be its own
+pass). Worked `two_new_primitives` instead (16 tasks, 2 already
+dispositioned no-go by ADR-0023), folding the one leftover
+`one_new_primitive` task in - 15 fresh candidates, split into two clusters
+verified by two parallel research passes.
+
+14 of 15 landed, as 13 new derived actions (one shared by two tasks) and 10
+new `arc-dsl` primitives: `numcolors`, `backdrop`, `outbox`, `shoot`,
+`center`, `normalize`, `leastcommon`, `box`, `hfrontier`, `connect`. The
+dominant finding this pass, more pronounced than ADR-0025's: for most
+candidates, the literal solver's *choice of primitive* - not just its
+hardcoded constants - was wrong for `re-arc`'s actual generative concept.
+`neighbors` looked right for `67a423a3` by the audit's name-level check but
+the real generator needs `outbox` over a perpendicular-band intersection;
+`portrait` looked right for `7b7f7511` but the real rule is a structural
+tophalf==bottomhalf equality check; `lrcorner` looked needed for `5c0a986e`
+but disappears once processed per-object instead of per-merged-blob.
+Verifying these required tracing the actual `re-arc` generator source for
+nearly every candidate, not just re-reading the solver more carefully - a
+materially higher cost than any prior pass in this lineage.
+
+1 task (`77fdfe62`) rejected: even the literal official solver crashes
+(mostly `IndexError`) when run against fresh `re-arc` instances, since its
+hardcoded marker color is actually randomly chosen per instance - the real
+generator concept needs genuine structural detection (locate a border
+frame, its 4 quadrants, 4 corner colors), not a parameterization fix. Same
+disposition as `7c008303`/`c9f8e694`/`017c7c7b`/ADR-0025's `3de23699`.
+
+Curated tasks went 77 -> 91. See ADR-0026 for the full audit, verification
+numbers, and every rejected/accepted design's exact composition - it also
+flags that the next tier (`three_plus_new_primitives`, 26 tasks,
+deliberately deferred) should expect this same rising verification cost,
+since the remaining uncurated tasks get further from what a literal solver
+read suggests as they're worked through.
+
 **Landed by:** ADR-0010, ADR-0011, ADR-0012, ADR-0013, ADR-0015, ADR-0016,
-ADR-0019, ADR-0023, ADR-0024, ADR-0025.
+ADR-0019, ADR-0023, ADR-0024, ADR-0025, ADR-0026.
