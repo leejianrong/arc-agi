@@ -112,10 +112,22 @@ def _run(cmd: list[str], log_path: Path) -> tuple[int, float, float]:
     return proc.returncode, time.monotonic() - start, peak_kb / 1024.0
 
 
-def _is_done(run_dir: Path) -> bool:
+def _is_done(run_dir: Path, arm: str, n_updates: int) -> bool:
+    """A run counts as done only if it actually *completed*, so a resume
+    re-runs any run interrupted mid-training (e.g. by a machine sleep or
+    reboot) instead of treating its partial output as the final result. GP
+    writes its metrics only after the whole search finishes, so any metrics
+    row means done; PPO streams one row per update, so require the last row to
+    be the final update (a run stopped at update 15/30 has 15 rows and must be
+    re-run, not skipped)."""
     meta = run_dir / "run_meta.json"
     metrics = run_dir / "metrics.jsonl"
-    return meta.exists() and metrics.exists() and metrics.stat().st_size > 0
+    if not (meta.exists() and metrics.exists() and metrics.stat().st_size > 0):
+        return False
+    if arm == "gp":
+        return True
+    rows = _final_metrics(run_dir)
+    return bool(rows) and rows[-1].get("update") == n_updates - 1
 
 
 def _write_stats(run_dir: Path, wall_s: float, peak_mb: float, rc: int) -> None:
@@ -284,7 +296,7 @@ def main() -> None:
             done += 1
             run_dir = pass_dir / f"{task}-{arm}"
             tag = f"[{done}/{n_runs}] {task} {arm}"
-            if _is_done(run_dir):
+            if _is_done(run_dir, arm, args.n_updates):
                 print(f"{tag}: already done, skip")
             else:
                 if arm == "ppo-warm" and not (pass_dir / f"{task}-gp" / "episodes" / "best-program.jsonl").exists():
