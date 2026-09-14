@@ -27,8 +27,8 @@ Planning artifacts (read these before making architectural changes):
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
 - `arc_env/` — the Gymnasium-style ARC environment: the curated
-  `arc-dsl`-primitive action space (`actions.py` — 62 actions as of
-  ADR-0024: structural transforms including the 4 self-concatenation
+  `arc-dsl`-primitive action space (`actions.py` — 72 actions as of
+  ADR-0025: structural transforms including the 4 self-concatenation
   actions, `fill_cell`, `canvas`, `canvas_mostcolor`,
   `swap_two_least_colors`, `commit`, plus the object-selection
   mechanism's 14 actions (`select_largest`/`select_smallest`/
@@ -96,9 +96,52 @@ Planning artifacts (read these before making architectural changes):
   `2dee498d` via `left_third`); two more `free_by_name` candidates
   (`0520fde7`, `a699fb00`) were checked and found not to generalize
   against fresh `re-arc` instances, left uncurated same as ADR-0023's
-  no-gos, the
-  task loader (`task_loader.py` — 67 curated tasks, 22 same-shape
-  + 45 variable-shape), `env.py` (2-channel observation:
+  no-gos; and ADR-0025 (a same-day follow-up working the audit's next two
+  highest-value buckets, `one_new_primitive` and a `free_by_name`
+  re-check) adds 10 more zero/low-arity `"transform"`-kind actions, no new
+  mechanism, no new `Action.kind`, and — for the first time since
+  ADR-0001 — 5 brand-new `arc-dsl` primitives this module had never called
+  before: `delta`, `frontiers`, `palette`, `dedupe`, `asobject`.
+  `fill_delta_by_color(dot_color, fill_color)` (two agent-chosen
+  `COLOR_ARG`s) fills a color's bounding box minus the color's own cells
+  (`delta`); `fill_frontiers` fills every full-width/height single-color
+  row/column (`frontiers`) with a fixed color; `switch_palette_then_
+  zero_five` reads a two-color grid's palette (`palette`), switches the
+  two colors, then zeroes the surviving reserved `5`;
+  `tile_alternating_column_mirror` re-derives its tile unit and count from
+  the grid's own height/width rather than the literal solver's hardcoded
+  crop shape, needing zero new primitives; `dedupe_grid_both_axes` crops
+  to the bounding box of the grid's literal non-zero cells (not
+  `dsl.objects`'s `mostcolor`-based background autodetection, which picks
+  the wrong background here) then collapses repeated rows/columns on both
+  axes (`dedupe`); `fill_holes_in_object_bbox` crops to the grid's single
+  foreground object's bounding box (using `diagonal=True` connectivity,
+  not the literal solver's `diagonal=False`, since `re-arc`'s generator
+  grows the shape via 8-connected neighbors and a 4-connected segmentation
+  can wrongly split it), replaces the grid's own most-common color with a
+  fixed fill color inside the crop, then composites the recolored crop
+  back onto the original grid via `asobject`+`shift`+`paint`;
+  `tile_by_mostcolor` tiles the grid by its own height/width (not the
+  literal solver's hardcoded 3x3) using that same `asobject`+`shift`+
+  `paint` composition; `paint_vmirrored_righthalf_onto_lefthalf` needs no
+  new primitive at all; `fill_nonsingleton_foreground` auto-detects the
+  grid's one foreground color in plain Python (not a hardcoded color) and
+  recolors every non-singleton object of that color; `recolor_objects_by_
+  size` fills size-1/2/3 foreground objects to three fixed colors by
+  explicit size rather than the literal solver's background-color-
+  dependent final replace. Unlocks 10 more curated tasks: `32597951`,
+  `c1d99e64`, `f76d97a5`, `e9afcf9a`, `90c28cc7`, `6d75e8bb`, `c3e719e8`,
+  `e3497940`, `67385a82`, `e8593010`. Two `one_new_primitive` candidates
+  (`05f2a901`/`gravitate`, `3de23699`/`fgpartition`) initially looked
+  promising (~96%/~94% on fresh `re-arc` instances) but a dedicated
+  root-cause follow-up found each failure mode inherent to the primitive
+  itself, not fixable by any action-level design, and left them uncurated
+  same as prior ADRs' no-gos; 6 more `free_by_name` candidates (`11852cab`,
+  `3618c87e`, `47c1f68c`, `aedd82e4`, `cce03e0d`, `e98196ab`) were also
+  checked and found not to generalize. See ADR-0025 for the full audit,
+  the
+  task loader (`task_loader.py` — 77 curated tasks, 29 same-shape
+  + 48 variable-shape), `env.py` (2-channel observation:
   grid + selection mask, now with values in {0,1,2} per ADR-0020's dual
   slots; `get_selected()` exposes the selection for episode
   logging), ADR-0005's dense reward (`reward.py`), extra

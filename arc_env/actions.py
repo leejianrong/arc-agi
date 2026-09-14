@@ -234,6 +234,83 @@ transform action. Unlocks 7 more curated tasks: `46442a0e`/`7fe24cdd`
 `free_by_name` candidates (`0520fde7`, `a699fb00`) were checked and found
 not to generalize against fresh `re-arc` instances - left uncurated, same
 disposition as ADR-0023's no-gos. See ADR-0024 for the full audit.
+
+ADR-0025 lands 10 more derived actions, no new mechanism, no new
+`Action.kind` - a same-day follow-up working `scripts/audit_action_coverage.
+py`'s next two highest-value buckets, `one_new_primitive` (9 tasks, each
+needing exactly one `arc-dsl` primitive never used in this module before)
+and a re-check of `free_by_name`'s remaining unexamined tasks. 5 `arc-dsl`
+primitives get their first curated use: `delta`, `frontiers`, `palette`,
+`dedupe`, `asobject`. `fill_delta_by_color(dot_color, fill_color)` (two
+`COLOR_ARG`s) is `dsl.fill(grid, fill_color, dsl.delta(dsl.ofcolor(grid,
+dot_color)))` - `delta` is the indices in a patch's bounding box but not
+part of the patch itself; unlocks `32597951`. `fill_frontiers()` (zero-arg)
+fills every full-width/height single-color row/column (`dsl.frontiers`, new)
+with a fixed color `2` (a `re-arc` generator invariant, not an arbitrary
+hardcode); unlocks `c1d99e64`. `switch_palette_then_zero_five()` (zero-arg)
+is a literal-solver copy - `dsl.palette(grid)` (new) supplies two colors via
+`first`/`last` that get `switch`ed, then the surviving `5` is replaced with
+`0` (both reserved generator invariants); unlocks `f76d97a5` at ~99% (297/
+300) on fresh `re-arc` instances, the 3 misses a genuinely degenerate input
+(the generator occasionally leaves no background `5` at all for the task
+concept to act on) rather than a design defect, the same class of guarded
+edge case `_middle_third`'s own `StopIteration` fix already treats as
+acceptable.
+
+`tile_alternating_column_mirror()` (zero-arg) needs *zero* new
+primitives once corrected: the literal solver's hardcoded `astuple(TWO,
+ONE)` crop shape and fixed 6-column tiling only reproduce the real
+fixture's own 2x6 shape (0/30 on `re-arc`); re-deriving both the tile unit
+(the grid's own full height, one column wide) and the tile count (from the
+grid's own width) using only already-curated `hmirror`/`hconcat` plus
+`dsl.crop` reaches 30/30; unlocks `e9afcf9a`. `dedupe_grid_both_axes()`
+(zero-arg) crops to the bounding box of the grid's literal non-zero cells
+(not `dsl.objects`'s `mostcolor`-based background autodetection, which
+picks the wrong background here - the same class of correction ADR-0023/
+0024's audits already flagged elsewhere), then `dedupe`(new)->`rot90`->
+`dedupe`->`rot270` collapses repeated adjacent rows/columns on both axes;
+unlocks `90c28cc7`. `fill_holes_in_object_bbox()` (zero-arg) crops to the
+grid's single foreground object's bounding box (`select_largest`-style, but
+with `dsl.objects`'s `diagonal=True` rather than the literal solver's
+`(T,F,T)` - the real fixture's shape is always 4-connected so the literal
+`diagonal=False` reproduces it, but `re-arc`'s generator grows the shape
+via 8-connected neighbors, which `diagonal=False` can wrongly split into
+several smaller objects (7/30, `argmax` then picking the wrong one);
+`diagonal=True` keeps the whole grown shape as one object regardless
+(30/30)), replaces `dsl.mostcolor(grid)` (not the literal solver's
+hardcoded `0`, which is 0/30 on `re-arc` since the generator's background
+color varies) with `2` inside the crop, then `asobject`(new)+`shift`+
+`paint`s the recolored crop back onto the original grid at its original
+position (a non-destructive composite, distinct from an in-place
+`fill`/`replace`); unlocks `6d75e8bb`. `tile_by_mostcolor()` (zero-arg) tiles the grid `height
+x width` times (the grid's own dimensions, not the literal solver's
+hardcoded 3x3 - a fixture-specific coincidence), pasting a copy of the grid
+at every position matching `dsl.mostcolor(grid)` via the same
+`asobject`+`shift`+`paint` composition `fill_holes_in_object_bbox` uses (so
+this needs `asobject`, not the literal solver's `asindices`+`difference`
+route); unlocks `c3e719e8`. `paint_vmirrored_righthalf_onto_lefthalf()`
+(zero-arg) needs no new primitive - `dsl.paint(dsl.lefthalf(grid),
+dsl.merge(dsl.objects(dsl.vmirror(dsl.righthalf(grid)), T, F, T)))`;
+unlocks `e3497940`. `fill_nonsingleton_foreground()` (zero-arg)
+auto-detects the grid's single foreground color in plain Python (the
+grid's one non-background value, not the literal solver's hardcoded
+`THREE`, which is 0/30 on `re-arc` since the generator picks an arbitrary
+foreground color), fills every non-singleton (size > 1) object of that
+color to `8`; unlocks `67385a82`. `recolor_objects_by_size()` (zero-arg)
+fills size-1/2/3 foreground objects (auto-detected background via
+`dsl.objects` itself, not the literal solver's hardcoded final
+`replace(grid, 0, 1)` - also fragile against `re-arc`'s arbitrary
+background color) directly to colors `3`/`2`/`1` respectively by explicit
+size; unlocks `e8593010`. Two `one_new_primitive` candidates that initially
+looked promising (`05f2a901`/`gravitate` at ~96%, `3de23699`/`fgpartition`
+at ~94%) got a dedicated root-cause follow-up rather than shipping on a
+"close enough" basis and were found to have a failure mode inherent to the
+primitive itself (not fixable by any action-level design) - left uncurated,
+same disposition as `7c008303`/`c9f8e694`/`017c7c7b`; 6 more `free_by_name`
+candidates (`11852cab`, `3618c87e`, `47c1f68c`, `aedd82e4`, `cce03e0d`,
+`e98196ab`) were also checked and found not to generalize. Action count: 62
+-> 72. Curated tasks: 67 -> 77. See ADR-0025 for the full audit,
+verification numbers, and every rejected-candidate writeup.
 """
 
 from collections import Counter
@@ -566,6 +643,160 @@ def _fractal_expand_cellwise(grid: Grid, factor: int) -> Grid:
     return dsl.cellwise(dsl.upscale(grid, factor), _tile_factor(grid, factor), 0)
 
 
+# ADR-0025: 10 more derived `"transform"`-kind actions, no new mechanism, no
+# new `Action.kind` - the same family as `canvas_mostcolor`/
+# `fractal_expand_cellwise`/ADR-0024's tiling actions. 5 `arc-dsl` primitives
+# get their first use here: `delta`, `frontiers`, `palette`, `dedupe`,
+# `asobject`. See the module docstring and ADR-0025's Decision for the full
+# audit (including the `05f2a901`/`gravitate` and `3de23699`/`fgpartition`
+# no-gos, neither curated here).
+#
+# `fill_delta_by_color(dot_color, fill_color)` - two agent-chosen
+# `COLOR_ARG`s: fills the indices in `dot_color`'s cells' bounding box that
+# are not themselves part of that patch (`dsl.delta` - new) with
+# `fill_color`. Unlocks `32597951`.
+def _fill_delta_by_color(grid: Grid, dot_color: int, fill_color: int) -> Grid:
+    return dsl.fill(grid, fill_color, dsl.delta(dsl.ofcolor(grid, dot_color)))
+
+
+# `fill_frontiers()` - zero-arg: fills every full-width/height single-color
+# row/column (`dsl.frontiers` - new) with color `2`, a `re-arc` generator
+# invariant (like `repeat_mirror_tile`'s own fixed colors), not an arbitrary
+# hardcode. Unlocks `c1d99e64`.
+def _fill_frontiers(grid: Grid) -> Grid:
+    return dsl.fill(grid, 2, dsl.merge(dsl.frontiers(grid)))
+
+
+# `switch_palette_then_zero_five()` - zero-arg, a literal-solver copy:
+# `dsl.palette(grid)` (new) supplies two colors (`first`/`last`) that get
+# `dsl.switch`ed, then the surviving `5` is replaced with `0` - both reserved
+# generator invariants (like `fill_frontiers`'s `2`), not arbitrary hardcodes.
+# Unlocks `f76d97a5` (~99% on `re-arc` - a genuinely degenerate-input edge
+# case documented in ADR-0025, not fixable at the action level).
+def _switch_palette_then_zero_five(grid: Grid) -> Grid:
+    colors = dsl.palette(grid)
+    a, b = dsl.first(colors), dsl.last(colors)
+    switched = dsl.switch(grid, a, b)
+    return dsl.replace(switched, 5, 0)
+
+
+# `tile_alternating_column_mirror()` - zero-arg, needing zero new primitives
+# (only already-curated `hmirror`/`hconcat`, plus `dsl.crop`): the literal
+# solver hardcodes an `astuple(TWO, ONE)` crop shape and a fixed 6-column
+# tiling, which only reproduces the real fixture's own 2-row-by-6-column
+# shape (0/30 on `re-arc`, whose grids vary both dimensions independently).
+# Re-deriving the tile unit (the grid's own full height, one column wide)
+# and the tile count (from the grid's own width) instead generalizes fully:
+# builds a 2-column alternating unit (the grid's first column beside its own
+# `hmirror`, which swaps row order), tiles that unit out past the grid's
+# width, then crops back down to the exact original width (handles an odd
+# width too, not just an exact multiple of 2). Unlocks `e9afcf9a`.
+def _tile_alternating_column_mirror(grid: Grid) -> Grid:
+    height, width = len(grid), len(grid[0])
+    base = dsl.crop(grid, (0, 0), (height, 1))
+    unit = dsl.hconcat(base, dsl.hmirror(base))
+    tiled = unit
+    while len(tiled[0]) < width:
+        tiled = dsl.hconcat(tiled, unit)
+    return dsl.crop(tiled, (0, 0), (height, width))
+
+
+# `dedupe_grid_both_axes()` - zero-arg: crops to the bounding box of the
+# grid's literal non-zero cells (not `dsl.objects`'s `mostcolor`-based
+# background autodetection, which picks the wrong background here - the same
+# class of correction ADR-0023/0024's audits already flagged elsewhere),
+# then `dedupe`->`rot90`->`dedupe`->`rot270` (`dedupe` - new) collapses each
+# axis's repeated adjacent rows/columns down to one. Unlocks `90c28cc7`.
+def _dedupe_grid_both_axes(grid: Grid) -> Grid:
+    nonzero = dsl.difference(dsl.asindices(grid), dsl.ofcolor(grid, 0))
+    cropped = dsl.subgrid(nonzero, grid)
+    deduped_rows = dsl.dedupe(cropped)
+    rotated = dsl.rot90(deduped_rows)
+    deduped_cols = dsl.dedupe(rotated)
+    return dsl.rot270(deduped_cols)
+
+
+# `fill_holes_in_object_bbox()` - zero-arg: crops to the grid's single
+# foreground object's bounding box (`select_largest`-style - `dsl.objects`'s
+# univalued/without_bg=True, but `diagonal=True` rather than the literal
+# solver's `(T,F,T)`: the real fixture's shape is always 4-connected, so the
+# literal `diagonal=False` reproduces it, but `re-arc`'s generator grows the
+# shape via 8-connected neighbors, which can leave cells only diagonally
+# adjacent - `diagonal=False` then wrongly splits one shape into several
+# smaller objects (7/30) and `argmax` by size can pick the wrong one;
+# `diagonal=True` keeps the whole grown shape as a single object regardless
+# (30/30), argmax by size), replaces `dsl.mostcolor(grid)` (not a literal
+# `0` - the literal solver's hardcode, 0/30 on `re-arc` since the
+# generator's background color varies) with `2` inside that crop, then
+# `asobject`(new)+`shift`+`paint`s the recolored crop back onto the
+# *original* grid at its original position - a non-destructive composite,
+# distinct from an in-place `fill`/`replace`. Unlocks `6d75e8bb`.
+def _fill_holes_in_object_bbox(grid: Grid) -> Grid:
+    objs = dsl.objects(grid, True, True, True)
+    obj = dsl.argmax(objs, dsl.size)
+    origin = dsl.ulcorner(obj)
+    cropped = dsl.subgrid(obj, grid)
+    recolored = dsl.replace(cropped, dsl.mostcolor(grid), 2)
+    return dsl.paint(grid, dsl.shift(dsl.asobject(recolored), origin))
+
+
+# `tile_by_mostcolor()` - zero-arg: tiles the grid `height x width` times
+# (`height`/`width` the grid's own dimensions, not the literal solver's
+# hardcoded 3x3 - a fixture-specific coincidence where the real grid's own
+# size happened to be 3x3), pasting a copy of the grid at every position
+# whose own color matches `dsl.mostcolor(grid)`, via the same
+# `asobject`+`shift`+`paint` composition `fill_holes_in_object_bbox` uses
+# above (so this needs `asobject`, not the literal solver's `asindices`+
+# `difference` route). Unlocks `c3e719e8`.
+def _tile_by_mostcolor(grid: Grid) -> Grid:
+    height, width = len(grid), len(grid[0])
+    mc = dsl.mostcolor(grid)
+    obj = dsl.asobject(grid)
+    result = dsl.canvas(0, (height * height, width * width))
+    for row in range(height):
+        for col in range(width):
+            if grid[row][col] == mc:
+                result = dsl.paint(result, dsl.shift(obj, (row * height, col * width)))
+    return result
+
+
+# `paint_vmirrored_righthalf_onto_lefthalf()` - zero-arg, using only
+# already-curated primitives (needs no new one): paints the objects found in
+# the grid's own `vmirror`ed right half onto its left half. Unlocks
+# `e3497940`.
+def _paint_vmirrored_righthalf_onto_lefthalf(grid: Grid) -> Grid:
+    mirrored = dsl.vmirror(dsl.righthalf(grid))
+    objs = dsl.objects(mirrored, True, False, True)
+    return dsl.paint(dsl.lefthalf(grid), dsl.merge(objs))
+
+
+# `fill_nonsingleton_foreground()` - zero-arg: auto-detects the grid's single
+# foreground color in plain Python (the grid's one non-background value -
+# not a hardcoded `THREE`, the literal solver's hardcode, which is 0/30 on
+# `re-arc` since the generator picks an arbitrary foreground color), then
+# fills every non-singleton (size > 1) object of that color to `8`. Unlocks
+# `67385a82`.
+def _fill_nonsingleton_foreground(grid: Grid) -> Grid:
+    fg = next(v for row in grid for v in row if v != 0)
+    objs = dsl.colorfilter(dsl.objects(grid, True, False, False), fg)
+    non_singletons = dsl.difference(objs, dsl.sizefilter(objs, 1))
+    return dsl.fill(grid, 8, dsl.merge(non_singletons))
+
+
+# `recolor_objects_by_size()` - zero-arg: fills size-1/2/3 foreground objects
+# (`dsl.objects`'s own `mostcolor`-based background autodetection, not the
+# literal solver's hardcoded final `replace(grid, 0, 1)` - also fragile
+# against `re-arc`'s arbitrary background color) directly to colors `3`/`2`/
+# `1` respectively, by explicit size rather than by re-deriving "whatever's
+# still background-colored" from a single reserved literal. Unlocks
+# `e8593010`.
+def _recolor_objects_by_size(grid: Grid) -> Grid:
+    objs = dsl.objects(grid, True, False, True)
+    result = dsl.fill(grid, 3, dsl.merge(dsl.sizefilter(objs, 1)))
+    result = dsl.fill(result, 2, dsl.merge(dsl.sizefilter(objs, 2)))
+    return dsl.fill(result, 1, dsl.merge(dsl.sizefilter(objs, 3)))
+
+
 # ADR-0011 Phase 2 Slice 1: object selection. `_OBJECTS` fixes `dsl.objects`'s
 # (univalued, diagonal, without_bg) triple to the one variant this pass
 # curates (see that ADR's module-level rationale for why only one variant is
@@ -817,6 +1048,17 @@ ZERO_ARG = [
     # the exact same `_left_third` helper ADR-0022 already defined above for
     # the region-scoping menu (`_REGIONS`), not a duplicate. Zero new logic.
     Action("left_third", _left_third),
+    # ADR-0025: 9 more zero-arg derived actions - see each helper's own
+    # docstring above and the module docstring.
+    Action("fill_frontiers", _fill_frontiers),
+    Action("switch_palette_then_zero_five", _switch_palette_then_zero_five),
+    Action("tile_alternating_column_mirror", _tile_alternating_column_mirror),
+    Action("dedupe_grid_both_axes", _dedupe_grid_both_axes),
+    Action("fill_holes_in_object_bbox", _fill_holes_in_object_bbox),
+    Action("tile_by_mostcolor", _tile_by_mostcolor),
+    Action("paint_vmirrored_righthalf_onto_lefthalf", _paint_vmirrored_righthalf_onto_lefthalf),
+    Action("fill_nonsingleton_foreground", _fill_nonsingleton_foreground),
+    Action("recolor_objects_by_size", _recolor_objects_by_size),
 ]
 
 # One-arg (scale factor) grid transforms.
@@ -846,6 +1088,9 @@ TWO_ARG = [
     # color is derived internally from `dsl.mostcolor(grid)` instead of
     # being agent-chosen. See module docstring.
     Action("canvas_mostcolor", _canvas_mostcolor, (DIM_ARG("height"), DIM_ARG("width"))),
+    # ADR-0025: two agent-chosen `COLOR_ARG`s (like `replace`/`switch`) - see
+    # `_fill_delta_by_color`'s own docstring above and the module docstring.
+    Action("fill_delta_by_color", _fill_delta_by_color, (COLOR_ARG("dot_color"), COLOR_ARG("fill_color"))),
 ]
 
 # Three-arg (color, row, col) pixel edit, and (color, height, width) fresh-

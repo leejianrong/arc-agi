@@ -155,6 +155,26 @@ fresh `re-arc` instances - left uncurated, same disposition as ADR-0023's
 no-gos. 22 same-shape + 45 variable-shape = 67 total. See ADR-0024 for the
 full audit.
 
+ADR-0025 (2026-09-14) adds 10 more tasks via 10 new derived actions - 5
+`arc-dsl` primitives get their first curated use (`delta`, `frontiers`,
+`palette`, `dedupe`, `asobject` - see `arc_env/actions.py`'s module
+docstring): `32597951` (`fill_delta_by_color`), `c1d99e64`
+(`fill_frontiers`), `f76d97a5` (`switch_palette_then_zero_five`),
+`e9afcf9a` (`tile_alternating_column_mirror`), `90c28cc7`
+(`dedupe_grid_both_axes`), `6d75e8bb` (`fill_holes_in_object_bbox`),
+`c3e719e8` (`tile_by_mostcolor`), `e3497940`
+(`paint_vmirrored_righthalf_onto_lefthalf`), `67385a82`
+(`fill_nonsingleton_foreground`), `e8593010` (`recolor_objects_by_size`).
+`90c28cc7`, `c3e719e8`, `e3497940` are variable-shape (a crop-down-to-
+deduped-content, a squared-up tiling, and a halving-to-lefthalf's-shape,
+respectively); the other 7 are same-shape. Two `one_new_primitive`
+candidates (`05f2a901`/`gravitate`, `3de23699`/`fgpartition`) and 6 more
+`free_by_name` candidates (`11852cab`, `3618c87e`, `47c1f68c`, `aedd82e4`,
+`cce03e0d`, `e98196ab`) were checked and found not to generalize against
+fresh `re-arc` instances, each for its own precise structural reason - left
+uncurated, same disposition as prior ADRs' no-gos. 29 same-shape + 48
+variable-shape = 77 total. See ADR-0025 for the full audit.
+
 `d10ecb37`'s solver is `crop(I, ORIGIN, TWO_BY_TWO)` - a single `crop` call
 - which is exactly what `commit(row=0, col=0, height=2, width=2)` does
 (`arc_env.actions`'s `commit` fuses `crop` with ending the episode; see that
@@ -484,6 +504,19 @@ CURATED_TASK_IDS = {
     "67e8384a": [("quad_mirror_tile", ())],
     "8d5021e8": [("stack3_vmirror_tile", ())],
     "2dee498d": [("left_third", ())],
+    # ADR-0025: 10 new derived actions from the `one_new_primitive` bucket
+    # (7 of 9 tasks) plus 3 more `free_by_name` tasks. See `arc_env/
+    # actions.py`'s module docstring for what each does.
+    "32597951": [("fill_delta_by_color", (8, 3))],
+    "c1d99e64": [("fill_frontiers", ())],
+    "f76d97a5": [("switch_palette_then_zero_five", ())],
+    "e9afcf9a": [("tile_alternating_column_mirror", ())],
+    "90c28cc7": [("dedupe_grid_both_axes", ())],
+    "6d75e8bb": [("fill_holes_in_object_bbox", ())],
+    "c3e719e8": [("tile_by_mostcolor", ())],
+    "e3497940": [("paint_vmirrored_righthalf_onto_lefthalf", ())],
+    "67385a82": [("fill_nonsingleton_foreground", ())],
+    "e8593010": [("recolor_objects_by_size", ())],
 }
 
 # task_id -> whether every train/test pair is same-shape (V1) or not (V3 /
@@ -506,6 +539,11 @@ VARIABLE_SHAPE_TASK_IDS = {
     # ADR-0024: all 7 new tasks are variable-shape (every dimension changes).
     "46442a0e", "7fe24cdd", "3af2c5a8", "62c24649", "67e8384a",
     "8d5021e8", "2dee498d",
+    # ADR-0025: 3 of the 10 new tasks are variable-shape (`90c28cc7` crops
+    # down to a small deduped grid, `c3e719e8` tiles up to its own
+    # dimensions squared, `e3497940` halves to lefthalf's own shape) - the
+    # other 7 are same-shape (not added here).
+    "90c28cc7", "c3e719e8", "e3497940",
 }
 
 

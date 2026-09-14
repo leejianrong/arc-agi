@@ -28,13 +28,21 @@ DERIVED_ZERO_ARG_NAMES = {
     # ADR-0024: fixed geometric tilings, plus `left_third` (not a bare
     # `dsl.left_third` - there is no such `dsl` function at all).
     "quad_rotate_tile", "quad_mirror_tile", "stack3_vmirror_tile", "left_third",
+    # ADR-0025: 9 more derived zero-arg actions - none is a bare 1:1 `dsl`
+    # call (there's no `dsl.fill_frontiers`/etc. either).
+    "fill_frontiers", "switch_palette_then_zero_five", "tile_alternating_column_mirror",
+    "dedupe_grid_both_axes", "fill_holes_in_object_bbox", "tile_by_mostcolor",
+    "paint_vmirrored_righthalf_onto_lefthalf", "fill_nonsingleton_foreground",
+    "recolor_objects_by_size",
 }
 DIRECT_ZERO_ARG = [a for a in actions.ZERO_ARG if a.name not in DERIVED_ZERO_ARG_NAMES]
 
 # ADR-0019's `canvas_mostcolor` is likewise derived (`dsl.canvas` plus
 # `dsl.mostcolor`, not a bare `dsl.canvas_mostcolor`) - excluded from the
-# generic TWO_ARG 1:1 check below for the same reason.
-DERIVED_TWO_ARG_NAMES = {"canvas_mostcolor"}
+# generic TWO_ARG 1:1 check below for the same reason. ADR-0025's
+# `fill_delta_by_color` is also derived (`dsl.fill`/`dsl.delta`/
+# `dsl.ofcolor`, not a bare `dsl.fill_delta_by_color`).
+DERIVED_TWO_ARG_NAMES = {"canvas_mostcolor", "fill_delta_by_color"}
 DIRECT_TWO_ARG = [a for a in actions.TWO_ARG if a.name not in DERIVED_TWO_ARG_NAMES]
 
 # ADR-0021's `fractal_expand_cellwise` is likewise derived (`dsl.cellwise`
@@ -1052,3 +1060,241 @@ def test_left_third_action_is_the_literal_same_function_as_the_region_helper():
 def test_left_third_action_matches_the_existing_region_helper_usage():
     action = actions.ACTIONS[actions.ACTION_BY_NAME["left_third"]]
     assert action.fn(THIRDS_GRID) == _left_third(THIRDS_GRID) == ((0, 1), (6, 7))
+
+
+# ADR-0025: 10 more derived actions, 5 new `arc-dsl` primitives (`delta`,
+# `frontiers`, `palette`, `dedupe`, `asobject`) get their first curated use.
+
+
+def test_fill_delta_by_color_fills_the_bounding_box_around_a_colors_cells():
+    # `delta(ofcolor(grid, 5))` is every cell in color-5's bounding box that
+    # isn't itself color 5 - here the two color-5 corners' 3x3 bounding box,
+    # minus those two corners.
+    grid = ((5, 0, 0), (0, 0, 0), (0, 0, 5))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_delta_by_color"]]
+    assert action.fn(grid, 5, 9) == (
+        (5, 9, 9),
+        (9, 9, 9),
+        (9, 9, 5),
+    )
+
+
+def test_fill_delta_by_color_matches_the_derived_dsl_composition_directly():
+    grid = ((0, 0, 4, 0), (0, 0, 0, 0), (4, 0, 0, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_delta_by_color"]]
+    expected = dsl.fill(grid, 7, dsl.delta(dsl.ofcolor(grid, 4)))
+    assert action.fn(grid, 4, 7) == expected
+
+
+def test_fill_frontiers_fills_every_full_row_and_column_of_one_color():
+    # Row 0 and row 2 are each a single repeated color across the whole
+    # width - full-width frontiers. No column is uniform, so only those two
+    # rows get filled.
+    grid = ((1, 1, 1), (2, 3, 2), (1, 1, 1))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_frontiers"]]
+    assert action.fn(grid) == (
+        (2, 2, 2),
+        (2, 3, 2),
+        (2, 2, 2),
+    )
+
+
+def test_fill_frontiers_matches_the_derived_dsl_composition_directly():
+    grid = ((4, 4, 4, 4), (5, 6, 7, 8), (4, 4, 4, 4), (1, 1, 1, 1))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_frontiers"]]
+    expected = dsl.fill(grid, 2, dsl.merge(dsl.frontiers(grid)))
+    assert action.fn(grid) == expected
+
+
+def test_switch_palette_then_zero_five_switches_the_two_colors_then_zeroes_five():
+    grid = ((5, 5, 2), (2, 2, 5), (5, 2, 2))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["switch_palette_then_zero_five"]]
+    assert action.fn(grid) == (
+        (2, 2, 0),
+        (0, 0, 2),
+        (2, 0, 0),
+    )
+
+
+def test_switch_palette_then_zero_five_matches_the_derived_dsl_composition_directly():
+    grid = ((5, 5, 3), (3, 3, 5), (5, 3, 3))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["switch_palette_then_zero_five"]]
+    colors = dsl.palette(grid)
+    a, b = dsl.first(colors), dsl.last(colors)
+    expected = dsl.replace(dsl.switch(grid, a, b), 5, 0)
+    assert action.fn(grid) == expected
+
+
+def test_tile_alternating_column_mirror_alternates_the_first_column_and_its_mirror():
+    # 2 rows x 5 cols, both rows solid: the first column beside its own
+    # `hmirror` (row order swapped) tiles out to fill the full width.
+    grid = ((3, 3, 3, 3, 3), (9, 9, 9, 9, 9))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["tile_alternating_column_mirror"]]
+    assert action.fn(grid) == (
+        (3, 9, 3, 9, 3),
+        (9, 3, 9, 3, 9),
+    )
+
+
+def test_tile_alternating_column_mirror_matches_the_derived_dsl_composition_directly():
+    grid = ((4, 4, 4, 4, 4, 4), (7, 7, 7, 7, 7, 7))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["tile_alternating_column_mirror"]]
+    height, width = len(grid), len(grid[0])
+    base = dsl.crop(grid, (0, 0), (height, 1))
+    unit = dsl.hconcat(base, dsl.hmirror(base))
+    tiled = unit
+    while len(tiled[0]) < width:
+        tiled = dsl.hconcat(tiled, unit)
+    expected = dsl.crop(tiled, (0, 0), (height, width))
+    assert action.fn(grid) == expected
+
+
+def test_dedupe_grid_both_axes_crops_to_nonzero_bbox_then_collapses_repeats():
+    # The nonzero bounding box is a 4x4 block made of four repeated 2x2
+    # quadrants - dedupe on both axes collapses it down to 2x2.
+    grid = (
+        (0, 0, 0, 0, 0),
+        (0, 2, 2, 3, 3),
+        (0, 2, 2, 3, 3),
+        (0, 4, 4, 5, 5),
+        (0, 4, 4, 5, 5),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["dedupe_grid_both_axes"]]
+    assert action.fn(grid) == ((2, 3), (4, 5))
+
+
+def test_dedupe_grid_both_axes_matches_the_derived_dsl_composition_directly():
+    grid = ((0, 0, 0), (0, 6, 6), (0, 6, 6))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["dedupe_grid_both_axes"]]
+    nonzero = dsl.difference(dsl.asindices(grid), dsl.ofcolor(grid, 0))
+    cropped = dsl.subgrid(nonzero, grid)
+    expected = dsl.rot270(dsl.dedupe(dsl.rot90(dsl.dedupe(cropped))))
+    assert action.fn(grid) == expected
+
+
+def test_fill_holes_in_object_bbox_fills_the_background_gap_inside_the_object():
+    # A single ring-shaped color-8 object with one background (0) cell in
+    # its interior - that hole becomes 2, the rest of the grid untouched.
+    grid = (
+        (0, 0, 0, 0, 0),
+        (0, 8, 8, 8, 0),
+        (0, 8, 0, 8, 0),
+        (0, 8, 8, 8, 0),
+        (0, 0, 0, 0, 0),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_holes_in_object_bbox"]]
+    assert action.fn(grid) == (
+        (0, 0, 0, 0, 0),
+        (0, 8, 8, 8, 0),
+        (0, 8, 2, 8, 0),
+        (0, 8, 8, 8, 0),
+        (0, 0, 0, 0, 0),
+    )
+
+
+def test_fill_holes_in_object_bbox_matches_the_derived_dsl_composition_directly():
+    grid = ((6, 6, 6), (6, 3, 6), (6, 3, 3))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_holes_in_object_bbox"]]
+    objs = dsl.objects(grid, True, True, True)
+    obj = dsl.argmax(objs, dsl.size)
+    origin = dsl.ulcorner(obj)
+    cropped = dsl.subgrid(obj, grid)
+    recolored = dsl.replace(cropped, dsl.mostcolor(grid), 2)
+    expected = dsl.paint(grid, dsl.shift(dsl.asobject(recolored), origin))
+    assert action.fn(grid) == expected
+
+
+def test_tile_by_mostcolor_pastes_a_grid_copy_at_every_mostcolor_position():
+    # `mostcolor` is 1 (three cells vs. one). The grid tiles itself at each
+    # of its own 1-valued positions ((0,0), (0,1), (1,0)) and leaves the
+    # (1,1) position (value 2) as background.
+    grid = ((1, 1), (1, 2))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["tile_by_mostcolor"]]
+    assert action.fn(grid) == (
+        (1, 1, 1, 1),
+        (1, 2, 1, 2),
+        (1, 1, 0, 0),
+        (1, 2, 0, 0),
+    )
+
+
+def test_tile_by_mostcolor_matches_the_derived_dsl_composition_directly():
+    grid = ((3, 3, 5), (3, 5, 5), (5, 5, 5))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["tile_by_mostcolor"]]
+    height, width = len(grid), len(grid[0])
+    mc = dsl.mostcolor(grid)
+    obj = dsl.asobject(grid)
+    expected = dsl.canvas(0, (height * height, width * width))
+    for row in range(height):
+        for col in range(width):
+            if grid[row][col] == mc:
+                expected = dsl.paint(expected, dsl.shift(obj, (row * height, col * width)))
+    assert action.fn(grid) == expected
+
+
+def test_paint_vmirrored_righthalf_onto_lefthalf_mirrors_objects_across_the_middle():
+    grid = ((0, 0, 0, 3), (0, 0, 3, 0))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["paint_vmirrored_righthalf_onto_lefthalf"]]
+    assert action.fn(grid) == (
+        (3, 0),
+        (0, 3),
+    )
+
+
+def test_paint_vmirrored_righthalf_onto_lefthalf_matches_the_derived_dsl_composition_directly():
+    grid = ((0, 0, 7, 0), (0, 0, 0, 7))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["paint_vmirrored_righthalf_onto_lefthalf"]]
+    mirrored = dsl.vmirror(dsl.righthalf(grid))
+    objs = dsl.objects(mirrored, True, False, True)
+    expected = dsl.paint(dsl.lefthalf(grid), dsl.merge(objs))
+    assert action.fn(grid) == expected
+
+
+def test_fill_nonsingleton_foreground_recolors_only_multi_cell_objects():
+    # Foreground color 3: the L-shaped 3-cell object recolors to 8, the two
+    # isolated singleton 3's stay 3.
+    grid = ((3, 3, 0), (0, 3, 0), (3, 0, 3))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_nonsingleton_foreground"]]
+    assert action.fn(grid) == (
+        (8, 8, 0),
+        (0, 8, 0),
+        (3, 0, 3),
+    )
+
+
+def test_fill_nonsingleton_foreground_matches_the_derived_dsl_composition_directly():
+    grid = ((4, 4, 0), (0, 4, 0), (4, 0, 4))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["fill_nonsingleton_foreground"]]
+    fg = next(v for row in grid for v in row if v != 0)
+    objs = dsl.colorfilter(dsl.objects(grid, True, False, False), fg)
+    non_singletons = dsl.difference(objs, dsl.sizefilter(objs, 1))
+    expected = dsl.fill(grid, 8, dsl.merge(non_singletons))
+    assert action.fn(grid) == expected
+
+
+def test_recolor_objects_by_size_recolors_size_1_2_3_objects_to_3_2_1():
+    grid = (
+        (6, 6, 6, 6, 6, 6, 6),
+        (6, 0, 6, 0, 0, 6, 6),
+        (6, 6, 6, 6, 6, 6, 6),
+        (6, 0, 0, 6, 6, 6, 6),
+        (6, 0, 6, 6, 6, 6, 6),
+    )
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["recolor_objects_by_size"]]
+    assert action.fn(grid) == (
+        (6, 6, 6, 6, 6, 6, 6),
+        (6, 3, 6, 2, 2, 6, 6),
+        (6, 6, 6, 6, 6, 6, 6),
+        (6, 1, 1, 6, 6, 6, 6),
+        (6, 1, 6, 6, 6, 6, 6),
+    )
+
+
+def test_recolor_objects_by_size_matches_the_derived_dsl_composition_directly():
+    grid = ((9, 9, 9, 9), (9, 0, 9, 0), (9, 9, 9, 9), (9, 0, 0, 9))
+    action = actions.ACTIONS[actions.ACTION_BY_NAME["recolor_objects_by_size"]]
+    objs = dsl.objects(grid, True, False, True)
+    expected = dsl.fill(grid, 3, dsl.merge(dsl.sizefilter(objs, 1)))
+    expected = dsl.fill(expected, 2, dsl.merge(dsl.sizefilter(objs, 2)))
+    expected = dsl.fill(expected, 1, dsl.merge(dsl.sizefilter(objs, 3)))
+    assert action.fn(grid) == expected
