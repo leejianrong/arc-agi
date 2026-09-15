@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "gymnasium>=0.29", "torch>=2.4"]
 
 [tool.setuptools.packages.find]
-include = ["arc_env*", "viz*", "trainers*"]
+include = ["arc_env*", "object_env*", "viz*", "trainers*"]
 
 # train.py is a standalone top-level module (not inside a package) that
 # tests/test_train_ppo.py imports directly - without this, `uv run pytest`
