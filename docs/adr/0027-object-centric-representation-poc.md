@@ -1,10 +1,18 @@
 # ADR-0027: An object-centric representation, gated on a two-gate POC (F15)
 
-- Status: Proposed — POC-gated. The *direction* is accepted; the commitment to
-  the full rewrite is contingent on both gates below passing. A follow-up ADR
-  records that commitment (or the decision to stop).
+- Status: Superseded by ADR-0029 (the POC ran and resolved GO, with a
+  reframing — see below). Kept as the record of the gated proposal.
 - Date: 2026-09-15
 - Deciders: repo owner, via conversation + approved design mockup, 2026-09-15
+
+> **POC outcome (2026-09-15, ADR-0029):** Gate 1 passed (8/8 expressibility).
+> Gate 2 reframed the whole question: free-form GP over the object actions
+> finds 0/8 (same as the flat space), but a *typed action grammar* over the
+> same actions finds 8/8 — so the lever is action-space **structure**, not
+> objects-vs-pixels. Also note the framing in this ADR that hand-written object
+> programs prove "what the pixel grid can't express" is **imprecise**: the
+> pixel grid, via F14's dual-slot, *does* express these 8; the real gap was
+> **searchability**. See `research/arc-object-poc/RESULTS.md` and ADR-0029.
 
 ## Context
 

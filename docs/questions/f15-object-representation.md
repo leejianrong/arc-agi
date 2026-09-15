@@ -1,9 +1,35 @@
 # F15: an object-centric representation to break the 77% ceiling
 
-**Status:** decided (user, 2026-09-15) — POC-gated. The direction (pursue an
-object-centric representation) is approved; the *commitment* to the full
-rewrite is gated on a two-gate proof-of-concept (see ADR-0027). Implementation
-of the rewrite not started.
+**Status:** decided — **GO** (user, 2026-09-15). The POC ran and passed (with a
+reframing); the full rewrite is committed, headlined by a *typed action
+grammar*. See ADR-0029 for the go/no-go and the re-scoped design; ADR-0027 for
+the original gated proposal. Rewrite implementation planned as slices next
+(`docs/SLICES.md`), not started.
+
+## POC outcome (2026-09-15) — the gate resolved, with a twist
+
+The POC (`research/arc-object-poc/`, `RESULTS.md`) found something more useful
+than a clean yes:
+
+- **Gate 1 (expressibility): PASS 8/8.** A 5-verb object vocabulary expresses
+  all 8 set-op tasks on their real pairs, cleaner than the shipped dual-slot.
+- **re-arc generality is a task property, not a representation one.** The object
+  program fails the strict 30-instance bar — but so do the *literal official
+  solvers*, equally (both hardcode colors re-arc randomizes). Orthogonal to
+  objects-vs-pixels; fixed in either by derived-color selectors.
+- **Gate 2 (searchability): the reframing.** Free-form GP over 5 object actions
+  finds **0/8** (same failure as the flat 85-action space — a deceptive ~0.88
+  similarity plateau), but a **typed grammar** over the *same* actions finds
+  **8/8 in seconds**. The bottleneck is action-space *structure* + the fitness
+  landscape, **not** pixels-vs-objects or action count.
+
+**Decision (ADR-0029):** GO on the object rewrite, but re-centered — the *typed
+compositional action grammar* is the headline lever, the object model is the
+validated substrate, derived-color actions handle generality, and
+demonstration/LLM seeding (F16/F12) is kept as a complementary attack on the
+landscape. Note this corrects the pre-POC framing below (which said the pixel
+grid "can't express" set-ops — via the dual-slot it can; the real gap was
+search).
 
 This is an ADR-0001-scale question: it reconsiders the foundational decision
 that ARC grids are a single mutable 30×30 pixel grid, with `arc-dsl`
