@@ -258,6 +258,21 @@ generalizes past the cluster it was born from.
 the 8 the POC validated — the central open risk this slice exists to test. If it
 doesn't, the grammar's type set / verb set changes, not the object substrate.
 
+**Outcome (delivered 2026-09-16, `object_env/`):** the risk cleared — one typed
+grammar (17 verbs) expresses a 16-task fixture spanning 5 families (8 set-op +
+move / recolor / crop / canvas / transform), all reproduced exactly through
+`object_env`. Two type-set adjustments surfaced (the "verb/type set changes, not
+the substrate" outcome the slice anticipated): `Direction` (4-way move, vs the
+2-way split `Axis`) and `Size` (canvas dims). Fork decisions as approved: named
+typed slots (not SSA); moderate basket; a shipped enumerator. The discovery
+proof (`object_env/search.py`) also sharpened the POC's Gate-2 finding: the
+shallow families are discovered *from scratch* by type-directed search, but the
+deep depth-5 programs (set-op, and a depth-5 recolor) are a needle in ~170k
+type-valid depth-5 skeletons — so uniform from-scratch discovery of them is the
+deceptive-landscape problem ADR-0029 hands to V6's biased/learned search (#4).
+Given the grammar-*derived* skeleton (not hardcoded), arg-search rediscovers all
+16 in a few thousand samples — the POC's fixed-skeleton 8/8, generalized.
+
 ### Test plan
 
 #### End-to-end

@@ -219,6 +219,43 @@ Planning artifacts (read these before making architectural changes):
   per ADR-0014, also snapshots each generation's own best program at
   `GPConfig.snapshot_interval`, not just the final one), and program replay
   for logging (`replay.py`).
+- `object_env/` — the V5 object substrate + **typed action grammar**
+  (ADR-0029, SLICES.md V5), a *new parallel track* to the shipped `arc_env/`
+  single-grid agent (which stays the benchmark until V9 cutover). It must NOT
+  be imported *by* `arc_env/`; reuse flows the other way (`object_env` leans on
+  `arc_env._dsl` as the executor, and `arc_env.{task_loader,reward,re_arc}` in
+  its harness). The headline is the grammar, not "objects instead of pixels":
+  the F15 POC showed a *free-form* search over object actions fails exactly like
+  the flat 85-action space (0/8), while a *typed grammar* over the same actions
+  finds 8/8. Pieces: `types.py` (the `ArgType` set — dataflow types
+  Grid/Region/IndexSet/Object plus parameter types Color/SetOp/Axis, extended
+  by V5 with Direction/Size — and the first-class `Obj`); `state.py`
+  (`ObjState` — bounded *named typed slots* grid/region_a·b/set_a·b/obj, the
+  fork-1 decision over an SSA register file; `SLOT_TYPES` is the type-checker's
+  source of truth); `objects.py` (segmentation + attribute selectors, baking in
+  the same `dsl.objects(...)` connectivity variant each shipped selector uses);
+  `colors.py` (derived colors — `DerivedColor("most"/"least")`, ADR-0029 #3, so
+  args generalize across re-arc palettes); `actions.py` (the typed verb
+  vocabulary — the POC's 5 set-op verbs plus select-by-attribute / object
+  move·recolor·crop / canvas·transform — each an `Action` declaring its
+  parameter slots and its symbolic read/write/clear footprint); `grammar.py`
+  (the lever: `Program` **type-checks at construction** — a step referencing an
+  unfilled slot raises `GrammarError`, so the skeleton *emerges from the types*
+  rather than being hardcoded as the POC did; plus the type-directed
+  `enumerate_skeletons`/`iter_fills`/`sample_program` search surface V6's
+  GP/PPO will consume as an action mask); `programs.py` (the ~16-task fixture
+  basket spanning families — 8 set-op + move/recolor/crop/canvas/transform, the
+  fork-2 moderate basket; `build(task_id)` type-checks each); `verify.py` (the
+  promoted re-arc generalization harness); `search.py` (the discovery proof —
+  shallow families discovered *from scratch*, and every family rediscovered by
+  arg-search within a grammar-*derived* skeleton, the POC's 8/8 method
+  generalized: `uv run python -m object_env.search`); `cli.py` (the SLICES V5
+  demo: `uv run python -m object_env.cli replay <task_id>`, a set-op *and* a
+  non-set-op task through one grammar). Fully local/serial/seconds; GP over the
+  grammar is V6 (RunPod). Tests: `tests/test_object_grammar_regression.py`
+  (E2E, the object-track analogue of `test_dsl_regression.py`) and
+  `tests/test_object_grammar.py` (grammar construction + enumerator validity,
+  segmentation/attribute/derived-color units, fast discovery smoke).
 - `train.py` — `train.py --algo ppo|gp --task_id <id>`: trains one
   dedicated PPO policy (ADR-0008) or evolves one dedicated GP population
   (ADR-0003) per task, logging to `runs/<run_id>/` in the same shape either
