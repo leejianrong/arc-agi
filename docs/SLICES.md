@@ -203,3 +203,221 @@ actually worked with zero visualizer changes.
   (type-correct) program given valid parents/inputs.
 - Fitness evaluation on a hand-constructed program/task pair matches a
   hand-computed expected value.
+
+---
+
+# The object-representation rewrite (V5–V9, ADR-0029)
+
+A **new, parallel track**, not an in-place edit of V1–V4. It builds an
+object-centric representation with a *typed, compositional action grammar*
+alongside the shipped single-grid agent, which keeps running and stays the
+benchmark until the new track reaches parity (V9's cutover). The ordering is
+riskiest-first, and the risk this whole track exists to resolve is named up
+front by the F15 POC (`research/arc-object-poc/`): the object model *expresses*
+the set-op family cleanly (8/8), but a *free-form* search over it fails exactly
+like the flat 85-action space (0/8) — only a *typed grammar* over the same
+actions discovers solutions (8/8). So **the grammar is the headline deliverable,
+not the object model alone**, and V5–V6 confront the open question the POC left:
+does that grammar generalize past the 8 tasks it was validated on.
+
+Note this deliberately reintroduces the typed composition ADR-0001 flattened
+away ("a flat list of `(primitive, args)`, no AST"). The POC is the evidence
+that flatness — not the choice of primitives — is what starved the search; the
+grammar is the correction, over an object substrate.
+
+## V5: Object substrate + typed action grammar
+
+**Delivers:** ADR-0029 commitments #1 (grammar) and #2 (object model), as a
+parallel `object_env/` package with no dependency from the shipped `arc_env/`.
+
+**Build plan**
+
+1. Promote the POC's object model into a real package (e.g. `object_env/`):
+   an `Obj` with queryable attributes (color, cells, bbox, shape signature,
+   region membership, role) and an `ObjState` (grid as ground truth + named
+   object/region/index-set slots), plus segmentation and region derivation.
+   Reuse `arc_env._dsl` primitives as the executor underneath (ADR-0001
+   generalized, not discarded).
+2. Define the **typed action grammar**: every action declares typed input/output
+   slots over a small type set (`Grid`, `Region`, `IndexSet`, `Object`,
+   `Color`, `SetOp`, `Axis`), and only type-valid compositions are constructible.
+   Generalize the vocabulary *past* the set-op family (the POC's 5 verbs) to
+   object selection-by-attribute, move/recolor/paint-object, and canvas/commit —
+   enough that the grammar isn't a single-cluster tool.
+3. Add **derived-color actions** (ADR-0029 #3): attribute queries like "the
+   region's background / least-common color", so args can be grid-derived
+   instead of hardcoded.
+4. Promote the POC's `verify.py` into the track's regression harness.
+
+**Demo:** replay a typed-grammar program solving a set-op task
+(e.g. `6430c8c4`) through `object_env` from the CLI, and show the same grammar
+expressing a non-set-op task (an object move/recolor) — evidence the vocabulary
+generalizes past the cluster it was born from.
+
+**Rests on assumptions:** that a single typed grammar spans task families beyond
+the 8 the POC validated — the central open risk this slice exists to test. If it
+doesn't, the grammar's type set / verb set changes, not the object substrate.
+
+### Test plan
+
+#### End-to-end
+- Every curated task with a known object-space program is reproduced exactly by
+  running that program through `object_env` (the object-track analogue of
+  `tests/test_dsl_regression.py`).
+
+#### Integration
+- A type-invalid composition is rejected at construction time (the grammar
+  actually constrains the space), and a type-valid one executes.
+
+#### Unit
+- Segmentation + attribute extraction on hand-built grids yields the expected
+  objects (color, bbox, shape signature, region).
+- Each derived-color action returns the expected grid-derived color for
+  representative inputs.
+
+## V6: GP over the object grammar (discovery)
+
+**Delivers:** first evidence the rewrite breaks the ceiling — a GP trainer over
+the typed grammar that solves set-op tasks the current GP gets 0/8 on, at
+parity elsewhere.
+
+**Build plan**
+
+1. A GP trainer over a **grammar-typed genome** (each gene constrained by the
+   grammar's types/positions, not a flat pick-any-of-N list) — productionizing
+   `research/arc-object-poc/{gp_object,grammar_search}.py` into a real trainer.
+2. Reuse the ADR-0005 similarity reward for fitness; log the best program's
+   trace as `episodes/*.jsonl` in a schema V8 formalizes.
+3. Lean on the derived-color actions so a found program generalizes across
+   `re-arc` training instances, not just the real pairs.
+4. Run serially locally for smoke; the full sweep on **RunPod** (`runpod-jobs`),
+   per the compute directive.
+
+**Demo:** object-track GP solves the 8 set-op tasks (0/8 for the current GP in
+the 2026-09-15 pass) and is at parity on a sample of already-solved curated
+tasks — a head-to-head table.
+
+**Rests on assumptions:** that grammar-typed search generalizes past the 8
+(V5's risk, now under search rather than hand-written programs).
+
+### Test plan
+
+#### End-to-end
+- GP over the object grammar finds an exact solution for a fixture set-op task
+  within a fixed generation budget (the object-track analogue of V4's
+  `vmirror` test).
+
+#### Integration
+- A GP-found object program's logged trace reloads and re-executes to the same
+  result.
+
+#### Unit
+- The typed crossover/mutation operators only ever produce grammar-valid
+  programs.
+
+## V7: PPO over the object representation (encoder + typed head)
+
+**Delivers:** ADR-0029 commitment #4 — a set encoder and a grammar-constrained
+action head, trained per task, warm-startable from object-GP.
+
+**Build plan**
+
+1. An object-**set encoder** (per-object embedding + relational attention),
+   replacing V2's CNN-over-2-channels for this track.
+2. A **grammar-constrained action head**: the policy proposes `(verb,
+   object-ref, arg)`, masked to type-valid choices given the current object
+   slots — the structure the POC showed is decisive, now in the RL head.
+3. Object-GP → PPO warm-start, the object-track analogue of ADR-0009.
+4. Eval against the current PPO on a shared task sample.
+
+**Demo:** PPO learns a set-op task on the object track; warm-start rescues a
+task cold PPO can't, mirroring the ADR-0009 result on the new representation.
+
+**Rests on assumptions:** that a set encoder + masked typed head learns from the
+ADR-0005 reward — new architecture risk; falls back to GP-only (V6) for the
+track's coverage claim if PPO underperforms, exactly as the current pipeline
+leans on GP+warm-start.
+
+### Test plan
+
+#### End-to-end
+- Object-track PPO beats random-policy mean reward on a single-task sanity
+  fixture (the object analogue of V2's non-subjective PPO-sanity test).
+
+#### Integration
+- The action mask never admits a type-invalid action; a checkpoint round-trips.
+
+#### Unit
+- The set encoder is permutation-equivariant over object order for a
+  hand-built object set.
+- Advantage/rollout bookkeeping matches a hand-computed value on a small
+  trajectory.
+
+## V8: Object-aware episode log + replay
+
+**Delivers:** the logging schema and minimal replay the object track needs;
+the human-facing editor is F16/ADR-0028, built on this same object model.
+
+**Build plan**
+
+1. Extend the episode-log schema to carry the object set per step plus the
+   `annotation` field (additive; `runs/` is local + gitignored, a normal schema
+   evolution, same ethos as ADR-0020).
+2. Minimal object-aware replay in the visualizer (objects/layers overlay) —
+   enough to debug and demo a run; the full layers/objects editor UI is F16.
+
+**Demo:** replay an object-track episode and step through object-level actions
+with the objects/layers overlay.
+
+**Rests on assumptions:** none beyond the schema shape, which is local and
+disposable.
+
+### Test plan
+
+#### End-to-end
+- An object-track run written by V6/V7 reloads through the read path and
+  replays without error, showing correct per-step object sets.
+
+#### Integration
+- The frontend parses the extended schema and renders the object overlay for a
+  fixture episode.
+
+#### Unit
+- The log round-trips an object set + annotation losslessly.
+
+## V9: Parity, coverage, and cutover
+
+**Delivers:** the go/no-go on making the object track the default — a full
+head-to-head against the 2026-09-15 baseline.
+
+**Build plan**
+
+1. Full curated-set pass on the object track (RunPod), head-to-head vs the
+   2026-09-15 numbers (GP 70/91, PPO+warm 69/91), plus a run at the 21
+   currently-unsolved tasks.
+2. A combined results doc under `docs/results/`, same shape as
+   `training-pass-2026-09-15-combined.md`.
+3. **Cutover** only if the object track is ≥ baseline on the curated set *and*
+   clears some of the 21: make it the default `train.py` path; keep the
+   single-grid track available (or retire it) per the results.
+
+**Demo:** a results table showing the object track at or above baseline on the
+curated set and N of the previously-unsolved 21 now solved — the ceiling moved.
+
+**Rests on assumptions:** that parity is actually reached — this slice is the
+decision point; a miss means the object track stays a parallel experiment and
+the single-grid agent remains default, with the gap documented.
+
+### Test plan
+
+#### End-to-end
+- The full-pass harness runs both tracks and emits the combined results doc
+  a script (not eyeballing) can check the parity/coverage claims against.
+
+#### Integration
+- The cutover leaves `make test` green and the shipped read-only visualizer
+  paths working.
+
+#### Unit
+- The results aggregation reproduces a hand-computed solved-count from a small
+  fixture of per-task outcomes.
