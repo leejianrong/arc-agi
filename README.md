@@ -30,6 +30,29 @@ uv run python -m viz.backend.server   # http://127.0.0.1:8000, reads runs/
 
 `train.py` always trains one policy (or evolves one population) for a single `--task_id`. There's no shared model across tasks, so solving N tasks means N separate runs, each writing its own `runs/<run_id>/` directory that the visualizer can open.
 
+### Official-style evaluation
+
+`arc_eval/` is the scientific-validity boundary between solvers and hidden
+test outputs. A solver called through `arc_eval.evaluate_solver` receives an
+immutable `Challenge` containing demonstration input/output pairs and test
+inputs only. It returns one or two concrete grids per test input using the
+ARC Prize `attempt_1`/`attempt_2` shape; the scorer then performs exact-match
+pass@1/pass@2 evaluation against outputs that never crossed that boundary.
+
+Score a submission file against a directory of scorer-owned ARC task files:
+
+```bash
+uv run python -m arc_eval \
+  --tasks-dir third_party/ARC-AGI/data/training \
+  --submission path/to/submission.json
+```
+
+The command writes canonical, timestamp-free JSON to stdout. Its primary
+`pass_at_1` and `pass_at_2` values are test-output accuracies; the stricter
+`task_pass_at_1` and `task_pass_at_2` require every test input in a task to
+be correct. Reports contain only counts and booleans—never hidden targets or
+submitted grids.
+
 ## How it works
 
 **The environment.** `arc_env/` wraps a curated slice of Michael Hodel's [arc-dsl](https://github.com/michaelhodel/arc-dsl) as a discrete, factored action space: 43 actions in total, from simple zero-argument transforms like `rot90` and `vmirror` up to `commit`, a four-argument action that crops the working grid to a chosen region and ends the episode there. Higher-order primitives (`compose`, `chain`, `fork`, and friends) are excluded on purpose. They build closures rather than transforming a grid directly, and a flat "pick one action per step" space has no way to represent that. Picking an action that needs an argument the DSL can't express as a plain color, coordinate, or size (an arbitrary object, say) is out of scope for the same reason; see [`docs/adr/0001`](docs/adr/0001-arc-dsl-as-action-space.md) for the full reasoning. ADR-0010's Phase 1 (2026-08-29) added 4 self-concatenation actions (`hconcat_self` and friends) on the same basis, growing the curated task subset from 16 to 24. ADR-0011 (2026-08-31) added one deliberate exception: a small "select an object, then act on it" mechanism (`select_largest`/`select_smallest`/`commit_selection`) that threads a currently-selected patch alongside the grid, informed by an audit showing most object-manipulation solvers pick an object by a fixed criterion (largest, smallest, ...) rather than an arbitrary index - growing the curated task subset to 26. ADR-0012 (2026-09-04) landed the rest of that menu - `select_by_color`/`select_unique_color`, and the act-on-selection actions `delete_selected`/`recolor_selected`/`move_selected`/`paint_selected_at` - taking the curated set to 29. ADR-0013 (2026-09-05) added two more `objects(...)` connectivity variants (`select_largest_no_diag`, `select_tallest`), taking the curated set to 30. ADR-0015 (2026-09-06) added a non-terminal `crop_to_selection` action (same crop as `commit_selection`, but doesn't end the episode - so a further transform can run on the cropped result) plus a fourth `objects(...)` variant (`select_largest_multicolor`), taking the curated set to 36. ADR-0016 (2026-09-06) added `stamp_selected`, a directional act-on-selection action that shifts the selection by one of 8 fixed offsets (its own menu, separate from `move_selected`'s 4-direction one) and fills the grid with a color there without clearing the original selected cells, taking the curated set to 38. ADR-0019 (2026-09-06) added two more derived actions, `canvas_mostcolor` (like `canvas`, but the fill color is the grid's own most-common color instead of an agent-chosen one) and `swap_two_least_colors` (a fully self-contained, zero-arg swap of a grid's two least-common colors), taking the curated set to 40. Episode replay shows the current selection as an amber outline over the grid, closing the one visualizer gap ADR-0011 had left open.
@@ -180,6 +203,7 @@ third_party/arc-dsl/       Michael Hodel's arc-dsl - the action-space DSL and 40
 third_party/re-arc/        Michael Hodel's re-arc - per-task synthetic instance generators
 
 arc_env/                   the Gymnasium-style environment: actions, task loader, reward, env, JSONL logging
+arc_eval/                  blind Challenge API + exact pass@1/pass@2 submission scorer
 trainers/ppo/              the policy/value network, rollout collection + GAE, the PPO update
 trainers/gp/               genome representation, fitness, the evolutionary loop, replay for logging
 train.py                   train.py --algo ppo|gp --task_id <id>

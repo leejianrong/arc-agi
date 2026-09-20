@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from arc_env import actions
-from arc_env.env import ArcEnv
+from arc_env.env import ENDPOINT_TERMINATION, ArcEnv
 from arc_env.episode_log import EpisodeWriter, RunMeta, grid_to_list, write_run_meta
 from arc_env.task_loader import load_task
 
@@ -141,7 +141,7 @@ def start_session(task_id, pair_index=0) -> dict:
     if not (0 <= pair_index < len(task.train)):
         raise PlayError(400, f"invalid pair_index: {pair_index}") from None
 
-    env = ArcEnv(max_steps=MAX_STEPS_PLAY)
+    env = ArcEnv(max_steps=MAX_STEPS_PLAY, termination_mode=ENDPOINT_TERMINATION)
     env.reset(task_id=task_id, pair_index=pair_index, task=task)
     pair = task.train[pair_index]
 
@@ -256,7 +256,11 @@ def save_session(session_id: str, runs_dir: Path, run_id=None) -> dict:
                 run_id=run_id,
                 algo="human",
                 task_ids=[session.task_id],
-                config={"pair_index": session.pair_index, "max_steps": MAX_STEPS_PLAY},
+                config={
+                    "pair_index": session.pair_index,
+                    "max_steps": MAX_STEPS_PLAY,
+                    "termination_mode": session.env.termination_mode,
+                },
             ),
         )
         with EpisodeWriter(run_dir, episode_id) as writer:

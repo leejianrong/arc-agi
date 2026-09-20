@@ -67,7 +67,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from arc_env import actions
-from arc_env.env import ArcEnv
+from arc_env.env import ENDPOINT_TERMINATION, ArcEnv
 from arc_env.episode_log import RunMeta, write_run_meta
 from arc_env.task_loader import Task, load_task
 from tests.test_dsl_regression import _encode
@@ -192,12 +192,16 @@ def write_seed_episode(task_id: str, sequence: Sequence, run_dir: Path, pair_ind
 
     task = load_task(task_id)
     program = sequence_to_program(sequence)
-    env = ArcEnv()
+    env = ArcEnv(termination_mode=ENDPOINT_TERMINATION)
     pair = task.train[pair_index]
 
     write_run_meta(run_dir, RunMeta(
         run_id=run_dir.name, algo="llm-seed", task_ids=[task_id],
-        config={"pair_index": pair_index, "sequence": sequence},
+        config={
+            "pair_index": pair_index,
+            "sequence": sequence,
+            "program_endpoint": "commit_or_static_end",
+        },
     ))
     trace = program_to_episode_trace(env, program, task_id, pair)
     _write_episode(run_dir, "best-program", env, task_id, pair, trace)

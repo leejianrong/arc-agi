@@ -92,7 +92,10 @@ def main() -> None:
     write_run_meta(
         run_dir,
         RunMeta(run_id=run_id, algo="random", task_ids=task_ids, config={
-            "max_steps": args.max_steps, "seed": args.seed, "pair_index": args.pair_index,
+            "max_steps": args.max_steps,
+            "seed": args.seed,
+            "pair_index": args.pair_index,
+            "termination_mode": env.termination_mode,
         }),
     )
 

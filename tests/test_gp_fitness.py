@@ -29,34 +29,20 @@ def test_run_program_stops_early_on_a_valid_commit():
     assert run_program(program, grid) == ((1,),)
 
 
-def test_run_program_stops_early_on_reaching_the_target_when_given():
-    # Regression test: this mirrors ArcEnv.step's own termination - without
-    # it, evaluate_fitness's score and trainers.gp.replay's logged trace
-    # for the same program could silently disagree whenever a gene ran
-    # after an exact match was already reached.
-    vmirror_idx = actions.ACTION_BY_NAME["vmirror"]
-    replace_idx = actions.ACTION_BY_NAME["replace"]
-    grid = ((1, 2), (3, 4))
-    target = ((2, 1), (4, 3))  # == vmirror(grid)
-    # The trailing replace(0, 9) would repaint every 0-cell if it ran -
-    # there are none here, but the point is it must not even be attempted.
-    program = [(vmirror_idx, (0,) * actions.MAX_ARITY), (replace_idx, (0, 9, 0, 0))]
-
-    assert run_program(program, grid, target=target) == target
-    # Without a target, the whole program still runs (no early stop).
-    assert run_program(program, grid) == target  # replace(0,9) is a no-op here, so the result matches either way
-
-
-def test_run_program_without_target_does_not_stop_on_exact_match():
+def test_run_program_does_not_have_a_target_oracle_stop():
+    # Regression test for KAN-1546: the first gene reaches the target, but
+    # the static program endpoint is after the destructive second gene.
+    # Fitness must score that final output, never the transient match.
     vmirror_idx = actions.ACTION_BY_NAME["vmirror"]
     switch_idx = actions.ACTION_BY_NAME["switch"]
     grid = ((1, 2), (3, 4))
-    # vmirror(grid) coincidentally has no 1s/2s adjacency to exploit here,
-    # so use a grid where the post-vmirror grid genuinely gets mutated by
-    # a trailing gene to prove it wasn't skipped.
+    target = ((2, 1), (4, 3))  # == vmirror(grid)
     program = [(vmirror_idx, (0,) * actions.MAX_ARITY), (switch_idx, (2, 1, 0, 0))]
-    # vmirror(grid) = ((2,1),(4,3)); switch(2,1) swaps those two colors.
+
     assert run_program(program, grid) == ((1, 2), (4, 3))
+    result = evaluate_fitness(program, _task([Pair(input=grid, output=target)]))
+    assert result.per_pair_exact_match == (False,)
+    assert result.fitness[0] == 0.0
 
 
 def test_run_program_ignores_an_invalid_gene_as_a_noop():
