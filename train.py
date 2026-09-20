@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from arc_env.env import DEFAULT_MAX_STEPS, ArcEnv
+from arc_env.env import DEFAULT_MAX_STEPS, ENDPOINT_TERMINATION, ArcEnv
 from arc_env.episode_log import EpisodeWriter, RunMeta, write_run_meta
 from arc_env.re_arc import GenerationError, generate_pair
 from arc_env.task_loader import CURATED_TASK_IDS, load_task
@@ -219,8 +219,11 @@ def train_ppo(
     torch.manual_seed(seed)
     rng = random.Random(seed)
 
-    env = ArcEnv(max_steps=max_steps)
-    eval_env = ArcEnv(max_steps=max_steps)
+    # New training and evaluation runs share the target-independent execution
+    # contract. ORACLE_TERMINATION remains available only to reproduce legacy
+    # experiments; it is not used by any inference or current training path.
+    env = ArcEnv(max_steps=max_steps, termination_mode=ENDPOINT_TERMINATION)
+    eval_env = ArcEnv(max_steps=max_steps, termination_mode=ENDPOINT_TERMINATION)
     network = ActorCritic()
 
     # ADR-0009: a one-time supervised pretrain phase against a same-task GP
@@ -249,6 +252,8 @@ def train_ppo(
         run_id=run_dir.name, algo="ppo", task_ids=[task_id],
         config={"n_updates": n_updates, "rollout_steps": rollout_steps, "eval_every": eval_every,
                 "re_arc_prob": re_arc_prob, "max_steps": max_steps, "seed": seed,
+                "training_termination_mode": env.termination_mode,
+                "evaluation_termination_mode": eval_env.termination_mode,
                 "warm_start_from": str(warm_start_from) if warm_start_from else None,
                 "warm_start_epochs": warm_start_epochs if warm_start_losses else None,
                 "warm_start_final_loss": warm_start_losses[-1] if warm_start_losses else None,
@@ -293,11 +298,11 @@ def train_ppo(
 
 def train_gp(task_id: str, run_dir: Path, config: GPConfig, max_steps: int) -> None:
     task = load_task(task_id)
-    env = ArcEnv(max_steps=max_steps)
+    env = ArcEnv(max_steps=max_steps, termination_mode=ENDPOINT_TERMINATION)
 
     write_run_meta(run_dir, RunMeta(
         run_id=run_dir.name, algo="gp", task_ids=[task_id],
-        config={"max_steps": max_steps, **config.to_dict()},
+        config={"max_steps": max_steps, "program_endpoint": "commit_or_static_end", **config.to_dict()},
     ))
 
     result = run_gp(task, config)

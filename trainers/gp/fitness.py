@@ -23,26 +23,16 @@ Fitness = tuple  # (exact_match_fraction: float, mean_similarity: float)
 ZERO_FITNESS: Fitness = (0.0, 0.0)
 
 
-def run_program(program: Program, grid: tuple, target: tuple | None = None) -> tuple:
+def run_program(program: Program, grid: tuple) -> tuple:
     """Applies `program`'s genes to `grid` in order via `actions.execute`,
-    mirroring `ArcEnv.step`'s own termination conditions exactly (an
-    earlier version of this function didn't, which meant a found program's
-    fitness score and its logged replay trace - `trainers.gp.replay`, which
-    *does* go through `ArcEnv.step` - could silently disagree about what
-    the program actually does whenever a trailing gene ran after an exact
-    match. Never worth it: matching what the env would actually do is
-    strictly more informative than running blindly to the end).
+    using target-independent endpoint semantics. The static end of the
+    genome is an implicit RETURN; a valid `commit` is an explicit RETURN.
 
     An invalid gene (out-of-bounds for the current grid) is a no-op, same
-    as the env's Q7 behavior - the program keeps running from the
-    unchanged grid. The program stops early - exactly when `ArcEnv.step`
-    would set `terminated=True` - on a valid `commit` (its whole point is
-    "this is my final answer") or, if `target` is given, on reaching an
-    exact match.
+    as the env's Q7 behavior, and execution continues from the unchanged
+    grid. Crucially, no target is accepted by this function: a transient
+    exact match cannot stop execution or hide destructive trailing genes.
     """
-
-    if target is not None and grid == target:
-        return grid
 
     selected = {0: None, 1: None}
     selected_region = {0: None, 1: None}
@@ -55,7 +45,7 @@ def run_program(program: Program, grid: tuple, target: tuple | None = None) -> t
             valid and 0 <= primitive_index < len(actions.ACTIONS)
             and actions.ACTIONS[primitive_index].name in ("commit", "commit_selection")
         )
-        if is_commit or (target is not None and grid == target):
+        if is_commit:
             break
     return grid
 
@@ -71,7 +61,7 @@ def evaluate_fitness(program: Program, task: Task) -> FitnessResult:
     similarities = []
     for pair in task.train:
         diff_mask = reward_mod.compute_diff_mask(pair.input, pair.output)
-        final_grid = run_program(program, pair.input, target=pair.output)
+        final_grid = run_program(program, pair.input)
         matched = final_grid == pair.output
         exact_matches.append(matched)
         similarities.append(reward_mod.similarity(final_grid, pair.output, diff_mask))

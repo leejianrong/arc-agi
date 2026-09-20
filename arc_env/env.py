@@ -4,14 +4,15 @@ One episode = one (task_id, grid pair) instance - either one of the task's
 native train pairs, or an on-the-fly `arc_env.re_arc`-generated instance of
 the same task concept (`docs/SLICES.md` V2 build plan step 3). `reset`
 starts from the pair's input grid; the agent edits it one curated action
-(`arc_env.actions`) at a time. The episode ends (`terminated=True`) on an
-exact match with the pair's output grid, OR (V3, ADR-0002) when the agent
-plays a valid `commit` action - which crops the grid to a chosen sub-region
-and ends the episode there whether or not that crop happens to match. Use
-`info["exact_match"]`, not the `terminated` return value, to tell success
-from "the agent gave up and committed something wrong" - both terminate the
-episode, only one is a success. `truncated=True` on a max-step budget (Q7),
-same as before.
+(`arc_env.actions`) at a time. The default, target-independent inference
+contract ends only on a valid `commit` action or the fixed max-step horizon.
+Target equality is then a score reported in `info["exact_match"]`; it never
+controls execution. `termination_mode="oracle"` retains the historical
+training behavior where reaching the known target ends the episode early.
+It must be opted into explicitly and must not be used for evaluation or
+replay. In either mode, a valid `commit` crops the grid to the selected
+sub-region and ends the episode whether or not the crop matches. Use
+`info["exact_match"]`, not `terminated`, to tell success from a wrong commit.
 
 Reward is ADR-0005's dense delta-shaped reward (`arc_env.reward`).
 
@@ -41,6 +42,9 @@ from arc_env.task_loader import Pair, Task, load_task
 
 PAD_VALUE = 10  # beyond ARC's 10 colors (0-9); marks padding in the fixed-size observation
 DEFAULT_MAX_STEPS = 25
+ENDPOINT_TERMINATION = "endpoint"
+ORACLE_TERMINATION = "oracle"
+TERMINATION_MODES = frozenset({ENDPOINT_TERMINATION, ORACLE_TERMINATION})
 
 
 def _pad_grid(grid: tuple) -> np.ndarray:
@@ -76,9 +80,18 @@ def _make_obs(grid: tuple, selected) -> np.ndarray:
 class ArcEnv(gym.Env):
     metadata: ClassVar[dict] = {"render_modes": []}
 
-    def __init__(self, max_steps: int = DEFAULT_MAX_STEPS):
+    def __init__(
+        self,
+        max_steps: int = DEFAULT_MAX_STEPS,
+        termination_mode: str = ENDPOINT_TERMINATION,
+    ):
         super().__init__()
+        if termination_mode not in TERMINATION_MODES:
+            raise ValueError(
+                f"termination_mode must be one of {sorted(TERMINATION_MODES)}, got {termination_mode!r}"
+            )
         self.max_steps = max_steps
+        self.termination_mode = termination_mode
 
         # ADR-0011/ADR-0020: 2 channels - the grid (0-9 colors, PAD_VALUE for
         # padding) and a "currently selected" mask (values in {0, 1, 2}: 0
@@ -159,11 +172,21 @@ class ArcEnv(gym.Env):
 
         exact_match = self._grid == self._target
         is_commit = valid and action_name in ("commit", "commit_selection")
-        terminated = bool(exact_match or is_commit)
+        oracle_stop = self.termination_mode == ORACLE_TERMINATION and exact_match
+        terminated = bool(oracle_stop or is_commit)
         truncated = self._step_count >= self.max_steps and not terminated
+        output_finalized = terminated or truncated
+
+        # In endpoint mode, an intermediate target match is useful dense
+        # feedback during training but is not a submitted answer and must not
+        # receive the terminal bonus. At commit/horizon the target is allowed
+        # to score the finalized output, never to decide whether it is final.
+        rewarded_exact_match = exact_match and (
+            self.termination_mode == ORACLE_TERMINATION or output_finalized
+        )
 
         result = reward_mod.compute_reward(
-            prev_grid, self._grid, self._target, self._diff_mask, valid, exact_match
+            prev_grid, self._grid, self._target, self._diff_mask, valid, rewarded_exact_match
         )
 
         info = self._info()
@@ -172,6 +195,7 @@ class ArcEnv(gym.Env):
         info["valid_action"] = valid
         info["similarity"] = result.similarity
         info["exact_match"] = exact_match
+        info["output_finalized"] = output_finalized
 
         return _make_obs(self._grid, self._selected), result.reward, terminated, truncated, info
 
@@ -200,5 +224,6 @@ class ArcEnv(gym.Env):
             "step": self._step_count,
             "grid_shape": (len(self._grid), len(self._grid[0])) if self._grid else (0, 0),
             "target_shape": (len(self._target), len(self._target[0])) if self._target else (0, 0),
+            "termination_mode": self.termination_mode,
             "selected": self.get_selected(),
         }

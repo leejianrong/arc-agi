@@ -11,16 +11,22 @@ reward/termination logic PPO's episodes do - one canonical definition of
 "what happened at this step" shared by both trainers.
 """
 
-from arc_env.env import ArcEnv
+from arc_env.env import ENDPOINT_TERMINATION, ArcEnv
 from arc_env.task_loader import Pair
 from trainers.gp.genome import Program
 
 
 def program_to_episode_trace(env: ArcEnv, program: Program, task_id: str, pair: Pair) -> dict:
+    if env.termination_mode != ENDPOINT_TERMINATION:
+        raise ValueError("GP replay requires target-independent endpoint termination")
+    if len(program) > env.max_steps:
+        raise ValueError(
+            "GP replay max_steps must cover the complete program so its static endpoint is observable"
+        )
+
     env.reset(task_id=task_id, pair=pair)
     steps = []
     terminated = truncated = False
-    exact_match = False
     total_reward = 0.0
 
     for primitive_index, raw_args in program:
@@ -30,7 +36,6 @@ def program_to_episode_trace(env: ArcEnv, program: Program, task_id: str, pair: 
         action = {"primitive": primitive_index, **{f"arg{i + 1}": raw_args[i] for i in range(len(raw_args))}}
         _, reward, terminated, truncated, info = env.step(action)
         total_reward += reward
-        exact_match = info["exact_match"]
         steps.append({
             "grid_before": grid_before,
             "action_name": info["action_name"],
@@ -40,8 +45,12 @@ def program_to_episode_trace(env: ArcEnv, program: Program, task_id: str, pair: 
             "terminated": terminated,
             "truncated": truncated,
             "valid_action": info["valid_action"],
-            "exact_match": exact_match,
+            "exact_match": info["exact_match"],
             "selected": info["selected"],
         })
 
-    return {"steps": steps, "success": exact_match, "total_reward": total_reward}
+    # Target comparison happens once, after execution has reached a commit or
+    # the static end of the genome. It is deliberately absent from the loop's
+    # control flow, including for an empty identity program.
+    success = env.get_grid() == pair.output
+    return {"steps": steps, "success": success, "total_reward": total_reward}

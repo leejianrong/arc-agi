@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from arc_env import actions
-from arc_env.env import PAD_VALUE, ArcEnv
+from arc_env.env import ENDPOINT_TERMINATION, ORACLE_TERMINATION, PAD_VALUE, ArcEnv
 from arc_env.task_loader import CURATED_TASK_IDS, load_curated_tasks, load_task
 
 
@@ -83,8 +83,8 @@ def test_out_of_bounds_fill_cell_coordinate_is_noop_with_penalty():
     assert env.get_grid() == grid_before
 
 
-def test_episode_terminates_on_exact_match():
-    env = ArcEnv()
+def test_oracle_training_mode_terminates_on_exact_match():
+    env = ArcEnv(termination_mode=ORACLE_TERMINATION)
     task = load_task("67a3c6ac")  # solved by a single vmirror
     env.reset(task_id="67a3c6ac", pair_index=0, task=task)
     _, reward, terminated, truncated, info = env.step(action("vmirror"))
@@ -96,6 +96,55 @@ def test_episode_terminates_on_exact_match():
 
     assert reward == pytest.approx(1.0 - STEP_COST + TERMINAL_BONUS)
     assert env.get_grid() == task.train[0].output
+
+
+def test_endpoint_mode_does_not_terminate_or_pay_terminal_bonus_on_intermediate_match():
+    env = ArcEnv(max_steps=2, termination_mode=ENDPOINT_TERMINATION)
+    task = load_task("67a3c6ac")  # solved by a single vmirror
+    env.reset(task_id="67a3c6ac", pair_index=0, task=task)
+
+    _, reward, terminated, truncated, info = env.step(action("vmirror"))
+
+    from arc_env.reward import STEP_COST
+
+    assert terminated is False
+    assert truncated is False
+    assert info["exact_match"] is True
+    assert info["output_finalized"] is False
+    assert reward == pytest.approx(1.0 - STEP_COST)
+
+    # A second transform destroys the transient solution. The deterministic
+    # horizon endpoint, not the intermediate target equality, is the answer.
+    _, _reward, terminated, truncated, info = env.step(action("vmirror"))
+    assert terminated is False
+    assert truncated is True
+    assert info["exact_match"] is False
+    assert info["output_finalized"] is True
+
+
+def test_endpoint_mode_pays_terminal_bonus_only_when_final_output_matches():
+    env = ArcEnv(max_steps=1, termination_mode=ENDPOINT_TERMINATION)
+    task = load_task("67a3c6ac")
+    env.reset(task_id="67a3c6ac", pair_index=0, task=task)
+
+    _, reward, terminated, truncated, info = env.step(action("vmirror"))
+
+    from arc_env.reward import STEP_COST, TERMINAL_BONUS
+
+    assert terminated is False
+    assert truncated is True
+    assert info["exact_match"] is True
+    assert info["output_finalized"] is True
+    assert reward == pytest.approx(1.0 - STEP_COST + TERMINAL_BONUS)
+
+
+def test_endpoint_termination_is_the_default_inference_contract():
+    assert ArcEnv().termination_mode == ENDPOINT_TERMINATION
+
+
+def test_invalid_termination_mode_is_rejected():
+    with pytest.raises(ValueError, match="termination_mode"):
+        ArcEnv(termination_mode="target-peeking")
 
 
 def test_commit_ends_episode_and_exact_match_when_crop_matches_target():
@@ -150,9 +199,14 @@ def test_crop_to_selection_crops_without_ending_the_episode_unlike_commit_select
     assert terminated is False  # unlike commit_selection, which would end it here
     _, _reward, terminated, _truncated, info = env.step(action("hconcat_self"))
     assert info["valid_action"] is True
-    assert terminated is True
+    assert terminated is False
     assert info["exact_match"] is True
     assert env.get_grid() == task.train[0].output
+
+    h, w = len(env.get_grid()), len(env.get_grid()[0])
+    _, _reward, terminated, _truncated, info = env.step(action("commit", 0, 0, h - 1, w - 1))
+    assert terminated is True
+    assert info["exact_match"] is True
 
 
 def test_canvas_replaces_the_grid_without_ending_the_episode():

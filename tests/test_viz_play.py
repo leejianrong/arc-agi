@@ -91,8 +91,13 @@ def test_start_step_save_solves_67a3c6ac(tmp_path):
     step = play.step_session(session_id, "vmirror", [])
     assert step["valid_action"] is True
     assert step["exact_match"] is True
-    assert step["terminated"] is True
+    assert step["terminated"] is False
     assert step["grid"] == step["target_grid"]
+
+    h, w = len(step["grid"]), len(step["grid"][0])
+    step = play.step_session(session_id, "commit", [0, 0, h - 1, w - 1])
+    assert step["terminated"] is True
+    assert step["exact_match"] is True
 
     saved = play.save_session(session_id, tmp_path, run_id="human-test-run")
     assert saved == {"run_id": "human-test-run", "episode_id": "67a3c6ac-p0"}
@@ -108,9 +113,10 @@ def test_start_step_save_solves_67a3c6ac(tmp_path):
 
     episode = backend.read_episode(tmp_path, "human-test-run", "67a3c6ac-p0")
     assert episode["start"]["task_id"] == "67a3c6ac"
-    assert len(episode["steps"]) == 1
+    assert len(episode["steps"]) == 2
     assert episode["steps"][0]["action"]["name"] == "vmirror"
     assert episode["steps"][0]["exact_match"] is True
+    assert episode["steps"][1]["action"]["name"] == "commit"
     assert episode["end"]["success"] is True
 
 

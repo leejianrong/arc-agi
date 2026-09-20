@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-from arc_env.env import ArcEnv
+from arc_env.env import ENDPOINT_TERMINATION, ArcEnv
 from arc_env.task_loader import Pair
 from trainers.ppo.network import MAX_ARITY, ActorCritic
 
@@ -36,7 +36,7 @@ class RolloutBuffer:
     truncated: np.ndarray  # (T,) bool
     next_value: np.ndarray  # (T,) float64 - precomputed GAE bootstrap (see trainers/ppo/gae.py)
     episode_returns: list = field(default_factory=list)  # total reward of each episode fully completed in this rollout
-    episode_successes: list = field(default_factory=list)  # bool (terminated, i.e. exact match) per completed episode
+    episode_successes: list = field(default_factory=list)  # endpoint exact-match bool per completed episode
 
     @property
     def n_steps(self) -> int:
@@ -134,6 +134,9 @@ def evaluate_episode(env: ArcEnv, network: ActorCritic, task_id: str, pair: Pair
     """Runs one episode with the current *greedy* (argmax) policy - used for
     periodic eval-episode logging (SLICES.md V2 build plan step 4), not
     training. Returns the full step-by-step trace for `EpisodeWriter`."""
+
+    if env.termination_mode != ENDPOINT_TERMINATION:
+        raise ValueError("policy evaluation requires target-independent endpoint termination")
 
     obs, _ = env.reset(task_id=task_id, pair=pair)
     steps = []
