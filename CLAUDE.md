@@ -277,6 +277,14 @@ Planning artifacts (read these before making architectural changes):
   unaffected). PPO also keeps a `checkpoints/best.pt` — the checkpoint with
   the best `eval_reward` seen so far in the run, not necessarily the last
   one (`is_new_best_eval` in `train.py`).
+- `arc_eval/` — the official-style, exact-match pass@1/pass@2 evaluator.
+  `Challenge` is the solver-facing boundary and contains demonstration
+  input/output pairs plus test inputs only; hidden test outputs remain in the
+  scorer. Submissions contain one or two concrete grids per test input under
+  `attempt_1`/`attempt_2`, including tasks with multiple test inputs and
+  variable output shapes. `python -m arc_eval --tasks-dir <dir>
+  --submission <json>` emits canonical JSON with output-level and stricter
+  all-test-input task-level metrics, never targets or submitted grids.
 - `scripts/rollout_random.py` — random-policy rollout script (no training);
   writes `runs/<run_id>/` (gitignored, generated locally).
 - `scripts/prune_runs.py` — `runs/` accumulates fast (a full curated-task
