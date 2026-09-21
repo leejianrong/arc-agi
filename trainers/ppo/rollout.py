@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 from arc_env.env import ENDPOINT_TERMINATION, ArcEnv
-from arc_env.task_loader import Pair
+from arc_env.tasks import Pair
 from trainers.ppo.network import MAX_ARITY, ActorCritic
 
 

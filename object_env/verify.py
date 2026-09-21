@@ -10,7 +10,7 @@ throwaway scripts, here reusing `arc_env.re_arc.generate_pair` and
 from dataclasses import dataclass
 
 from arc_env.re_arc import GenerationError, generate_pair
-from arc_env.task_loader import load_task
+from arc_env.tasks import load_task
 from object_env.grammar import Program
 
 

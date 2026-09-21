@@ -69,7 +69,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_env import actions
 from arc_env.env import ENDPOINT_TERMINATION, ArcEnv
 from arc_env.episode_log import RunMeta, write_run_meta
-from arc_env.task_loader import Task, load_task
+from arc_env.provenance import build_run_provenance
+from arc_env.tasks import Task, load_task
 from tests.test_dsl_regression import _encode
 from train import _write_episode
 from trainers.gp.genome import Program
@@ -202,6 +203,24 @@ def write_seed_episode(task_id: str, sequence: Sequence, run_dir: Path, pair_ind
             "sequence": sequence,
             "program_endpoint": "commit_or_static_end",
         },
+        provenance=build_run_provenance(
+            task_ids=[task_id],
+            seed=None,
+            compute_budget={
+                "unit": "candidate_pair_executions",
+                "planned": len(task.train) + len(task.test),
+                "sequence_length": len(sequence),
+            },
+            macro_provenance={
+                "seed_source": "llm_proposed_action_sequence",
+                "task_specific_seed": True,
+                "sequence": sequence,
+                "verified_on_test_outputs": True,
+                "eligible_for_blind_evaluation": False,
+                "action_catalog": "arc_env.actions.ACTIONS",
+                "action_catalog_hash_recorded": True,
+            },
+        ),
     ))
     trace = program_to_episode_trace(env, program, task_id, pair)
     _write_episode(run_dir, "best-program", env, task_id, pair, trace)

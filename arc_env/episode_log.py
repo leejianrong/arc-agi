@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def grid_to_list(grid: tuple) -> list:
@@ -25,6 +25,7 @@ class RunMeta:
     algo: str
     task_ids: list
     config: dict
+    provenance: dict
 
 
 def write_run_meta(run_dir: Path, meta: RunMeta) -> None:
@@ -36,6 +37,7 @@ def write_run_meta(run_dir: Path, meta: RunMeta) -> None:
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "task_ids": meta.task_ids,
         "config": meta.config,
+        "provenance": meta.provenance,
     }
     with open(run_dir / "run_meta.json", "w") as f:
         json.dump(payload, f, indent=2)

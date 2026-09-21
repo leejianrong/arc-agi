@@ -11,8 +11,8 @@ and late-training replay can be compared side by side; GP: the single
 best-found program's execution trace). PPO additionally checkpoints
 (`checkpoints/update_*.pt`) - GP's "checkpoint" is just its best program,
 already captured in the logged episode trace, so there's nothing separate
-to resume from. PPO also tracks the best-so-far eval checkpoint by the fixed
-eval pair's greedy-policy reward (`checkpoints/best.pt`, `eval_success`/
+to resume from. PPO also tracks the best-so-far selection checkpoint by a
+fixed development-train pair's greedy-policy reward (`checkpoints/best.pt`, `eval_success`/
 `eval_reward` in `metrics.jsonl` - KAN-1177), since that per-update row's
 `success_rate`/`mean_reward` are averaged over the training rollout's own
 noisy, shifting mix of re-arc-generated and native pairs, not this fixed
@@ -33,8 +33,10 @@ import torch
 
 from arc_env.env import DEFAULT_MAX_STEPS, ENDPOINT_TERMINATION, ArcEnv
 from arc_env.episode_log import EpisodeWriter, RunMeta, write_run_meta
+from arc_env.provenance import build_run_provenance, file_sha256, no_seed_macros
 from arc_env.re_arc import GenerationError, generate_pair
-from arc_env.task_loader import CURATED_TASK_IDS, load_task
+from arc_env.splits import DEVELOPMENT, SEARCH_TASK_IDS
+from arc_env.tasks import load_search_task
 from trainers.gp.evolve import GPConfig, run_gp
 from trainers.gp.replay import program_to_episode_trace
 from trainers.ppo.network import ActorCritic
@@ -51,7 +53,7 @@ def make_next_pair_fn(task_id: str, re_arc_prob: float, rng: random.Random):
     train pairs. Difficulty is sampled as a random +/-0.15 band per instance
     - varied practice without a curriculum schedule this milestone."""
 
-    task = load_task(task_id)
+    task = load_search_task(task_id)
 
     def next_pair():
         if rng.random() < re_arc_prob:
@@ -166,12 +168,12 @@ def _write_episode(run_dir: Path, episode_id: str, env: ArcEnv, task_id: str, pa
 def log_eval_episode(run_dir: Path, env: ArcEnv, network: ActorCritic, task_id: str, update: int) -> dict:
     """Returns the `evaluate_episode` result dict (`{"steps", "success",
     "total_reward"}`) in addition to writing the trace, so callers can fold
-    the greedy-policy outcome on the literal held-out pair into `metrics.jsonl`
+    the greedy-policy outcome on a fixed development-train pair into `metrics.jsonl`
     (KAN-1177) - distinct from that row's `success_rate`/`mean_reward`, which
     are averaged over the *training* rollout's own mix of re-arc-generated
     and native pairs, not this fixed eval pair."""
 
-    task = load_task(task_id)
+    task = load_search_task(task_id)
     pair = task.train[0]
     result = evaluate_episode(env, network, task_id, pair)
     _write_episode(run_dir, f"eval-update{update:05d}", env, task_id, pair, result)
@@ -179,8 +181,8 @@ def log_eval_episode(run_dir: Path, env: ArcEnv, network: ActorCritic, task_id: 
 
 
 def is_new_best_eval(eval_reward: float, best_eval_reward: float | None) -> bool:
-    """Whether `eval_reward` (an eval checkpoint's greedy-policy total reward
-    on the fixed held-out pair) beats the best eval reward seen so far in
+    """Whether `eval_reward` (a checkpoint's greedy-policy total reward
+    on the fixed development-train selection pair) beats the best seen so far in
     this run. `None` means no eval checkpoint has run yet, so anything
     counts as a new best.
 
@@ -189,7 +191,7 @@ def is_new_best_eval(eval_reward: float, best_eval_reward: float | None) -> bool
     `success_rate` logged every update is noisy (a handful of stochastic-
     policy episodes over a shifting mix of re-arc-generated + native pairs)
     and is *not* the same thing as whether the policy still solves the fixed
-    eval pair - reproductions for KAN-1177 found the latter stayed stable
+    selection pair - reproductions for KAN-1177 found the latter stayed stable
     even when the former swung from ~80% to 0% between adjacent updates.
     Tracking the best eval checkpoint (`checkpoints/best.pt`) by this
     less-noisy, fixed-target signal gives a safety net against genuine
@@ -248,6 +250,18 @@ def train_ppo(
     if resume_from is not None:
         start_update = load_checkpoint(resume_from, network, optimizer) + 1
 
+    macro_provenance = no_seed_macros()
+    if warm_start_from is not None:
+        demonstration_path = warm_start_from / "episodes" / "best-program.jsonl"
+        macro_provenance = {
+            "seed_source": "demonstration_artifact",
+            "task_specific_seed": True,
+            "artifact_path": str(demonstration_path),
+            "artifact_sha256": file_sha256(demonstration_path),
+            "action_catalog": "arc_env.actions.ACTIONS",
+            "action_catalog_hash_recorded": True,
+        }
+
     write_run_meta(run_dir, RunMeta(
         run_id=run_dir.name, algo="ppo", task_ids=[task_id],
         config={"n_updates": n_updates, "rollout_steps": rollout_steps, "eval_every": eval_every,
@@ -258,6 +272,25 @@ def train_ppo(
                 "warm_start_epochs": warm_start_epochs if warm_start_losses else None,
                 "warm_start_final_loss": warm_start_losses[-1] if warm_start_losses else None,
                 **config.to_dict()},
+        provenance=build_run_provenance(
+            task_ids=[task_id],
+            seed=seed,
+            compute_budget={
+                "unit": "environment_steps",
+                "planned": n_updates * rollout_steps,
+                "n_updates": n_updates,
+                "rollout_steps": rollout_steps,
+                "max_episode_steps": max_steps,
+            },
+            macro_provenance=macro_provenance,
+            checkpoint_selection={
+                "used": True,
+                "split": DEVELOPMENT,
+                "partition": "train_examples",
+                "pair_index": 0,
+                "locked_evaluation_outputs_used": False,
+            },
+        ),
     ))
 
     collector = RolloutCollector(env, network, make_next_pair_fn(task_id, re_arc_prob, rng))
@@ -297,12 +330,31 @@ def train_ppo(
 
 
 def train_gp(task_id: str, run_dir: Path, config: GPConfig, max_steps: int) -> None:
-    task = load_task(task_id)
+    task = load_search_task(task_id)
     env = ArcEnv(max_steps=max_steps, termination_mode=ENDPOINT_TERMINATION)
 
     write_run_meta(run_dir, RunMeta(
         run_id=run_dir.name, algo="gp", task_ids=[task_id],
         config={"max_steps": max_steps, "program_endpoint": "commit_or_static_end", **config.to_dict()},
+        provenance=build_run_provenance(
+            task_ids=[task_id],
+            seed=config.seed,
+            compute_budget={
+                "unit": "candidate_pair_executions_upper_bound",
+                "planned": config.population_size * config.n_generations * len(task.train),
+                "population_size": config.population_size,
+                "n_generations": config.n_generations,
+                "development_train_pairs": len(task.train),
+                "max_program_length": config.max_program_length,
+            },
+            macro_provenance=no_seed_macros(),
+            checkpoint_selection={
+                "used": True,
+                "split": DEVELOPMENT,
+                "partition": "train_examples",
+                "locked_evaluation_outputs_used": False,
+            },
+        ),
     ))
 
     result = run_gp(task, config)
@@ -387,8 +439,8 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.task_id not in CURATED_TASK_IDS:
-        parser.error(f"{args.task_id!r} is not in the curated task subset: {sorted(CURATED_TASK_IDS)}")
+    if args.task_id not in SEARCH_TASK_IDS:
+        parser.error(f"{args.task_id!r} is not in the curated task subset: {sorted(SEARCH_TASK_IDS)}")
 
     if args.warm_start_from is not None:
         if args.algo != "ppo":

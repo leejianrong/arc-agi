@@ -8,7 +8,7 @@ non-set-op (move/crop/…) task, evidence the one grammar spans families.
 
 import argparse
 
-from arc_env.task_loader import load_task
+from arc_env.tasks import load_task
 from object_env.programs import PROGRAMS, build
 
 

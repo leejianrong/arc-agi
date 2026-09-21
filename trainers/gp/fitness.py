@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from arc_env import actions
 from arc_env import reward as reward_mod
-from arc_env.task_loader import Task
+from arc_env.tasks import SearchTask
 from trainers.gp.genome import Program
 
 Fitness = tuple  # (exact_match_fraction: float, mean_similarity: float)
@@ -56,7 +56,7 @@ class FitnessResult:
     per_pair_exact_match: tuple  # tuple[bool, ...] - for diagnostics/logging
 
 
-def evaluate_fitness(program: Program, task: Task) -> FitnessResult:
+def evaluate_fitness(program: Program, task: SearchTask) -> FitnessResult:
     exact_matches = []
     similarities = []
     for pair in task.train:

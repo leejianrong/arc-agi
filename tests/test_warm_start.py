@@ -17,6 +17,7 @@ from trainers.ppo.warm_start import load_demonstration, pretrain_from_demonstrat
 from viz.backend.server import read_episode
 
 TASK_ID = "67a3c6ac"  # solved by a single vmirror - fast for GP, no `slow` marker needed
+TEST_PROVENANCE = {"fixture": True}
 
 
 def _gp_run(tmp_path):
@@ -36,7 +37,9 @@ def _write_demo_run(tmp_path, task_id: str, program: list) -> object:
     run_dir = tmp_path / "demo-run"
     task = load_task(task_id)
     env = ArcEnv()
-    write_run_meta(run_dir, RunMeta(run_id="demo-run", algo="gp", task_ids=[task_id], config={}))
+    write_run_meta(run_dir, RunMeta(
+        run_id="demo-run", algo="gp", task_ids=[task_id], config={}, provenance=TEST_PROVENANCE
+    ))
     trace = program_to_episode_trace(env, program, task_id, task.train[0])
     _write_episode(run_dir, "best-program", env, task_id, task.train[0], trace)
     return run_dir
@@ -183,7 +186,9 @@ def test_check_warm_start_compatible_rejects_a_non_gp_run(tmp_path):
     from arc_env.episode_log import RunMeta, write_run_meta
 
     run_dir = tmp_path / "ppo-run"
-    write_run_meta(run_dir, RunMeta(run_id="ppo-run", algo="ppo", task_ids=[TASK_ID], config={}))
+    write_run_meta(run_dir, RunMeta(
+        run_id="ppo-run", algo="ppo", task_ids=[TASK_ID], config={}, provenance=TEST_PROVENANCE
+    ))
 
     error = check_warm_start_compatible(TASK_ID, run_dir)
     assert error is not None
@@ -210,7 +215,9 @@ def test_check_warm_start_compatible_accepts_a_matching_llm_seed_run(tmp_path):
     exists", not "produced by the GP trainer specifically"."""
 
     run_dir = tmp_path / "llm-seed-run"
-    write_run_meta(run_dir, RunMeta(run_id="llm-seed-run", algo="llm-seed", task_ids=[TASK_ID], config={}))
+    write_run_meta(run_dir, RunMeta(
+        run_id="llm-seed-run", algo="llm-seed", task_ids=[TASK_ID], config={}, provenance=TEST_PROVENANCE
+    ))
     assert check_warm_start_compatible(TASK_ID, run_dir) is None
 
 
@@ -221,7 +228,9 @@ def test_check_warm_start_compatible_still_rejects_a_human_run(tmp_path):
     decision, not an accidental side effect of broadening this check."""
 
     run_dir = tmp_path / "human-run"
-    write_run_meta(run_dir, RunMeta(run_id="human-run", algo="human", task_ids=[TASK_ID], config={}))
+    write_run_meta(run_dir, RunMeta(
+        run_id="human-run", algo="human", task_ids=[TASK_ID], config={}, provenance=TEST_PROVENANCE
+    ))
     error = check_warm_start_compatible(TASK_ID, run_dir)
     assert error is not None
     assert "not a warm-start-compatible run" in error

@@ -38,7 +38,7 @@ from gymnasium import spaces
 
 from arc_env import actions
 from arc_env import reward as reward_mod
-from arc_env.task_loader import Pair, Task, load_task
+from arc_env.tasks import Pair, Task, load_task
 
 PAD_VALUE = 10  # beyond ARC's 10 colors (0-9); marks padding in the fixed-size observation
 DEFAULT_MAX_STEPS = 25

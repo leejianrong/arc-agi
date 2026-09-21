@@ -27,7 +27,9 @@ def test_rollout_script_produces_a_valid_replayable_episode(tmp_path):
     run_dir = tmp_path / "pytest-run"
     assert (run_dir / "run_meta.json").exists()
     meta = json.loads((run_dir / "run_meta.json").read_text())
-    assert meta["schema_version"] == 1
+    assert meta["schema_version"] == 2
+    assert meta["provenance"]["dataset"]["split"] == "development"
+    assert meta["provenance"]["checkpoint_selection"]["locked_evaluation_outputs_used"] is False
     assert meta["algo"] == "random"
 
     episode_path = run_dir / "episodes" / "67a3c6ac-p0.jsonl"

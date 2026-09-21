@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from arc_env.task_loader import Pair, Task
+from arc_env.tasks import Pair, Task
 
 Grid = tuple[tuple[int, ...], ...]
 

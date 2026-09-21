@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "dataset": {
+    "name": "ARC-AGI-1",
+    "source": "https://github.com/fchollet/ARC-AGI",
+    "version": "vendored-arc-agi-1"
+  },
+  "hash_algorithm": "sha256-length-prefixed-relative-path-and-content-v1",
+  "splits": {
+    "development": {
+      "relative_path": "third_party/ARC-AGI/data/training",
+      "task_count": 400,
+      "sha256": "75e075ff66dbcb7d48202a86edd8c499eb6d78cdf42cd1fe21516a05c55e4c0a",
+      "search_allowed": true,
+      "outputs_locked": false
+    },
+    "locked_evaluation": {
+      "relative_path": "third_party/ARC-AGI/data/evaluation",
+      "task_count": 400,
+      "sha256": "56ee6dd0343b755818999388215a67e2d6ff9c3a76ee3a54758a4d3598260426",
+      "search_allowed": false,
+      "outputs_locked": true
+    }
+  },
+  "search_task_ids": [
+    "007bbfb7", "0d3d703e", "1b2d62fb", "1bfc4729", "1c786137", "1cf80156",
+    "1f85a75f", "1fad071e", "2013d3e2", "23b5c85d", "25ff71a9", "28bf18c6",
+    "2dee498d", "32597951", "3428a4f5", "3af2c5a8", "3c9b0459", "42a50994",
+    "44f52bb0", "46442a0e", "46f33fce", "4c4377d9", "5582e5ca", "5614dbcf",
+    "5bd6f4ac", "5c0a986e", "6150a2bd", "62c24649", "6430c8c4", "67385a82",
+    "67a3c6ac", "67a423a3", "67e8384a", "68b16354", "6d0aefbc", "6d75e8bb",
+    "6fa7a44f", "7468f01a", "74dd1130", "7b7f7511", "7fe24cdd", "80af3007",
+    "88a10436", "88a62173", "8be77c9e", "8d5021e8", "8f2ea7aa", "90c28cc7",
+    "9172f3a0", "928ad970", "94f9d214", "99b1bc43", "9dfd6313", "a416b8f3",
+    "a68b268e", "a740d043", "a79310a0", "a9f96cdd", "aabf363d", "ac0a08a4",
+    "b1948b0a", "b548a754", "b91ae062", "b94a9452", "be94b721", "c1d99e64",
+    "c3e719e8", "c59eb873", "c8f0f002", "c909285e", "c9e6f938", "ce4f8723",
+    "cf98881b", "d0f5fe59", "d10ecb37", "d364b489", "d511f180", "d631b094",
+    "dae9d2b5", "e3497940", "e8593010", "e9afcf9a", "ea32f347", "eb281b96",
+    "ed36ccf7", "f25fbde4", "f25ffba3", "f2829549", "f76d97a5", "fafffa47",
+    "ff805c23"
+  ]
+}
