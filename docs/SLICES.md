@@ -315,6 +315,20 @@ tasks — a head-to-head table.
 **Rests on assumptions:** that grammar-typed search generalizes past the 8
 (V5's risk, now under search rather than hand-written programs).
 
+**Outcome (2026-09-22, `docs/results/training-pass-runpod-v6-20260922b.md`,
+PR #82) — negative, and stopped, not deferred:** `trainers/gp_object` scored
+**0/8** on the exact set-op cluster this slice was built to solve (matching
+flat GP's own 0/8), and is *below parity* on the non-set-op sample (2/8 vs.
+flat GP's 5/8). Both halves of V6's own demo ask came back no. ADR-0029
+commitment #4 (demonstration/curriculum seeding as a follow-up attack on the
+fitness-landscape problem this result points to) is **not pursued** — the
+user decided V6 gets no further attempts, a harder stop than a bounded
+one-more-try. See ADR-0030/F17 (`docs/questions/f17-llm-program-synthesis-pivot.md`):
+this result, together with two other disqualifying facts unrelated to V6
+itself, is part of why the project pivoted off this whole track (V5-V9)
+rather than continuing to iterate on it. V7-V9 below are not started and will
+not be; kept as the historical plan for what this track intended.
+
 ### Test plan
 
 #### End-to-end
@@ -436,3 +450,212 @@ the single-grid agent remains default, with the gap documented.
 #### Unit
 - The results aggregation reproduces a hand-computed solved-count from a small
   fixture of per-task outcomes.
+
+---
+
+# The LLM program-synthesis pivot (V10+, ADR-0030)
+
+**V5-V9 above are frozen as of 2026-09-22 — not deleted, not restarted.** V6's
+own negative result (its Outcome note above), plus two disqualifying facts
+unrelated to V6 (no path to a Kaggle/ARC-AGI-2 entry existed at all, and the
+curated-DSL action space's core growth mechanism can't run against held-out
+tasks), are why the project pivoted rather than continuing to iterate on the
+object-grammar track. Full rationale: `docs/adr/0030-llm-program-synthesis-pivot.md`,
+`docs/questions/f17-llm-program-synthesis-pivot.md`.
+
+The new track: an LLM (hosted API, frozen weights — no test-time training)
+proposes a Python program hypothesized to solve a task from its demonstration
+pairs, the program runs against the task's own training inputs, discrepancies
+between predicted and expected outputs are fed back to the LLM, and it
+revises the program. Repeat to a fixed budget, then apply the final program
+to the task's test input(s). Inference-only, so no GPU training runs and no
+`runpod-jobs` compute provisioning the way V2/V6 needed it — cost is LLM API
+spend instead.
+
+Sequencing is risk-first, same philosophy as V1-V9: get a real, scored
+competition entry path working end to end (even a weak one) before optimizing
+the synthesis loop itself, since "no entry vehicle exists at all" was one of
+the three facts that forced this pivot.
+
+## V10: ARC-AGI-2 vendored + frozen-stack baseline on record
+
+**Delivers:** the data this whole pivot needs to measure against, plus a
+documented, evidence-based answer to "how did the old system actually do on
+the benchmark that matters" instead of an assumption.
+
+**Build plan**
+
+1. Vendor `arcprize/ARC-AGI-2` (Apache-2.0, same JSON task-pair format as
+   ARC-AGI-1: 1,000 public training tasks, 120 public evaluation tasks) under
+   `third_party/ARC-AGI-2/`, read-only, same convention as
+   `third_party/ARC-AGI/`.
+2. Extend (not fork) `arc_eval/` and any shared loader code so a `tasks-dir`
+   can point at either `third_party/ARC-AGI/data/*` or
+   `third_party/ARC-AGI-2/data/*` uniformly.
+3. Run the frozen `arc_env`/`trainers/{ppo,gp}` stack, unmodified, against
+   ARC-AGI-2's 120 public evaluation tasks (no re-curation, no new ADRs
+   adding actions for them — that would defeat the point) and record the
+   result under `docs/results/`.
+
+**Demo:** `python -m arc_eval --tasks-dir third_party/ARC-AGI-2/data/evaluation
+--submission <old-stack-output>.json` produces a real, low (expected
+near-zero) pass@1/pass@2 number, written up alongside the reasoning for why —
+the evidence backing this pivot's own ADR, not just an assertion in it.
+
+**Rests on assumptions:** none new — `arc_eval`'s scoring boundary already
+exists and already speaks the right submission shape; this slice is data
+plus a measurement, not new mechanism.
+
+### Test plan
+
+#### End-to-end
+- `arc_eval` scores a small fixture of ARC-AGI-2-shaped tasks (train/test
+  pairs, same JSON shape as ARC-AGI-1) identically to how it already scores
+  ARC-AGI-1 fixtures — confirms the loader generalizes across both datasets
+  by construction, not by a parallel code path.
+
+#### Integration
+- The frozen-stack baseline run against the real 120-task public evaluation
+  set completes and produces a submission file `arc_eval` can score without
+  modification.
+
+#### Unit
+- `third_party/ARC-AGI-2/` task files parse into the same in-memory shape
+  `third_party/ARC-AGI/` files already do.
+
+## V11: Kaggle submission pipeline
+
+**Delivers:** the actual, currently-missing entry vehicle — a public,
+open-sourceable notebook (or a thin notebook wrapper around a scripted
+pipeline) that turns any solver satisfying `arc_eval`'s `Challenge` interface
+into a scored Kaggle submission.
+
+**Build plan**
+
+1. A submission-format writer: given a solver callable, produce the
+   `attempt_1`/`attempt_2`-shaped JSON Kaggle's ARC-AGI-2/3 tracks expect,
+   for every test input across every task in a directory — reusing
+   `arc_eval`'s existing boundary and shapes, not a second implementation of
+   them.
+2. A minimal notebook (or a script structured so a notebook can thinly wrap
+   it) that runs end to end inside Kaggle's own notebook environment
+   constraints (no assumption of this project's local `uv`/`make` tooling
+   being present).
+3. A dry run against the V10 baseline solver first (even though it's frozen
+   and expected to score near-zero) — proves the pipeline itself works
+   before the real LLM-synthesis solver exists, isolating "does the
+   submission mechanism work" from "does the new solver work."
+
+**Demo:** a notebook run, using the V10 frozen-stack solver as a placeholder,
+produces a submission file scorable by `arc_eval` with no manual
+post-processing.
+
+**Rests on assumptions:** that Kaggle's notebook environment doesn't need
+anything beyond what a from-scratch notebook can install/import — unverified
+until a real notebook is drafted; if wrong, only the packaging changes, not
+`arc_eval`'s scoring contract.
+
+### Test plan
+
+#### End-to-end
+- The full pipeline (solver → submission JSON → `arc_eval` scoring) runs
+  against a small fixture task set with a known expected score.
+
+#### Integration
+- The submission writer's JSON validates against the exact shape
+  `arc_eval/evaluator.py` already parses, for tasks with multiple test
+  inputs and variable output shapes (the same edge cases the existing
+  evaluator's docstring already calls out).
+
+## V12: LLM propose→execute→diff→refine synthesis loop
+
+**Delivers:** the real new solver — ADR-0030's core mechanism, replacing the
+old system's curated action space and per-task RL/GP training with an
+inference-only program-synthesis loop.
+
+**Build plan**
+
+1. A prompt that gives the LLM a task's demonstration input/output pairs and
+   asks for a Python function (plain Python/numpy per ADR-0030's assumed
+   default A1; `third_party/arc-dsl/` available as an optional import, not
+   mandatory).
+2. A sandboxed executor that runs the proposed program against the task's
+   own training inputs only (never the hidden test outputs — reuses
+   `arc_eval`'s blind boundary) and captures either the predicted grids or a
+   structured error (exception, wrong shape, wrong cells at which
+   positions).
+3. A feedback formatter that turns an execution result into concrete,
+   structured input for the next LLM call — not a bare "wrong, try again."
+4. A fixed per-task attempt/token budget (ADR-0030 A3); on exhaustion, submit
+   the best-scoring program found so far (by training-pair match fraction),
+   not a blank/default answer.
+5. Provider/model choice and per-task cost budget (ADR-0030 A2) — a
+   provisional choice to unblock this slice, revisited once real cost data
+   exists.
+
+**Demo:** the loop solves a held-out ARC-AGI-1 evaluation-split task end to
+end from its own demonstration pairs alone, logging every attempted program
+and the feedback that drove each revision — replayable evidence of the
+propose→execute→diff→refine cycle actually happening, not just a final
+answer.
+
+**Rests on assumptions:** that iterative execution-feedback refinement
+meaningfully improves over single-shot proposal within a practical budget —
+the central open risk this slice exists to test, same role V2 played for
+whether PPO learns anything at all.
+
+### Test plan
+
+#### End-to-end
+- The loop reaches an exact match on a fixture task deliberately chosen to
+  need at least one refinement round (the first proposal is wrong, a later
+  one is right) — proves the feedback loop does something, not just that a
+  single LLM call can get lucky.
+
+#### Integration
+- The executor never lets a proposed program see a task's hidden test
+  outputs, verified the same way `arc_eval`'s existing boundary is tested.
+- A program that raises an exception, times out, or returns the wrong shape
+  produces a structured (not crash-the-harness) feedback message.
+
+#### Unit
+- The submission-format writer output for this solver validates identically
+  to V11's placeholder-solver output — no special-casing per solver type.
+
+## V13: Score, iterate, and the north-star metric switch
+
+**Delivers:** the first real, trackable numbers on the metrics that now
+matter, replacing "curated ARC-AGI-1 tasks solved" for good.
+
+**Build plan**
+
+1. Run V12's solver against the full held-out ARC-AGI-1 evaluation split and
+   record pass@1/pass@2 via `arc_eval` — the near-term north-star metric
+   (ADR-0030).
+2. Run it against ARC-AGI-2's 120 public evaluation tasks (vendored in V10)
+   and record the same — the metric that actually matters for the
+   competition goal.
+3. Compare against the V10 frozen-stack baseline on both, in one combined
+   results doc under `docs/results/`, same shape as prior full-pass records.
+4. Decide the next iteration lever from where the numbers actually land
+   (prompt/feedback design, attempt-budget tuning, or — if this plateaus well
+   below competitive — reopening the test-time-training question F17
+   explicitly left as a future fork, not a closed door).
+
+**Demo:** a results table with three columns (frozen-stack baseline, new
+LLM-synthesis solver) across two benchmarks (ARC-AGI-1 eval split,
+ARC-AGI-2 public eval) — the pivot's own scorecard.
+
+**Rests on assumptions:** none beyond V10-V12 already landing; this slice is
+measurement and a decision point, not new mechanism.
+
+### Test plan
+
+#### End-to-end
+- The full-pass harness runs both the frozen-stack baseline and the new
+  solver across both benchmarks and emits the combined results doc a script
+  can check the reported numbers against.
+
+#### Unit
+- The results aggregation reproduces a hand-computed pass@1/pass@2 from a
+  small fixture of per-task outcomes, for both benchmarks.
