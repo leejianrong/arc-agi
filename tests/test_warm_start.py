@@ -41,7 +41,7 @@ def _write_demo_run(tmp_path, task_id: str, program: list) -> object:
         run_id="demo-run", algo="gp", task_ids=[task_id], config={}, provenance=TEST_PROVENANCE
     ))
     trace = program_to_episode_trace(env, program, task_id, task.train[0])
-    _write_episode(run_dir, "best-program", env, task_id, task.train[0], trace)
+    _write_episode(run_dir, "best-program", env.max_steps, task_id, task.train[0], trace)
     return run_dir
 
 

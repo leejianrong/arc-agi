@@ -223,7 +223,7 @@ def write_seed_episode(task_id: str, sequence: Sequence, run_dir: Path, pair_ind
         ),
     ))
     trace = program_to_episode_trace(env, program, task_id, pair)
-    _write_episode(run_dir, "best-program", env, task_id, pair, trace)
+    _write_episode(run_dir, "best-program", env.max_steps, task_id, pair, trace)
 
     return {"run_dir": str(run_dir), "success": trace["success"], "total_reward": trace["total_reward"]}
 

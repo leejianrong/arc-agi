@@ -33,12 +33,20 @@ import torch
 
 from arc_env.env import DEFAULT_MAX_STEPS, ENDPOINT_TERMINATION, ArcEnv
 from arc_env.episode_log import EpisodeWriter, RunMeta, write_run_meta
-from arc_env.provenance import build_run_provenance, file_sha256, no_seed_macros
+from arc_env.provenance import (
+    build_run_provenance,
+    file_sha256,
+    no_seed_macros,
+    object_action_library,
+)
 from arc_env.re_arc import GenerationError, generate_pair
 from arc_env.splits import DEVELOPMENT, SEARCH_TASK_IDS
 from arc_env.tasks import load_search_task
 from trainers.gp.evolve import GPConfig, run_gp
 from trainers.gp.replay import program_to_episode_trace
+from trainers.gp_object.evolve import GPConfig as GPObjectConfig
+from trainers.gp_object.evolve import run_gp as run_gp_object
+from trainers.gp_object.replay import genome_to_episode_trace
 from trainers.ppo.network import ActorCritic
 from trainers.ppo.ppo import PPOConfig, ppo_update
 from trainers.ppo.rollout import RolloutCollector, evaluate_episode
@@ -110,7 +118,10 @@ def load_checkpoint(path: Path, network: ActorCritic, optimizer: torch.optim.Opt
 # allowlist (not simply removing the check) keeps out anything that isn't a
 # deliberately-produced demonstration run (e.g. a plain PPO run, or "human"
 # from `viz/backend/play.py`'s ADR-0017 write path - not wired up here, a
-# separate future decision, not this one).
+# separate future decision, not this one). "gp_object" (SLICES.md V6) is
+# deliberately excluded too - `train_ppo` below only knows how to demonstrate
+# into the flat `arc_env.actions` space, so an object-grammar genome can't
+# warm-start it; object-GP -> object-PPO warm start is V7's job.
 WARM_START_COMPATIBLE_ALGOS = {"gp", "llm-seed"}
 
 
@@ -142,12 +153,13 @@ def append_metrics(run_dir: Path, row: dict) -> None:
         f.write(json.dumps(row) + "\n")
 
 
-def _write_episode(run_dir: Path, episode_id: str, env: ArcEnv, task_id: str, pair, result: dict) -> None:
-    """`result` is the `{"steps", "success", "total_reward"}` shape both
-    `evaluate_episode` (PPO) and `program_to_episode_trace` (GP) return."""
+def _write_episode(run_dir: Path, episode_id: str, max_steps: int, task_id: str, pair, result: dict) -> None:
+    """`result` is the `{"steps", "success", "total_reward"}` shape
+    `evaluate_episode` (PPO), `program_to_episode_trace` (GP), and
+    `genome_to_episode_trace` (object-grammar GP) all return."""
 
     with EpisodeWriter(run_dir, episode_id) as writer:
-        writer.start(task_id=task_id, pair_index=0, input_grid=pair.input, target_grid=pair.output, max_steps=env.max_steps)
+        writer.start(task_id=task_id, pair_index=0, input_grid=pair.input, target_grid=pair.output, max_steps=max_steps)
         for i, step in enumerate(result["steps"]):
             writer.step(
                 step=i,
@@ -176,7 +188,7 @@ def log_eval_episode(run_dir: Path, env: ArcEnv, network: ActorCritic, task_id: 
     task = load_search_task(task_id)
     pair = task.train[0]
     result = evaluate_episode(env, network, task_id, pair)
-    _write_episode(run_dir, f"eval-update{update:05d}", env, task_id, pair, result)
+    _write_episode(run_dir, f"eval-update{update:05d}", env.max_steps, task_id, pair, result)
     return result
 
 
@@ -383,7 +395,7 @@ def train_gp(task_id: str, run_dir: Path, config: GPConfig, max_steps: int) -> N
     # panels.
     for generation, program in result.snapshots:
         trace = program_to_episode_trace(env, program, task_id, task.train[0])
-        _write_episode(run_dir, f"{generation:05d}-gen", env, task_id, task.train[0], trace)
+        _write_episode(run_dir, f"{generation:05d}-gen", env.max_steps, task_id, task.train[0], trace)
 
     # Kept as its own, unchanged-name episode (not just the last snapshot
     # above, even though they're equivalent by construction - see
@@ -392,16 +404,85 @@ def train_gp(task_id: str, run_dir: Path, config: GPConfig, max_steps: int) -> N
     # `episode_id="best-program"` - renaming or dropping this would silently
     # break `--warm_start_from`.
     trace = program_to_episode_trace(env, result.best_program, task_id, task.train[0])
-    _write_episode(run_dir, "best-program", env, task_id, task.train[0], trace)
+    _write_episode(run_dir, "best-program", env.max_steps, task_id, task.train[0], trace)
 
     print(f"\nGP finished after {result.n_generations_run} generation(s): "
           f"best_fitness={result.best_fitness[0]:.2f}, best_similarity={result.best_fitness[1]:.2f}")
     print(f"best program: {result.best_program}")
 
 
+def train_gp_object(task_id: str, run_dir: Path, config: GPObjectConfig, max_steps: int) -> None:
+    """`--algo gp_object` (SLICES.md V6): evolves a grammar-typed genome
+    (`trainers.gp_object`) over `object_env`'s typed action grammar instead
+    of the flat `arc_env.actions` space `train_gp` above uses. Mirrors
+    `train_gp`'s structure closely (blind task loading, provenance, per-
+    generation metrics, ADR-0014 snapshots + `best-program`) so the
+    visualizer needs no object-track-specific code to replay it.
+
+    Deliberately not warm-start-compatible yet (`WARM_START_COMPATIBLE_
+    ALGOS` is unchanged) - object-GP -> object-PPO warm start is V7's job.
+    """
+
+    task = load_search_task(task_id)
+
+    write_run_meta(run_dir, RunMeta(
+        run_id=run_dir.name, algo="gp_object", task_ids=[task_id],
+        config={"max_steps": max_steps, "program_endpoint": "exact_match_or_static_end", **config.to_dict()},
+        provenance=build_run_provenance(
+            task_ids=[task_id],
+            seed=config.seed,
+            compute_budget={
+                "unit": "candidate_pair_executions_upper_bound",
+                "planned": config.population_size * config.n_generations * len(task.train),
+                "population_size": config.population_size,
+                "n_generations": config.n_generations,
+                "development_train_pairs": len(task.train),
+                "max_program_length": config.max_program_length,
+            },
+            macro_provenance=no_seed_macros(action_catalog="object_env.actions.ACTIONS"),
+            checkpoint_selection={
+                "used": True,
+                "split": DEVELOPMENT,
+                "partition": "train_examples",
+                "locked_evaluation_outputs_used": False,
+            },
+            action_library=object_action_library(),
+        ),
+    ))
+
+    result = run_gp_object(task, config)
+
+    for record in result.history:
+        append_metrics(run_dir, {
+            "update": record.generation,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "n_episodes": config.population_size,
+            "mean_reward": record.best_similarity,
+            "success_rate": record.best_fitness,
+            "population_mean_fitness": record.population_mean_fitness,
+        })
+        print(f"generation {record.generation:5d} | best_fitness {record.best_fitness:.2f} | "
+              f"best_similarity {record.best_similarity:.2f} | pop_mean {record.population_mean_fitness:.3f}")
+
+    for generation, genome in result.snapshots:
+        trace = genome_to_episode_trace(genome, task.train[0])
+        _write_episode(run_dir, f"{generation:05d}-gen", max_steps, task_id, task.train[0], trace)
+
+    # Kept as its own, unchanged-name episode for the same reason `train_gp`
+    # keeps one: not currently a warm-start source (see docstring), but this
+    # keeps naming parity with the flat-space GP trainer for the
+    # visualizer's earliest/latest-episode picker.
+    trace = genome_to_episode_trace(result.best_genome, task.train[0])
+    _write_episode(run_dir, "best-program", max_steps, task_id, task.train[0], trace)
+
+    print(f"\nobject-grammar GP finished after {result.n_generations_run} generation(s): "
+          f"best_fitness={result.best_fitness[0]:.2f}, best_similarity={result.best_fitness[1]:.2f}")
+    print(f"best genome: {result.best_genome}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--algo", choices=["ppo", "gp"], default="ppo")
+    parser.add_argument("--algo", choices=["ppo", "gp", "gp_object"], default="ppo")
     parser.add_argument("--task_id", required=True)
     parser.add_argument("--run_id", default=None, help="Defaults to a timestamp.")
     parser.add_argument("--max_steps", type=int, default=DEFAULT_MAX_STEPS)
@@ -427,7 +508,7 @@ def main() -> None:
     ppo_group.add_argument("--warm_start_batch_size", type=int, default=32)
     ppo_group.add_argument("--warm_start_lr", type=float, default=1e-3)
 
-    gp_group = parser.add_argument_group("--algo gp")
+    gp_group = parser.add_argument_group("--algo gp / gp_object")
     gp_group.add_argument("--population_size", type=int, default=200)
     gp_group.add_argument("--n_generations", type=int, default=100)
     gp_group.add_argument("--max_program_length", type=int, default=6)
@@ -460,6 +541,14 @@ def main() -> None:
             elitism=args.elitism, seed=args.seed, snapshot_interval=args.snapshot_interval,
         )
         train_gp(task_id=args.task_id, run_dir=run_dir, config=config, max_steps=args.max_steps)
+    elif args.algo == "gp_object":
+        config = GPObjectConfig(
+            population_size=args.population_size, n_generations=args.n_generations,
+            max_program_length=args.max_program_length, tournament_size=args.tournament_size,
+            crossover_rate=args.crossover_rate, mutation_rate=args.mutation_rate,
+            elitism=args.elitism, seed=args.seed, snapshot_interval=args.snapshot_interval,
+        )
+        train_gp_object(task_id=args.task_id, run_dir=run_dir, config=config, max_steps=args.max_steps)
     else:
         config = PPOConfig(lr=args.lr, n_epochs=args.n_epochs, minibatch_size=args.minibatch_size)
         train_ppo(
