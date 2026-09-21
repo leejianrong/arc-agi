@@ -32,8 +32,21 @@ all).
 
 from arc_env import reward as reward_mod
 from arc_env.tasks import Pair
+from object_env.colors import DerivedColor
 from object_env.state import ObjState
 from trainers.gp_object.genome import Genome, to_program
+
+
+def _json_safe_args(args: dict) -> dict:
+    """A step's `args` can hold a `DerivedColor` (a COLOR param resolved
+    against live state inside `Action.fn`, not a plain int) - not
+    JSON-serializable as-is. Log its query string (e.g. "most(grid)")
+    rather than re-deriving the concrete color here: some actions resolve a
+    DerivedColor against a swapped-in region grid, not the top-level one
+    (`_select_color`), so re-resolving generically from this replay's own
+    state would silently disagree with what `Action.fn` actually used."""
+
+    return {k: (str(v) if isinstance(v, DerivedColor) else v) for k, v in args.items()}
 
 
 def genome_to_episode_trace(genome: Genome, pair: Pair) -> dict:
@@ -59,7 +72,7 @@ def genome_to_episode_trace(genome: Genome, pair: Pair) -> dict:
         steps.append({
             "grid_before": grid_before,
             "action_name": step.action.name,
-            "action_args": step.args,
+            "action_args": _json_safe_args(step.args),
             "grid_after": grid_after,
             "reward": result.reward,
             "terminated": False,
