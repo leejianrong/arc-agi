@@ -1,6 +1,15 @@
 # ARC-AGI RL/Evolutionary Agent: Plan
 
-Status: MVP shipped (V1-V4 all landed - see `SLICES.md`; PRs #1-#6)
+Status: MVP shipped (V1-V4 all landed - see `SLICES.md`; PRs #1-#6). **As of
+2026-09-22 (ADR-0030, F17 in `QUESTIONS.md`), this milestone's own track — the
+curated-DSL RL/GP action space, and the ADR-0029 object-grammar rewrite that
+followed it — is frozen, not deleted.** The project's goal changed to
+competing seriously in ARC Prize 2026 (including the Paper Track), which that
+architecture is structurally disqualified from entering (see ADR-0030's
+Context for the three specific reasons). Everything below this line is kept
+as the historical record of what V1-V4 actually built and why; it is not
+rewritten. The active plan going forward is in `SLICES.md`'s new
+"LLM program-synthesis pivot" section.
 
 ## Problem
 
@@ -51,16 +60,25 @@ decision-maker.
   and a training-metrics dashboard (ADR-0007).
 - `re-arc`-generated task variations as an expanded training curriculum.
 
-**Out.**
+**Out** *(as of this milestone, V1-V4; reversed on three of four points by
+ADR-0030/F17 2026-09-22 — see that ADR and `SLICES.md`'s pivot section for
+the current scope, not restated here per this doc's append-only convention)*.
 
-- ARC-AGI-2 (this project targets ARC-AGI-1 only, per the vendored dataset).
-- Kaggle/private-test-set submission tooling — the private test set isn't
+- ~~ARC-AGI-2 (this project targets ARC-AGI-1 only, per the vendored
+  dataset).~~ **Reversed 2026-09-22 (ADR-0030): ARC-AGI-2 is now in scope.**
+- ~~Kaggle/private-test-set submission tooling — the private test set isn't
   available to us; success is measured against the public
-  training/evaluation splits.
+  training/evaluation splits.~~ **Reversed 2026-09-22 (ADR-0030): a Kaggle
+  submission pipeline is now in scope — required for the project's new goal.**
 - Distributed or multi-GPU training — this machine is CPU-only (16 cores, no
-  CUDA), and nothing here needs a cluster.
-- Any LLM-in-the-loop approach — deliberately out of scope by the project's
-  own premise (RL/evolutionary, not language-model-based).
+  CUDA), and nothing here needs a cluster. **Still out post-pivot, though now
+  moot rather than a hard constraint: the new LLM-synthesis track is
+  inference-API-bound, not compute-bound (ADR-0030).**
+- ~~Any LLM-in-the-loop approach — deliberately out of scope by the project's
+  own premise (RL/evolutionary, not language-model-based).~~ **Reversed
+  2026-09-22 (ADR-0030): LLM-driven program synthesis is now the project's
+  primary method.** Test-time training/fine-tuning specifically stays out for
+  now (user, 2026-09-22: deliberately deferred, not this pivot).
 - Neuroevolution (CMA-ES/ES) — documented as a future option (ADR-0003) if
   genetic programming underperforms, not built this milestone.
 - Behavior-cloning warm-start of RL from GP-found programs — the shared

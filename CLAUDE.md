@@ -1,8 +1,19 @@
 # arc-agi
 
-Revamping this project to tackle ARC-AGI-1 with a reinforcement-learning and/or
-evolutionary-algorithm agent, plus a local visualizer to watch training runs and
-watch a trained agent "play" a task step-by-step like a game.
+**Pivoted 2026-09-22 (ADR-0030, `docs/questions/f17-llm-program-synthesis-pivot.md`):**
+the goal is now competing seriously in ARC Prize 2026 (ARC-AGI-2/3 on Kaggle,
+including the Paper Track), via LLM-driven Python program synthesis with an
+execution-feedback refinement loop — inference-only, no test-time
+training/fine-tuning. The paragraph below and everything it describes
+(`arc_env/`, `trainers/{ppo,gp,gp_object}/`, `object_env/`, the training half
+of `viz/`) is the **frozen, superseded** prior track — kept in the repo and
+still tested, but no longer where new work lands. See `docs/SLICES.md`'s
+"LLM program-synthesis pivot" section for the active plan.
+
+Originally: revamping this project to tackle ARC-AGI-1 with a
+reinforcement-learning and/or evolutionary-algorithm agent, plus a local
+visualizer to watch training runs and watch a trained agent "play" a task
+step-by-step like a game.
 
 Planning artifacts (read these before making architectural changes):
 - `docs/QUESTIONS.md` — decision register: every open question, its status, and
@@ -26,7 +37,10 @@ Planning artifacts (read these before making architectural changes):
   synthetic-instance generators). Two deliberate deviations from a verbatim
   vendor (own `dsl.py` kept separate from `arc-dsl`'s; trimmed
   `matplotlib`-free `utils.py`) — see that dir's README.
-- `arc_env/` — the Gymnasium-style ARC environment: the curated
+- `arc_env/` — **frozen as of ADR-0030 (2026-09-22): superseded as the active
+  development track by the LLM program-synthesis pivot (`docs/questions/f17-llm-program-synthesis-pivot.md`).
+  Kept in place, tests still run in CI as a regression safety net; no new
+  ADRs/actions/tasks land here.** The Gymnasium-style ARC environment: the curated
   `arc-dsl`-primitive action space (`actions.py` — 85 actions as of
   ADR-0026: structural transforms including the 4 self-concatenation
   actions, `fill_cell`, `canvas`, `canvas_mostcolor`,
@@ -207,19 +221,26 @@ Planning artifacts (read these before making architectural changes):
   trajectory/run-meta writers (`episode_log.py`), per ADR-0004/ADR-0006.
   `info["exact_match"]`, not the broader `terminated`, is what "solved"
   means once `commit` can end an episode without matching.
-- `trainers/ppo/` — the ADR-0008 policy/value network (`network.py`),
+- `trainers/ppo/` — **frozen as of ADR-0030 (2026-09-22)**, same disposition
+  as `arc_env/` above. The ADR-0008 policy/value network (`network.py`),
   rollout collection with truncation-aware GAE (`rollout.py`, `gae.py`),
   the clipped-surrogate PPO update (`ppo.py`), and the ADR-0009 opt-in
   GP-to-PPO behavior-cloning warm-start (`warm_start.py`,
   `train.py --algo ppo --warm_start_from <gp_run_dir>`).
-- `trainers/gp/` — the ADR-0003 evolutionary trainer: DSL-program genomes
+- `trainers/gp/` — **frozen as of ADR-0030 (2026-09-22)**, same disposition
+  as `arc_env/` above; so is `trainers/gp_object/` (V6's grammar-typed GP
+  trainer over `object_env/`, PR #80/81 — see `object_env/`'s bullet below
+  for its negative result). The ADR-0003 evolutionary trainer: DSL-program genomes
   as flat gene lists (`genome.py` — no separate AST, same non-compositional
   action space PPO uses), fitness evaluation reusing `arc_env`'s executor
   and reward similarity (`fitness.py`), the generational loop (`evolve.py` —
   per ADR-0014, also snapshots each generation's own best program at
   `GPConfig.snapshot_interval`, not just the final one), and program replay
   for logging (`replay.py`).
-- `object_env/` — the V5 object substrate + **typed action grammar**
+- `object_env/` — **frozen as of ADR-0030 (2026-09-22): V6's negative result
+  (0/8 on its own target cluster) is part of why this whole track (V5-V9)
+  was stopped rather than iterated on further — see
+  `docs/questions/f17-llm-program-synthesis-pivot.md`.** The V5 object substrate + **typed action grammar**
   (ADR-0029, SLICES.md V5), a *new parallel track* to the shipped `arc_env/`
   single-grid agent (which stays the benchmark until V9 cutover). It must NOT
   be imported *by* `arc_env/`; reuse flows the other way (`object_env` leans on
@@ -256,7 +277,10 @@ Planning artifacts (read these before making architectural changes):
   (E2E, the object-track analogue of `test_dsl_regression.py`) and
   `tests/test_object_grammar.py` (grammar construction + enumerator validity,
   segmentation/attribute/derived-color units, fast discovery smoke).
-- `train.py` — `train.py --algo ppo|gp --task_id <id>`: trains one
+- `train.py` — **frozen as of ADR-0030 (2026-09-22)**, same disposition as
+  `arc_env/` above — the new LLM program-synthesis solver (SLICES.md V10+)
+  is a separate entrypoint, not a `--algo` value added here.
+  `train.py --algo ppo|gp --task_id <id>`: trains one
   dedicated PPO policy (ADR-0008) or evolves one dedicated GP population
   (ADR-0003) per task, logging to `runs/<run_id>/` in the same shape either
   way. GP now logs one `episodes/<id>.jsonl` per snapshotted generation
@@ -305,7 +329,10 @@ Planning artifacts (read these before making architectural changes):
   already transcribes from `third_party/ARC-AGI/apps/css/common.css`
   (ADR-0007) — falls back to a plain bracketed-digit rendering when stdout
   isn't a TTY, `--no-color` is passed, or `NO_COLOR` is set.
-- `viz/backend/` — local HTTP server exposing `runs/` as JSON, including
+- `viz/backend/` — **the run-browsing/dashboard/replay routes are frozen as
+  of ADR-0030 (2026-09-22)** (they visualize the now-frozen `arc_env`/
+  `trainers` tracks); `play.py`'s human-demonstration write path is a
+  separate concern F16 still owns, not resolved by that ADR. Local HTTP server exposing `runs/` as JSON, including
   `metrics.jsonl` (`server.py`); also serves `viz/frontend/dist` so one
   process runs the whole visualizer. The run-browsing/dashboard routes are
   read-only, per ADR-0006/ADR-0007. `play.py` (F13 Stage 0, ADR-0017) is a
@@ -319,7 +346,9 @@ Planning artifacts (read these before making architectural changes):
   `server.py` only dispatches HTTP into `play.py`'s functions; `task_id`/
   `run_id` are validated against a path-traversal allowlist before either
   touches the filesystem.
-- `viz/frontend/` — TypeScript + Canvas UI: training dashboard
+- `viz/frontend/` — **the training-dashboard/replay UI is frozen as of
+  ADR-0030 (2026-09-22)**, same disposition as `viz/backend/` above; the Play
+  panel is F16's separate concern. TypeScript + Canvas UI: training dashboard
   (reward/success-rate curves), dual side-by-side episode replay for
   early- vs. late-training comparison (Vite + Vitest), per ADR-0007, and a
   "Play" panel (`play.ts`, F13 Stage 0/ADR-0017) driving a live `/api/play/*`
