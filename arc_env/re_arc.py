@@ -22,7 +22,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from arc_env.task_loader import CURATED_TASK_IDS, Pair
+from arc_env.splits import SEARCH_TASK_IDS
+from arc_env.tasks import Pair
 
 _RE_ARC_DIR = Path(__file__).resolve().parent.parent / "third_party" / "re-arc"
 
@@ -64,7 +65,7 @@ def generate_pair(task_id: str, diff_lb: float = 0.0, diff_ub: float = 1.0) -> P
     1 = hardest, per-task-defined) - both 0 and 1 are always valid.
     """
 
-    if task_id not in CURATED_TASK_IDS:
+    if task_id not in SEARCH_TASK_IDS:
         raise ValueError(f"{task_id!r} is not in the curated task subset")
 
     generator = getattr(generators, f"generate_{task_id}")

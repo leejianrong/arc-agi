@@ -26,7 +26,7 @@ pass's results survived only in a memory note because nothing committed them).
 
 'Solved' means:
   - gp:  final metrics row `success_rate` (GP's best_fitness) == 1.0
-  - ppo: final metrics row `eval_success` True — the fixed held-out pair's
+  - ppo: final metrics row `eval_success` True — the fixed development-train pair's
          greedy-policy `info["exact_match"]` (per CLAUDE.md), NOT the noisy
          per-rollout `success_rate`. 'ever' columns also report whether any
          eval row was ever solved (the last pass saw PPO reach a working
@@ -50,7 +50,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from arc_env.task_loader import CURATED_TASK_IDS
+from arc_env.splits import SEARCH_TASK_IDS
 
 RUNS_DIR = REPO / "runs"
 RESULTS_DIR = REPO / "docs" / "results"
@@ -264,15 +264,15 @@ def main() -> None:
         p.error("ppo-warm needs gp in --arms (it warm-starts from the gp run)")
 
     if args.tasks == "all":
-        tasks = sorted(CURATED_TASK_IDS)
+        tasks = sorted(SEARCH_TASK_IDS)
     elif args.tasks == "calib":
-        tasks = [t for t in CALIB_PREFERENCE if t in CURATED_TASK_IDS]
-        dropped = [t for t in CALIB_PREFERENCE if t not in CURATED_TASK_IDS]
+        tasks = [t for t in CALIB_PREFERENCE if t in SEARCH_TASK_IDS]
+        dropped = [t for t in CALIB_PREFERENCE if t not in SEARCH_TASK_IDS]
         if dropped:
             print(f"note: calib tasks not curated, dropped: {dropped}")
     else:
         tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
-    bad = [t for t in tasks if t not in CURATED_TASK_IDS]
+    bad = [t for t in tasks if t not in SEARCH_TASK_IDS]
     if bad:
         p.error(f"not curated: {bad}")
 

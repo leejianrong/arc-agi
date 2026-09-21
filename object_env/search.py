@@ -10,7 +10,8 @@ grammar's own type-valid enumeration and scored with the shipped dense reward
    the shallow families (move / crop / canvas / transform) in well under a
    second — where a flat pick-any-of-N genome plateaus.
 
-2. `arg_search` within a grammar-*derived* skeleton — the faithful re-proof of
+2. `--fixture-arg-search` within a grammar-*derived* skeleton — an explicitly
+   non-blind diagnostic and faithful re-proof of
    the POC's set-op 8/8, generalized to every fixture family. A deep 5-step
    program is a needle in ~170k type-valid depth-5 skeletons, so uniform
    from-scratch discovery of it is the deceptive-landscape problem ADR-0029
@@ -20,6 +21,7 @@ grammar's own type-valid enumeration and scored with the shipped dense reward
    rediscovers the exact colors/ops/directions in a few thousand samples.
 
     uv run python -m object_env.search [--budget N] [--seeds K]
+    uv run python -m object_env.search --fixture-arg-search  # non-blind diagnostic
 
 Runs in seconds locally, serially, within the RAM budget.
 """
@@ -30,10 +32,9 @@ import statistics
 import time
 
 from arc_env.reward import compute_diff_mask, similarity
-from arc_env.task_loader import load_task
+from arc_env.tasks import load_search_task
 from object_env.actions import ACTIONS
 from object_env.grammar import enumerate_skeletons, iter_fills, skeleton_of
-from object_env.programs import SET_OP_TASK_IDS, TARGET_TASK_IDS, build
 
 # shallow families discoverable from scratch (depth <= 3, low arity); the rest
 # are the deep multi-step programs proven via skeleton arg-search below.
@@ -101,7 +102,7 @@ def discover(task, budget: int, seed: int, max_depth: int = 3, per_skeleton: int
 def _report(label, task_ids, run, seeds):
     solved = 0
     for tid in task_ids:
-        task = load_task(tid)
+        task = load_search_task(tid)
         t0 = time.time()
         outs = [run(task, s) for s in range(seeds)]
         wins = [o for o in outs if o[0]]
@@ -119,17 +120,29 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--budget", type=int, default=80_000)
     ap.add_argument("--seeds", type=int, default=3)
+    ap.add_argument(
+        "--fixture-arg-search",
+        action="store_true",
+        help="also run the non-blind task-specific fixture-skeleton diagnostic",
+    )
     args = ap.parse_args()
 
     print("[1] type-directed discovery from scratch (shallow families)\n")
     _report("discovered from scratch", FROM_SCRATCH_TASK_IDS,
             lambda task, s: discover(task, args.budget, s), args.seeds)
 
-    print("[2] arg-search within grammar-derived skeletons (all families)\n")
+    if not args.fixture_arg_search:
+        return 0
+
+    # Import task-specific known programs only after the caller explicitly
+    # requests fixture-guided diagnostics. Blind discovery never loads them.
+    from object_env.programs import SET_OP_TASK_IDS, TARGET_TASK_IDS, build
+
+    print("[2] NON-BLIND fixture arg-search within grammar-derived skeletons (all families)\n")
     solved = 0
     for tid in TARGET_TASK_IDS:
         skeleton = skeleton_of(build(tid))  # grammar-valid by construction (build type-checks)
-        task = load_task(tid)
+        task = load_search_task(tid)
         t0 = time.time()
         outs = [arg_search(task, skeleton, args.budget, s) for s in range(args.seeds)]
         wins = [o for o in outs if o[0]]

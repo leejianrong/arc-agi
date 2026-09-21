@@ -46,7 +46,8 @@ from pathlib import Path
 from arc_env import actions
 from arc_env.env import ENDPOINT_TERMINATION, ArcEnv
 from arc_env.episode_log import EpisodeWriter, RunMeta, grid_to_list, write_run_meta
-from arc_env.task_loader import load_task
+from arc_env.provenance import build_run_provenance
+from arc_env.tasks import load_task
 
 # A human isn't bound by an RL rollout budget the same way a trainer's
 # episodes are (`arc_env.env.DEFAULT_MAX_STEPS` is 25) - generous, named
@@ -135,7 +136,7 @@ def start_session(task_id, pair_index=0) -> dict:
 
     try:
         task = load_task(task_id)
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError):
         raise PlayError(400, f"unknown task_id: {task_id}") from None
 
     if not (0 <= pair_index < len(task.train)):
@@ -261,6 +262,22 @@ def save_session(session_id: str, runs_dir: Path, run_id=None) -> dict:
                     "max_steps": MAX_STEPS_PLAY,
                     "termination_mode": session.env.termination_mode,
                 },
+                provenance=build_run_provenance(
+                    task_ids=[session.task_id],
+                    seed=None,
+                    compute_budget={
+                        "unit": "human_actions",
+                        "planned_max": MAX_STEPS_PLAY,
+                        "observed": len(session.steps),
+                    },
+                    macro_provenance={
+                        "seed_source": "human_action_sequence",
+                        "task_specific_seed": True,
+                        "eligible_for_blind_evaluation": False,
+                        "action_catalog": "arc_env.actions.ACTIONS",
+                        "action_catalog_hash_recorded": True,
+                    },
+                ),
             ),
         )
         with EpisodeWriter(run_dir, episode_id) as writer:

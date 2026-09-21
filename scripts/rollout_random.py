@@ -18,13 +18,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from arc_env.env import DEFAULT_MAX_STEPS, ArcEnv
 from arc_env.episode_log import EpisodeWriter, RunMeta, write_run_meta
-from arc_env.task_loader import CURATED_TASK_IDS, load_task
+from arc_env.provenance import build_run_provenance, no_seed_macros
+from arc_env.splits import SEARCH_TASK_IDS
+from arc_env.tasks import load_search_task
 
 RUNS_DIR = Path(__file__).resolve().parent.parent / "runs"
 
 
 def run_episode(env: ArcEnv, run_dir: Path, task_id: str, pair_index: int, episode_id: str) -> dict:
-    task = load_task(task_id)
+    task = load_search_task(task_id)
     _obs, info = env.reset(task_id=task_id, pair_index=pair_index, task=task)
 
     with EpisodeWriter(run_dir, episode_id) as writer:
@@ -79,10 +81,10 @@ def main() -> None:
 
     if not args.task_id and not args.all:
         parser.error("pass --task_id <id> or --all")
-    if args.task_id and args.task_id not in CURATED_TASK_IDS:
-        parser.error(f"{args.task_id!r} is not in the curated task subset: {sorted(CURATED_TASK_IDS)}")
+    if args.task_id and args.task_id not in SEARCH_TASK_IDS:
+        parser.error(f"{args.task_id!r} is not in the curated task subset: {sorted(SEARCH_TASK_IDS)}")
 
-    task_ids = sorted(CURATED_TASK_IDS) if args.all else [args.task_id]
+    task_ids = sorted(SEARCH_TASK_IDS) if args.all else [args.task_id]
     run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
     run_dir = args.runs_dir / run_id
 
@@ -96,7 +98,17 @@ def main() -> None:
             "seed": args.seed,
             "pair_index": args.pair_index,
             "termination_mode": env.termination_mode,
-        }),
+        }, provenance=build_run_provenance(
+            task_ids=task_ids,
+            seed=args.seed,
+            compute_budget={
+                "unit": "environment_steps",
+                "planned": len(task_ids) * args.max_steps,
+                "episodes": len(task_ids),
+                "max_episode_steps": args.max_steps,
+            },
+            macro_provenance=no_seed_macros(),
+        )),
     )
 
     results = []

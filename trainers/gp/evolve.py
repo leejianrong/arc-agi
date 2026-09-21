@@ -4,7 +4,7 @@ crossover + mutation, stopping early on a perfect-fitness program."""
 import random
 from dataclasses import asdict, dataclass, field
 
-from arc_env.task_loader import Task
+from arc_env.tasks import SearchTask
 from trainers.gp.fitness import ZERO_FITNESS, evaluate_fitness
 from trainers.gp.genome import Program, crossover, mutate, random_program
 
@@ -62,7 +62,7 @@ def _tournament_select(scored: list, rng: random.Random, k: int) -> Program:
     return max(contenders, key=lambda item: item[0])[1]
 
 
-def run_gp(task: Task, config: GPConfig, seed_programs: list | None = None) -> GPResult:
+def run_gp(task: SearchTask, config: GPConfig, seed_programs: list | None = None) -> GPResult:
     """`seed_programs` (F12's "LLM-seeded search" refinement, `docs/
     QUESTIONS.md`): an optional list of `Program`s to include in generation
     0's population, in place of some of its random slots rather than on top

@@ -34,7 +34,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from arc_env.task_loader import load_task
+from arc_env.tasks import load_task
 from viz.backend import play
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent

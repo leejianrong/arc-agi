@@ -18,6 +18,9 @@ include = ["arc_env*", "arc_eval*", "object_env*", "viz*", "trainers*"]
 [tool.setuptools]
 py-modules = ["train"]
 
+[tool.setuptools.package-data]
+arc_env = ["dataset_splits.json"]
+
 [dependency-groups]
 dev = [
     "pip-audit>=2.10.1",

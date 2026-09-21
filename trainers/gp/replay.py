@@ -12,7 +12,7 @@ reward/termination logic PPO's episodes do - one canonical definition of
 """
 
 from arc_env.env import ENDPOINT_TERMINATION, ArcEnv
-from arc_env.task_loader import Pair
+from arc_env.tasks import Pair
 from trainers.gp.genome import Program
 
 
