@@ -5,8 +5,11 @@ through the same `EpisodeWriter` path with no special-casing, and - the
 KAN-1546 regression flat GP already guards - never stops early on a
 transient intermediate target match."""
 
+import json
+
 from arc_env.tasks import Pair
 from object_env.actions import ACTIONS
+from object_env.colors import DerivedColor
 from object_env.grammar import legal_steps
 from trainers.gp_object.replay import genome_to_episode_trace
 
@@ -64,3 +67,19 @@ def test_trace_does_not_stop_at_an_intermediate_target_match():
     assert result["steps"][1]["exact_match"] is False
     assert result["steps"][1]["truncated"] is True
     assert result["success"] is False
+
+
+def test_trace_with_a_derived_color_arg_is_json_serializable():
+    # RunPod sweep regression (2026-09-22): a DerivedColor-valued arg (a
+    # COLOR param resolved against live state inside Action.fn, not a plain
+    # int - object_env.colors.COLOR_DOMAIN includes both) crashed
+    # episode_log.EpisodeWriter.step's json.dumps whenever a GP-found
+    # genome happened to use one. Every action_args value must be
+    # JSON-serializable, whatever the underlying grammar param type.
+    gene = _gene_for("select_by_color", {"color": DerivedColor(query="most", source="grid")})
+    pair = Pair(input=((0, 1), (1, 1)), output=((0, 1), (1, 1)))
+
+    result = genome_to_episode_trace([gene], pair)
+
+    assert result["steps"][0]["action_args"] == {"color": "most(grid)"}
+    json.dumps(result["steps"][0])  # must not raise
