@@ -2,11 +2,14 @@
 """Serial batch training-pass driver over the curated tasks (the F11 training
 pass: measure how well GP / PPO-cold / PPO-warm actually *learn* the curated
 tasks, not just whether a known dsl solver maps onto the action space).
+`gp-object` (SLICES.md V6) is the same measurement for the object-grammar GP
+trainer, over the same curated tasks, for the head-to-head demo.
 
-For each task, runs up to three arms, each in its OWN SUBPROCESS:
-  1. gp        -> runs/<pass_id>/<task>-gp/
-  2. ppo-cold  -> runs/<pass_id>/<task>-ppo-cold/
-  3. ppo-warm  -> runs/<pass_id>/<task>-ppo-warm/  (--warm_start_from the gp run)
+For each task, runs up to four arms, each in its OWN SUBPROCESS:
+  1. gp         -> runs/<pass_id>/<task>-gp/
+  2. gp-object  -> runs/<pass_id>/<task>-gp-object/
+  3. ppo-cold   -> runs/<pass_id>/<task>-ppo-cold/
+  4. ppo-warm   -> runs/<pass_id>/<task>-ppo-warm/  (--warm_start_from the gp run)
 
 Why subprocesses, and why strictly serial: this machine has very little RAM
 (~7.8 GiB, swap usually near-full) and a past pass OOM-crashed it. A fresh
@@ -62,7 +65,7 @@ RESULTS_DIR = REPO / "docs" / "results"
 # is actually curated at runtime.
 CALIB_PREFERENCE = ["67a3c6ac", "1f85a75f", "44f52bb0", "d0f5fe59", "b548a754"]
 
-ARMS = ("gp", "ppo-cold", "ppo-warm")
+ARMS = ("gp", "gp-object", "ppo-cold", "ppo-warm")
 
 
 def _python() -> str:
@@ -124,7 +127,7 @@ def _is_done(run_dir: Path, arm: str, n_updates: int) -> bool:
     metrics = run_dir / "metrics.jsonl"
     if not (meta.exists() and metrics.exists() and metrics.stat().st_size > 0):
         return False
-    if arm == "gp":
+    if arm in ("gp", "gp-object"):
         return True
     rows = _final_metrics(run_dir)
     return bool(rows) and rows[-1].get("update") == n_updates - 1
@@ -189,6 +192,11 @@ def _build_cmd(arm: str, task: str, pass_dir: Path, args) -> list[str]:
     if arm == "gp":
         return base + [
             "--algo", "gp", "--n_generations", str(args.gp_generations),
+            "--population_size", str(args.gp_population),
+        ]
+    if arm == "gp-object":
+        return base + [
+            "--algo", "gp_object", "--n_generations", str(args.gp_generations),
             "--population_size", str(args.gp_population),
         ]
     cmd = base + [
@@ -307,7 +315,7 @@ def main() -> None:
                 rc, wall_s, peak_mb = _run(cmd, run_dir / "driver.log")
                 _write_stats(run_dir, wall_s, peak_mb, rc)
                 print(f"{tag}: rc={rc} wall={wall_s:.0f}s peak={peak_mb:.0f}MB")
-            if arm == "gp":
+            if arm in ("gp", "gp-object"):
                 solved, ever = _gp_solved(run_dir), None
             else:
                 solved, ever = _ppo_result(run_dir)

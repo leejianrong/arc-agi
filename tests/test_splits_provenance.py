@@ -60,6 +60,7 @@ def test_run_provenance_records_scientific_controls():
     ("module", "forbidden"),
     [
         ("train", "arc_env.task_loader"),
+        ("train", "object_env.programs"),
         ("object_env.search", "object_env.programs"),
     ],
 )
