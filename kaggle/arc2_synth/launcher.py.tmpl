@@ -14,6 +14,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -45,6 +46,8 @@ SRC = os.path.join(WORK, "src")
 OUT = os.path.join(WORK, "submission.json")
 T0 = time.time()
 server = None
+HB_SEC = float(os.environ.get("ARC_HB_SEC", "120"))
+ACTIVE_TRACE = None  # {"path", "t0"} of the trace being written now; only agent runs emit traces (direct/synth do not)
 
 
 def log(*a):
@@ -154,10 +157,35 @@ def smoke():
         return False
 
 
+VLLM_STATS = re.compile(r"Avg generation throughput: ([\d.]+) tokens/s.*?Running: (\d+) reqs, Waiting: (\d+) reqs, "
+                        r"GPU KV cache usage: ([\d.]+)%")
+
+
+def trace_heartbeat(gpu_mem):
+    """Append one `heartbeat` event to the active trace from the last vLLM stats line. Never raises."""
+    try:
+        tr = ACTIVE_TRACE
+        if not tr or not os.path.exists(tr["path"]):  # run_start must stay the first event
+            return
+        ev = {"ev": "heartbeat", "t": round(time.time() - tr["t0"], 3), "cfg": "default",
+              "tok_s": None, "running": None, "waiting": None, "kv_pct": None, "gpu_mem_mib": gpu_mem}
+        with contextlib.suppress(OSError), open(os.path.join(WORK, "vllm_server.log"), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 65536))
+            hits = VLLM_STATS.findall(f.read().decode("utf-8", "replace"))
+            if hits:
+                tok_s, running, waiting, kv = hits[-1]
+                ev.update(tok_s=float(tok_s), running=int(running), waiting=int(waiting), kv_pct=float(kv))
+        with open(tr["path"], "a", encoding="utf-8") as f:
+            f.write(json.dumps(ev) + "\n")  # one write call: a whole line, safe beside the solver's writer
+    except Exception:  # noqa: BLE001, S110 - observability only
+        pass
+
+
 def heartbeat():
     """One line per 2 min into the kernel log (readable after the run): GPU state and vLLM log age."""
     while True:
-        time.sleep(120)
+        time.sleep(HB_SEC)
         gpu = ""
         try:
             gpu = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,utilization.gpu", "--format=csv,noheader,nounits"],
@@ -167,6 +195,8 @@ def heartbeat():
         path = os.path.join(WORK, "vllm_server.log")
         age = int(time.time() - os.path.getmtime(path)) if os.path.exists(path) else -1
         log(f"HB gpu(mem MiB,util %)={gpu} vllm_log_age={age}s")
+        mem = re.match(r"\s*(\d+)", gpu)
+        trace_heartbeat(int(mem.group(1)) if mem else None)
 
 
 def launch_server(mtp, max_len):
@@ -290,7 +320,29 @@ def bench_sample():
     with open(sample, "w") as f:
         json.dump({t: challenges[t] for t in ids}, f)
     log(f"bench sample: {len(ids)} tasks from {ch_file}; solutions: {bool(solutions)}")
-    return sample, ids, solutions
+    return sample, ids, solutions, sol_file if solutions else None
+
+
+def trace_args(path, solutions_file):
+    """`--trace` (and `--solutions` when known) for synth_agent; the trace's clock for heartbeats starts here."""
+    global ACTIVE_TRACE
+    ACTIVE_TRACE = {"path": path, "t0": time.time()}
+    return ["--trace", path] + (["--solutions", solutions_file] if solutions_file else [])
+
+
+def trace_done(path):
+    """Bench: log whether the finished trace validates. Never fatal."""
+    global ACTIVE_TRACE
+    ACTIVE_TRACE = None
+    try:
+        import importlib.util  # trace.py is loaded by path: the stdlib has a module named `trace`
+        spec = importlib.util.spec_from_file_location("arc2_trace_check", os.path.join(SRC, "trace.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        n, errs = mod.validate_file(path)
+        log(f"trace ok {n} events" if not errs else f"trace {os.path.basename(path)} invalid ({n} events): {errs[:3]}")
+    except Exception as e:  # noqa: BLE001 - e.g. a bundle without trace.py
+        log("trace check skipped:", repr(e))
 
 
 def bench_score(out, ids, solutions):
@@ -308,7 +360,7 @@ def bench_score(out, ids, solutions):
 
 
 def bench_run():
-    sample, ids, solutions = bench_sample()
+    sample, ids, solutions, sol_file = bench_sample()
     bench_t0 = time.time()
     results = []
     for i, cfg in enumerate(BENCH_CONFIGS):
@@ -329,6 +381,9 @@ def bench_run():
             mode, ([], llm_solve))
         skip = {"name", "mode", "effort", "n_parallel", "max_tokens"}
         extra = [x for k, v in cfg.items() if k not in skip for x in (f"--{k.replace('_', '-')}", str(v))]
+        trace = os.path.join(WORK, f"trace_{name}.jsonl") if mode == "agent" and solver is not None else None
+        if trace:
+            extra += trace_args(trace, sol_file)
         log(f"bench {name}: mode={mode} args={extra}")
         tee, t0 = Tee(), time.time()
         res = {"name": name, "mode": mode, "tasks": len(ids)}
@@ -339,6 +394,8 @@ def bench_run():
             log(f"bench {name} crashed:", repr(e))
             res["error"] = repr(e)
         res["wall_s"] = round(time.time() - t0)
+        if trace and os.path.exists(trace):
+            trace_done(trace)
         summary = {}
         for line in "".join(tee.buf).splitlines():
             if line.startswith("SUMMARY "):
@@ -373,6 +430,9 @@ try:
             args += ["--limit", str(LIMIT)]
         solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(
             MODE, (llm_solve, []))
+        if MODE == "agent":  # direct and synth do not emit traces
+            sol = os.path.join(os.path.dirname(challenges_path), "arc-agi_evaluation_solutions.json")
+            extra = extra + trace_args(os.path.join(WORK, "trace.jsonl"), sol if os.path.exists(sol) else None)
         solver.main(args + extra)
 except Exception as e:  # noqa: BLE001 - never lose the submission to a solver crash
     log("solver crashed:", repr(e))

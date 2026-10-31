@@ -52,6 +52,7 @@ with tarfile.open(fileobj=buf, mode="w:gz") as tf:
     tf.add(os.path.join(HERE, "synth.py"), arcname="synth.py")
     tf.add(os.path.join(HERE, "repl.py"), arcname="repl.py")
     tf.add(os.path.join(HERE, "synth_agent.py"), arcname="synth_agent.py")
+    tf.add(os.path.join(HERE, "trace.py"), arcname="trace.py")
     tf.add(os.path.join(HERE, "..", "arc2_baseline", "solve.py"), arcname="solve.py")
 with open(os.path.join(HERE, "launcher.py.tmpl")) as f:
     src = f.read()

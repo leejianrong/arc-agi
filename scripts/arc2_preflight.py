@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "kaggle/arc2_synth/build_kernel.py"
 MODES = ["direct", "synth", "agent", "bench"]
 MAX_MAIN_BYTES = 1_000_000
-BASE_MODULES = {"llm_solve.py", "synth.py", "solve.py"}
+BASE_MODULES = {"llm_solve.py", "synth.py", "solve.py", "trace.py"}
 AGENT_MODULES = {"repl.py", "synth_agent.py"}
 
 
