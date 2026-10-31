@@ -85,6 +85,65 @@ def test_selection_majority_ties_partial_and_fallback():
     assert sy.select_attempts(TASK, [], fb) == fb
 
 
+def _task(pairs, test_in):
+    return {"train": [{"input": i, "output": o} for i, o in pairs], "test": [{"input": test_in}]}
+
+
+def _flags(task, out):
+    return sy.plausibility(task, {"test_outputs": [out]})[0]
+
+
+def test_plausibility_shape_rules():
+    same = _task([([[1, 2]], [[2, 1]]), ([[3], [4]], [[4], [3]])], [[1, 2, 3]])
+    assert _flags(same, [[3, 2, 1]])[0] == 0
+    n, why = _flags(same, [[1, 2]])
+    assert n == 1 and "keep the input shape" in why[0]
+    const = _task([([[1, 2]], [[5]]), ([[3], [4]], [[6]])], [[1, 2, 3]])
+    assert _flags(const, [[7]])[0] == 0
+    n, why = _flags(const, [[7, 7]])
+    assert n == 1 and "share one shape" in why[0]
+    tile = _task([([[1, 2]], [[1, 2, 1, 2]]), ([[3], [4]], [[3, 3], [4, 4]])], [[1], [2], [3]])  # width x2
+    assert _flags(tile, [[1, 1], [2, 2], [3, 3]])[0] == 0
+    assert "of the input" in _flags(tile, [[1], [2], [3]])[1][0]
+    mixed = _task([([[1, 2]], [[1, 2, 1, 2]]), ([[3]], [[3, 3, 3]])], [[1, 2, 3]])  # no common factor
+    assert _flags(mixed, [[1]])[0] == 0
+
+
+def test_plausibility_identity_mono_palette():
+    t = _task([([[1, 2]], [[2, 1]]), ([[3, 4]], [[4, 3]])], [[5, 6]])
+    assert _flags(t, [[6, 5]])[0] == 0
+    assert "equals its input" in _flags(t, [[5, 6]])[1][0]
+    assert "one colour" in _flags(t, [[5, 5]])[1][0]
+    assert "colour seen in no train" in _flags(t, [[6, 9]])[1][0]
+    # rules stay quiet when the train set does not support them
+    mono = _task([([[1, 2]], [[1, 1]]), ([[3, 4]], [[2, 3]])], [[5, 6]])
+    assert _flags(mono, [[5, 5]])[0] == 0
+    ident = _task([([[1, 2]], [[1, 2]]), ([[3, 4]], [[4, 3]])], [[5, 6]])
+    assert _flags(ident, [[5, 6]])[0] == 0
+    new = _task([([[1, 2]], [[7, 1]]), ([[3, 4]], [[3, 8]])], [[5, 6]])  # outputs add colours: palette rule off
+    assert _flags(new, [[9, 5]])[0] == 0
+
+
+def test_selection_overfit_ranks_below_general():
+    fb = [{"attempt_1": [[0]], "attempt_2": [[9]]}]
+    t = _task([([[1, 2]], [[2, 1]]), ([[3, 4]], [[4, 3]])], [[5, 6]])
+    good, bad = [[6, 5]], [[5], [6]]  # bad has the wrong shape
+    rows = sy.select_attempts(t, [_cand(bad, code="x"), _cand(good, code="xxxx"), _cand(good, code="xxxxx")], fb)
+    assert rows == [{"attempt_1": good, "attempt_2": bad}]
+    rows = sy.select_attempts(t, [_cand(bad, code="x"), _cand(good, code="xxxx")], fb)
+    assert rows == [{"attempt_1": good, "attempt_2": bad}]  # fewer flags beat shorter source
+    rows = sy.select_attempts(t, [_cand(bad)], fb)
+    assert rows[0]["attempt_1"] == bad  # a lone suspect still beats partials and fallback
+    a, b = [[5, 5]], [[6, 6]]  # both one-colour: equally suspect, so votes then source decide
+    rows = sy.select_attempts(t, [_cand(a, code="x"), _cand(b, code="xx"), _cand(b, code="xx")], fb)
+    assert rows[0]["attempt_1"] == b
+    rows = sy.select_attempts(t, [_cand(a, code="xx"), _cand(b, code="x")], fb)
+    assert rows[0]["attempt_1"] == b
+    c = _cand(good)
+    sy.select_attempts(t, [c], fb)
+    assert c["flags"] == [[]]
+
+
 def _server(replies, delay=0):
     """Chat replies are served in order (last repeats); records each request's messages."""
     seen = []

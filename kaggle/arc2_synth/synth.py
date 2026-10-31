@@ -246,6 +246,54 @@ def force_code(base_url, model, messages, reasoning, max_tokens, timeout, temper
     return "def transform(grid):\n" + d["choices"][0].get("text", ""), d.get("usage", {}).get("completion_tokens", 0)
 
 
+def _shape(g):
+    return len(g), len(g[0])
+
+
+def _colors(g):
+    return {c for row in g for c in row}
+
+
+def plausibility(task, cand):
+    """Overfit guard: per test input, (n_flags, reasons) for a verified candidate's test output.
+
+    A flag means the output breaks a regularity every train pair obeys; it only reorders
+    verified programs (suspects stay available as attempt 2 / fallback).
+    """
+    train = task["train"]
+    ins, outs = [p["input"] for p in train], [p["output"] for p in train]
+    same = all(_shape(i) == _shape(o) for i, o in zip(ins, outs))
+    const = len({_shape(o) for o in outs}) == 1
+    ratios = {(_shape(o)[0] / _shape(i)[0], _shape(o)[1] / _shape(i)[1]) for i, o in zip(ins, outs)}
+    factor = next(iter(ratios)) if len(ratios) == 1 else None
+    if factor and (factor == (1, 1) or any(r != int(r) for r in factor)):
+        factor = None  # same-shape has its own rule; only integer multiples count
+    no_identity = all(i != o for i, o in zip(ins, outs))
+    no_mono = all(len(_colors(o)) > 1 for o in outs)
+    seen = Counter(c for o in outs for c in _colors(o))
+    shared = {c for c, n in seen.items() if n >= 2}
+    pal_ok = all(_colors(o) <= _colors(i) | shared for i, o in zip(ins, outs))
+    res = []
+    for t, out in zip(task["test"], cand["test_outputs"]):
+        why = []
+        if out is not None:
+            ti, shp = t["input"], _shape(out)
+            if same and shp != _shape(ti):
+                why.append("train outputs keep the input shape; test output does not")
+            if const and shp != _shape(outs[0]):
+                why.append("train outputs share one shape; test output differs")
+            if factor and shp != (_shape(ti)[0] * factor[0], _shape(ti)[1] * factor[1]):
+                why.append(f"train outputs are {factor[0]:g}x{factor[1]:g} of the input; test output is not")
+            if no_identity and out == ti:
+                why.append("test output equals its input; no train output does")
+            if no_mono and len(_colors(out)) == 1:
+                why.append("test output is one colour; no train output is")
+            if pal_ok and _colors(out) - _colors(ti) - set(seen):
+                why.append("test output uses a colour seen in no train output or the test input")
+        res.append((len(why), why))
+    return res
+
+
 def select_attempts(task, cands, fallback_rows, direct_rows=None):
     """Two attempts per test input: verified majority, best partials, direct answer, fallback.
 
@@ -253,17 +301,20 @@ def select_attempts(task, cands, fallback_rows, direct_rows=None):
     ({"attempt_1","attempt_2"} per test input, entries may be None).
     """
     verified = [c for c in cands if c["verified"]]
+    for c in verified:
+        c["flags"] = [w for _, w in plausibility(task, c)]  # per test input; logged to show why one ranked low
     partial = sorted((c for c in cands if not c["verified"]), key=lambda c: -c["frac"])  # stable: earlier first
     rows = []
     for i in range(len(task["test"])):
-        votes, best = Counter(), {}  # best[output]: (shortest source, earliest position)
+        votes, best, flags = Counter(), {}, {}  # best[output]: (shortest source, earliest position)
         for pos, c in enumerate(verified):
             if c["test_outputs"][i] is not None:
                 k = json.dumps(c["test_outputs"][i])
                 votes[k] += 1
+                flags[k] = len(c["flags"][i])
                 best[k] = min(best.get(k, (1 << 60, pos)), (len(c.get("code", "")), pos))
-        # equal votes: shorter program, then earlier round
-        picks = [json.loads(k) for k in sorted(votes, key=lambda k: (-votes[k], *best[k]))]
+        # fewer plausibility flags, then more votes, then shorter program, then earlier round
+        picks = [json.loads(k) for k in sorted(votes, key=lambda k: (flags[k], -votes[k], *best[k]))]
         picks += [c["test_outputs"][i] for c in partial]
         if direct_rows:
             picks += [direct_rows[i].get("attempt_1"), direct_rows[i].get("attempt_2")]
@@ -354,7 +405,8 @@ def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_
     best = max((c for c in cands), key=lambda c: (c["verified"], c["frac"]), default=None)
     log = {"rounds": rounds, "tokens": tokens, "verified": sum(c["verified"] for c in cands),
            "candidates": len(cands), "final_program": best["code"] if best else None,
-           "final_frac": round(best["frac"], 3) if best else None}
+           "final_frac": round(best["frac"], 3) if best else None,
+           "flags": best.get("flags") if best else None}
     return rows, log
 
 
