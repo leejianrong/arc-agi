@@ -45,7 +45,7 @@ for cfg in "${CFGS[@]}"; do
     --reasoning-parser qwen3 "${SPEC[@]}" > "/workspace/vllm_$name.log" 2>&1 &
   VLLM_PID=$!
   ok=0
-  for i in $(seq 1 120); do
+  for i in $(seq 1 180); do   # 30 min: cold compile on a slow host exceeded 20
     if curl -sf --max-time 5 http://127.0.0.1:8000/health >/dev/null; then ok=1; break; fi
     kill -0 "$VLLM_PID" 2>/dev/null || { echo "VLLM_DIED $name"; break; }
     [ $((i % 6)) -eq 0 ] && { echo "waiting for vllm $name ($((i * 10))s)"; tail -n 1 "/workspace/vllm_$name.log" | cut -c1-200; }
@@ -56,7 +56,15 @@ for cfg in "${CFGS[@]}"; do
     echo "SMOKE_FAILED $name"
   fi
   grep -n -E "Error|Traceback|illegal|assert|Exception|CUDA" "/workspace/vllm_$name.log" | grep -v "POST /v1" | head -n 40 > "out/crash_$name.log"
-  kill "$VLLM_PID" 2>/dev/null; pkill -f "vllm serve" 2>/dev/null; sleep 20
+  kill "$VLLM_PID" 2>/dev/null
+  # Workers outlive the API server and keep GPU memory; the next config fails to start unless they die.
+  pkill -9 -f "vllm" 2>/dev/null; pkill -9 -f "VLLM" 2>/dev/null; pkill -9 -f "multiprocessing" 2>/dev/null
+  for _ in $(seq 1 30); do
+    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sort -n | tail -1)
+    [ "${used:-99999}" -lt 1500 ] && break
+    sleep 3
+  done
+  echo "gpu memory used after cleanup: ${used:-?} MiB"
 done
 echo "CHOSEN_CONFIG=$CHOSEN" | tee out/config.txt
 echo "PHASE=vllm_up=$up $(date -u +%FT%TZ)"
