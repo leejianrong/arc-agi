@@ -64,9 +64,16 @@ echo "PHASE=vllm_up=$up $(date -u +%FT%TZ)"
 if [ "$up" = 1 ]; then
   ( while true; do sleep 120; grep -E "generation throughput|SpecDecoding" /workspace/vllm.log | tail -n 2 | cut -c1-260; done ) &
   STATS_PID=$!
-  python3 llm_solve.py --challenges challenges.json --solutions solutions.json --out out/submission.json \
-    --log-dir out/llm_logs --limit "${LIMIT:-24}" --n-parallel "${NPAR:-16}" \
-    --max-tokens "${MAX_TOKENS:-24000}" --deadline-min "${DEADLINE_MIN:-60}" --effort "${EFFORT:-medium}"
+  if [ "${MODE:-direct}" = synth ]; then
+    python3 synth.py --challenges challenges.json --solutions solutions.json --out out/submission.json \
+      --log-dir out/synth_logs --limit "${LIMIT:-24}" --n-parallel "${NPAR:-16}" \
+      --max-tokens "${MAX_TOKENS:-32768}" --deadline-min "${DEADLINE_MIN:-60}" --effort "${EFFORT:-medium}" \
+      ${SYNTH_ARGS:-}
+  else
+    python3 llm_solve.py --challenges challenges.json --solutions solutions.json --out out/submission.json \
+      --log-dir out/llm_logs --limit "${LIMIT:-24}" --n-parallel "${NPAR:-16}" \
+      --max-tokens "${MAX_TOKENS:-24000}" --deadline-min "${DEADLINE_MIN:-60}" --effort "${EFFORT:-medium}"
+  fi
   kill "$STATS_PID" 2>/dev/null
 fi
 echo "PHASE=solve_done $(date -u +%FT%TZ)"

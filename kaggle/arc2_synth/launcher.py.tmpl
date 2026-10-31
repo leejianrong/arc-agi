@@ -21,6 +21,8 @@ TOTAL_BUDGET_MIN = @@BUDGET@@      # whole-run wall-clock budget, minutes
 N_PARALLEL = @@NPAR@@
 MAX_TOKENS = @@MAX_TOKENS@@
 MTP = @@MTP@@                      # speculative tokens (0 = off)
+MODE = "@@MODE@@"                  # "direct" (answer grids) or "synth" (verified programs)
+SYNTH_ARGS = @@SYNTH_ARGS@@        # extra synth.py flags
 WORK = "/kaggle/working"
 SRC = os.path.join(WORK, "src")
 OUT = os.path.join(WORK, "submission.json")
@@ -43,6 +45,7 @@ with tarfile.open(fileobj=io.BytesIO(base64.b64decode(BUNDLE_B64)), mode="r:gz")
 sys.path.insert(0, SRC)
 import llm_solve  # noqa: E402
 import solve as baseline  # noqa: E402
+import synth  # noqa: E402
 
 challenges_path = baseline.find_challenges()
 baseline.main(["--challenges", challenges_path, "--out", OUT])
@@ -132,7 +135,7 @@ try:
             "--effort", "medium"]
     if LIMIT:
         args += ["--limit", str(LIMIT)]
-    llm_solve.main(args)
+    (synth if MODE == "synth" else llm_solve).main(args + (SYNTH_ARGS if MODE == "synth" else []))
 finally:
     stop_server()
 log("done")

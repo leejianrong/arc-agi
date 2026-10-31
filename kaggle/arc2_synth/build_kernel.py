@@ -18,16 +18,20 @@ ap.add_argument("--max-tokens", type=int, default=40000)
 ap.add_argument("--mtp", type=int, default=2)
 ap.add_argument("--machine", default="")
 ap.add_argument("--slug", default="arc-agi-2-qwen-direct")
+ap.add_argument("--mode", choices=["direct", "synth"], default="direct")
+ap.add_argument("--synth-args", default="", help="extra synth.py flags, space separated")
 a = ap.parse_args()
 
 buf = io.BytesIO()
 with tarfile.open(fileobj=buf, mode="w:gz") as tf:
     tf.add(os.path.join(HERE, "llm_solve.py"), arcname="llm_solve.py")
+    tf.add(os.path.join(HERE, "synth.py"), arcname="synth.py")
     tf.add(os.path.join(HERE, "..", "arc2_baseline", "solve.py"), arcname="solve.py")
 with open(os.path.join(HERE, "launcher.py.tmpl")) as f:
     src = f.read()
 for k, v in {"BUNDLE": base64.b64encode(buf.getvalue()).decode(), "LIMIT": a.limit, "BUDGET": a.budget_min,
-             "NPAR": a.npar, "MAX_TOKENS": a.max_tokens, "MTP": a.mtp}.items():
+             "NPAR": a.npar, "MAX_TOKENS": a.max_tokens, "MTP": a.mtp, "MODE": a.mode,
+             "SYNTH_ARGS": repr(a.synth_args.split())}.items():
     src = src.replace(f"@@{k}@@", str(v))
 os.makedirs(a.out_dir, exist_ok=True)
 with open(os.path.join(a.out_dir, "main.py"), "w") as f:
