@@ -58,7 +58,12 @@ class Budget:
         """Seconds one task may still use: time left minus the reserve, over the waves of tasks still to run."""
         with self.lock:
             remaining = max(1, self.n_tasks - self.done)
-        return (self.deadline - clock() - self.reserve) / math.ceil(remaining / self.n_parallel)
+        left = self.deadline - clock() - self.reserve
+        raw = left / math.ceil(remaining / self.n_parallel)
+        # Under a tight budget every task gets at least one useful call, in order, and the hardest tail runs
+        # out of time. Without this floor the head (the easiest tasks) was skipped to inflate later shares.
+        floor = self.min_call_tokens / max(self.rate(), 1.0)
+        return max(raw, floor) if left >= floor else raw
 
     def call_limits(self, max_tokens, request_timeout):
         """(max_tokens, timeout) for the next call, or None when the share is too small for a useful one."""

@@ -275,3 +275,15 @@ def test_sigterm_flushes_complete_submission(tmp_path):
     sub = json.loads(out.read_text())
     assert rc == 128 + signal.SIGTERM
     assert set(sub) == {"t1", "t2"} and all(set(r) == {"attempt_1", "attempt_2"} for v in sub.values() for r in v)
+
+
+def test_tight_budget_attempts_the_head_not_skips_it(monkeypatch):
+    """Regression: with 20 tasks, 6 workers and a 6-minute deadline the share used to fall below one useful call,
+    so the easiest tasks were skipped first. Every task now gets at least min_call_tokens while time lasts."""
+    now = [0.0]
+    monkeypatch.setattr(sy, "clock", lambda: now[0])
+    b = sy.Budget(deadline=360.0, n_tasks=20, n_parallel=6, reserve_sec=20, min_call_tokens=2048)
+    lim = b.call_limits(3000, 600)
+    assert lim is not None and lim[0] >= 2048
+    now[0] = 330.0  # only 10 s of working time left: now the tail is skipped
+    assert b.call_limits(3000, 600) is None
