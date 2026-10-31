@@ -3,8 +3,8 @@
 proposes programs with a `submit` tool; a submit that reproduces every demo ends the attempt.
 
 Stdlib only; reuses ``synth`` (sandboxed evaluation, selection, budget) and ``llm_solve`` (chat client).
-Control rules beyond the bare loop (nudges, context trimming, rescue turns) belong to a later story;
-``Hooks`` marks where they plug in.
+Control rules (``Control``: submit nudge, prefix-stable context trimming, thinking-cap hint, no-think rescue
+turn, overflow retry, repetition guard) are individually switchable and counted in the attempt log.
 
     python synth_agent.py --challenges C.json --out sub.json [--solutions S.json]
 """
@@ -16,6 +16,7 @@ import sys
 import threading
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm_solve as ls
@@ -55,6 +56,13 @@ INSTRUCTIONS = (
 
 PROSE_HINT = "Use the python tool to explore, or call submit with your transform program."
 CUT_HINT = "Your reply was cut off. Be more concise: test your best hypothesis with python or call submit."
+CAP_HINT = ("Your per-turn thinking limit was hit. Stop analysing: call python to test your best hypothesis, "
+            "or call submit.")
+NUDGE = ("\n\n[{n} python calls without a submit. Submitting is free and returns a cell diff: submit your best "
+         "transform now, then refine it.]")
+REPEAT_HINT = "You have made the same call three times in a row with the same result. Change approach."
+RESCUE_PROMPT = ("Out of thinking budget. Reply now, without further analysis, with your best program as a "
+                 "submit(code) call.")
 
 
 def dims(g):
@@ -115,7 +123,7 @@ def submit_reply(cand, task, repeated=False, max_examples=2):
 
 
 class Hooks:
-    """Extension points for control rules (ARC-142). Defaults change nothing."""
+    """Extension points for control rules. Defaults change nothing."""
 
     def prepare(self, messages, state):
         """Return the message list to send this turn (context trimming goes here)."""
@@ -126,16 +134,98 @@ class Hooks:
         return text
 
 
+def _chars(msgs):
+    return sum(len(json.dumps(m)) for m in msgs)
+
+
+def _fail_headline(text):
+    return next((ln for ln in text.splitlines() if ln.startswith("Reproduce")), "")
+
+
+@dataclass
+class Control(Hooks):
+    """Control rules with the spec's defaults; a zero or False field switches its rule off."""
+    nudge_every: int = 6        # python calls without a submit before the nudge suffix
+    trim_budget: int = 24000    # estimated prompt tokens that trigger eviction
+    trim_drain: int = 4000      # evict down to budget - drain, so the prefix stays fixed between evictions
+    keep_recent: int = 6        # messages after the head that eviction never touches
+    rescue: bool = True         # one no-think turn asking for submit(code) before an attempt ends
+    rescue_tokens: int = 8192
+    overflow_retry: bool = True  # HTTP 400 over context: shrink budget by a quarter, trim, retry once
+    repeat_guard: bool = True   # three identical tool-call turns in a row: ask for a new approach once
+
+    def tool_result(self, name, text, state):
+        if name != "python" or not self.nudge_every:
+            return text
+        state["py_run"] = n = state.get("py_run", 0) + 1
+        if n % self.nudge_every:
+            return text
+        state["attempt"].events["nudges"] = state["attempt"].events.get("nudges", 0) + 1
+        return text + NUDGE.format(n=n)
+
+    def prepare(self, messages, state):
+        """Evict the oldest whole assistant+tool exchanges once over budget. Messages [0:2] (system, task) and
+        the marker at [2] are the stable head; eviction rewrites the list in place, so between evictions every
+        request extends the previous one byte for byte."""
+        if not self.trim_budget:
+            return messages
+        budget = state.setdefault("trim_budget", self.trim_budget)
+        pt = state.get("prompt_tokens", 0)
+        sent = state.get("sent", 0)
+        est = pt + _chars(messages[sent:]) / 3 if pt else _chars(messages) / 3
+        if state.pop("force_trim", False):
+            est = max(est, budget + 1)
+        if est <= budget:
+            return messages
+        head = 3 if state.get("marker") else 2
+        groups = []  # a group starts at an assistant message, so tool replies never lose their call
+        for m in messages[head:]:
+            if m["role"] == "assistant" or not groups:
+                groups.append([m])
+            else:
+                groups[-1].append(m)
+        remaining, drop = len(messages) - head, []
+        while groups and est > budget - self.trim_drain and remaining - len(groups[0]) >= self.keep_recent:
+            g = groups.pop(0)
+            est -= _chars(g) / 3
+            remaining -= len(g)
+            drop += g
+        if not drop:
+            return messages
+        d = state.setdefault("dropped", {"exchanges": 0, "python": 0, "failed": 0, "last": ""})
+        names = {}
+        for m in drop:
+            for c in m.get("tool_calls") or []:
+                names[c["id"]] = c["function"]["name"]
+                d["python"] += c["function"]["name"] == "python"
+            text = m["content"] if isinstance(m.get("content"), str) else ""
+            if m["role"] == "assistant":
+                d["exchanges"] += 1
+            elif (m["role"] == "user" or names.get(m.get("tool_call_id")) == "submit") and _fail_headline(text):
+                d["failed"] += 1
+                d["last"] = _fail_headline(text)
+        note = (f"[Older turns were removed to save context: {d['exchanges']} exchanges, {d['python']} python calls, "
+                f"{d['failed']} failed submits." + (f" Last failed submit: {d['last']}" if d["last"] else "")
+                + " Your python variables persist.]")
+        messages[2:head + len(drop)] = [{"role": "user", "content": note}]
+        state["marker"], state["prompt_tokens"] = True, 0
+        ev = state["attempt"].events
+        ev["trims"] = ev.get("trims", 0) + 1
+        return messages
+
+
 class Attempt:
     def __init__(self):
         self.messages, self.cands, self.turns = [], [], []
+        self.events, self.control = {}, {}
         self.tokens = self.python_calls = self.submits = 0
         self.status = "running"
         self.verified = False
 
     def log(self):
         return {"status": self.status, "verified": self.verified, "tokens": self.tokens, "turns": len(self.turns),
-                "python_calls": self.python_calls, "submits": self.submits}
+                "python_calls": self.python_calls, "submits": self.submits, "events": self.events,
+                "control": self.control}
 
 
 def _default_repl(task, persist=True):
@@ -146,19 +236,23 @@ def _default_repl(task, persist=True):
 def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40, max_tokens=32768,
                 attempt_tokens=120000, request_timeout=3600, temperature=0.6, effort="", thinking_budget=0,
                 sandbox_timeout=10, repl_factory=None, hooks=None, on_cand=None, max_hints=1,
-                tool_timeout=None):
+                tool_timeout=None, control=None):
     """One conversation. Returns an Attempt (cands feed ``synth.select_attempts``)."""
     pre = f"[task {tag}] " if tag else ""
-    hooks = hooks or Hooks()
+    ctl = control or Control()
+    hooks = hooks or ctl
     att = Attempt()
+    att.control = asdict(ctl)
     att.messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": pre + task_message(task)}]
     kwargs = {"reasoning_effort": effort} if effort else None
     seen = {}  # code -> cand, to flag identical resubmissions without re-running them
     repl, hints, think = None, 0, thinking_budget
     state = {"attempt": att}
+    sigs, overflowed = [], False
 
     def submit(code):
         att.submits += 1
+        state["py_run"] = 0
         key = code.strip()
         if key in seen:
             return submit_reply(seen[key], task, repeated=True)
@@ -193,6 +287,31 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             return submit(code)
         return f"Unknown tool {call['name']!r}. Tools: python, submit."
 
+    def rescue(why):
+        """One last request with thinking off, asking for the best submit; a call or fenced code counts."""
+        lim = budget.call_limits(ctl.rescue_tokens, request_timeout)
+        if not ctl.rescue or att.events.get("rescue") or sy.clock() > deadline or lim is None:
+            return
+        att.events["rescue"] = why
+        att.messages.append({"role": "user", "content": pre + RESCUE_PROMPT})
+        info = {"turn": len(att.turns), "rescue": why}
+        att.turns.append(info)
+        try:
+            r = ls.chat_full(base_url, model, hooks.prepare(att.messages, state), lim[0], lim[1], temperature,
+                             {"enable_thinking": False}, tools=TOOLS, tool_choice="auto")
+        except Exception as e:  # noqa: BLE001
+            info["error"] = repr(e)
+            return
+        att.tokens += r["completion_tokens"]
+        budget.add_tokens(r["completion_tokens"])
+        code = next((c["arguments"]["code"] for c in r["tool_calls"] if c["name"] == "submit"
+                     and isinstance(c["arguments"].get("code"), str)), None) or sy.extract_code(r["content"])
+        info.update(tokens=r["completion_tokens"], submit=bool(code and code.strip()))
+        if info["submit"]:
+            submit(code)
+            if att.verified:
+                att.status = "verified"
+
     try:
         for _ in range(max_turns):
             if sy.clock() > deadline:
@@ -202,17 +321,30 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             limits = budget.call_limits(min(max_tokens, left), request_timeout) if left >= 1024 else None
             if limits is None:
                 att.status = "no_budget"
+                if left < 1024:
+                    rescue("tokens")
                 break
             info = {"turn": len(att.turns)}
             att.turns.append(info)
             t0 = sy.clock()
             try:
-                r = ls.chat_full(base_url, model, hooks.prepare(att.messages, state), limits[0], limits[1], temperature,
-                         kwargs, tools=TOOLS, tool_choice="auto", thinking_token_budget=think)
+                sent = hooks.prepare(att.messages, state)
+                state["sent"] = len(sent)
+                r = ls.chat_full(base_url, model, sent, limits[0], limits[1], temperature,
+                                 kwargs, tools=TOOLS, tool_choice="auto", thinking_token_budget=think)
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", "replace").lower() if e.fp else ""
                 if think and e.code == 400 and any(w in body for w in ("thinking", "budget", "reasoning")):
                     think = 0  # the server cannot take the field: drop it and retry this turn
+                    att.turns.pop()
+                    continue
+                if (e.code == 400 and ctl.overflow_retry and not overflowed and ctl.trim_budget
+                        and any(w in body for w in ("context", "length", "max_tokens", "max_model_len"))):
+                    overflowed = True  # shrink by a quarter (floor 8000), force a trim, retry this turn once
+                    cur = state.get("trim_budget", ctl.trim_budget)
+                    state["trim_budget"] = att.events["trim_budget"] = max(int(cur * 0.75), min(cur, 8000))
+                    state["force_trim"] = True
+                    att.events["overflow_retries"] = att.events.get("overflow_retries", 0) + 1
                     att.turns.pop()
                     continue
                 info["error"] = repr(e)
@@ -222,6 +354,8 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                 info["error"] = repr(e)
                 att.status = "error"
                 break
+            overflowed = False
+            state["prompt_tokens"] = r["prompt_tokens"]
             n = r["completion_tokens"]
             att.tokens += n
             budget.add_tokens(n)
@@ -242,6 +376,11 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                 if att.verified:
                     att.status = "verified"
                     break
+                sigs.append(json.dumps([[c["name"], c["arguments"]] for c in calls], sort_keys=True))
+                if ctl.repeat_guard and not att.events.get("repeat_guard") and len(sigs) >= 3 \
+                        and len(set(sigs[-3:])) == 1:
+                    att.events["repeat_guard"] = 1
+                    att.messages.append({"role": "user", "content": pre + REPEAT_HINT})
                 continue
             code = sy.extract_code(content) if content else None
             if code:  # a fenced program in prose counts as a submit, answered as a user message
@@ -251,12 +390,15 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                     att.status = "verified"
                     break
                 continue
+            cut = r["finish_reason"] == "length"
             if hints >= max_hints:
                 att.status = "prose"
+                if cut:
+                    rescue("cut")
                 break
             hints += 1
-            att.messages.append({"role": "user", "content": pre + (CUT_HINT if r["finish_reason"] == "length"
-                                                                  else PROSE_HINT)})
+            att.messages.append({"role": "user", "content": pre + (
+                (CAP_HINT if think else CUT_HINT) if cut else PROSE_HINT)})
         else:
             att.status = "max_turns"
     finally:

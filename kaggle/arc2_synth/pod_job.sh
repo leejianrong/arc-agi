@@ -32,8 +32,9 @@ hb() { # $1 = vllm log path
   local hf gpu age sig now
   hf=$(du -sm /root/.cache/huggingface 2>/dev/null | cut -f1)
   gpu=$(nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | tr '\n' ';')
-  age=$(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || date +%s) ))
-  sig="${hf}|${gpu}|$(wc -c < "$1" 2>/dev/null)"
+  age=$(( $(date +%s) - $(stat -L -c %Y "$1" 2>/dev/null || date +%s) ))  # -L: vllm.log is a symlink
+  gmem=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | tr '\n' ';')
+  sig="${hf}|${gmem}|$(wc -c < "$1" 2>/dev/null)"  # utilisation jitters, so it is not part of the signature
   now=$(date +%s)
   if [ "$sig" != "$HB_LAST" ]; then HB_LAST="$sig"; HB_SINCE=$now; fi
   HB_UNCHANGED=$((now - HB_SINCE))
