@@ -116,3 +116,26 @@ lifetime to the question; fetch crash traces; prefer replaying recordings over r
 - Semula returns no `usage`, so token counters read 0 in these runs.
 - First result: 4 easy ARC-AGI-1 tasks, 4 of 4 verified and solved, but all on round 1, so the refine loop was
   not exercised. Use ARC-AGI-2 tasks, where Haiku will fail some and trigger feedback rounds.
+
+## Observability: know within minutes if a pod is wasting money
+
+A rented pod has no public IP and `rp logs` shows only container stdout, so we build visibility in.
+
+- **Pod side (`pod_job.sh`):** every 60 s during startup and every 120 s while solving, an `HB` line reports Hugging
+  Face cache size, per-GPU memory and utilisation, how old the vLLM log is, and how long nothing has changed.
+  `STALL?` appears after 5 min of no change; after `STALL_SECS` (default 720) the config is aborted and the next one
+  is tried. A config is accepted only after a burst of real generation requests (`smoke.py`). Crash traces from every
+  failed config are saved in the artifact (`out/crash_*.log`, `out/vllm_*.log.tail`).
+- **Driver side (`watch_pod.py`):** run one per pod under the Monitor tool
+  (`python3 -u kaggle/arc2_synth/watch_pod.py <env file> <label> --interval 60 --expect-min <N>`). It prints one line
+  per event: `ALERT` (traceback, VLLM_DIED, SMOKE_FAILED, 500s, OOM, STALL?, connection refused, no space left),
+  `FEED` (log stopped advancing for 5 min), `GONE` (pod disappeared: fetch the artifact), task and phase lines,
+  throttled `HB`/`VLLM` digests, and a cost estimate every 10 min. It also alerts if the pod outlives `--expect-min`.
+- **What healthy looks like (RTX 4090 x4, 27B FP8):** install done within 3 min; `TRYING config`; GPUs show 100%
+  utilisation at about 660 MiB while NCCL initialises (normal); HF cache grows to about 28 GB; then compile and
+  CUDA-graph capture; `SMOKE [True x8]`; `PHASE=vllm_up=1`; task lines. No vLLM log growth for 5+ minutes outside
+  the NCCL phase is not normal.
+- **Rules:** never launch without a watcher armed; treat any `ALERT`/`FEED`/`GONE` as a stop-and-look event; read the
+  crash artifact before relaunching; when a pod stalls past its expected phase time, tear it down rather than wait.
+- **Gap:** no remote shell (sshd is not started because `rp` overrides the container start command), so we cannot
+  inspect a live pod beyond what the job prints. Anything we might need to see must be printed by the job.

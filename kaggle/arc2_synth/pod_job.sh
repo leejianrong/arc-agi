@@ -36,6 +36,7 @@ hb() { # $1 = vllm log path
   sig="${hf}|${gpu}|$(wc -c < "$1" 2>/dev/null)"
   now=$(date +%s)
   if [ "$sig" != "$HB_LAST" ]; then HB_LAST="$sig"; HB_SINCE=$now; fi
+  HB_UNCHANGED=$((now - HB_SINCE))
   echo "HB hf_cache=${hf:-0}MB gpu(mem MiB,util %)=${gpu} vllm_log_age=${age}s unchanged=$((now - HB_SINCE))s$([ $((now - HB_SINCE)) -gt 300 ] && echo ' STALL?')"
 }
 
@@ -63,7 +64,9 @@ for cfg in "${CFGS[@]}"; do
   for i in $(seq 1 180); do   # 30 min: cold compile on a slow host exceeded 20
     if curl -sf --max-time 5 http://127.0.0.1:8000/health >/dev/null; then ok=1; break; fi
     kill -0 "$VLLM_PID" 2>/dev/null || { echo "VLLM_DIED $name"; break; }
-    [ $((i % 6)) -eq 0 ] && { echo "waiting for vllm $name ($((i * 10))s)"; hb "/workspace/vllm_$name.log"; tail -n 1 "/workspace/vllm_$name.log" | cut -c1-200; }
+    [ $((i % 6)) -eq 0 ] && { echo "waiting for vllm $name ($((i * 10))s)"; hb "/workspace/vllm_$name.log"; tail -n 1 "/workspace/vllm_$name.log" | cut -c1-200
+      # Fail fast: no log growth, download, or GPU change for STALL_SECS means a wedged start; abort this config.
+      [ "${HB_UNCHANGED:-0}" -gt "${STALL_SECS:-720}" ] && { echo "ABORT_STALL $name (unchanged ${HB_UNCHANGED}s)"; break; }; }
     sleep 10
   done
   if [ "$ok" = 1 ]; then
