@@ -48,7 +48,7 @@ h2 { font-size: 15px; font-weight: 600; }
 .center { flex: 999 1 520px; }
 .right { flex: 0 1 320px; min-width: 280px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
-.row-between { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.row-between { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 8px; }
 .row-between.wrap { flex-wrap: wrap; margin-bottom: 8px; }
 .row-gap { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 
@@ -65,7 +65,7 @@ h2 { font-size: 15px; font-weight: 600; }
 .okc { color: var(--good); }
 .flag { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 8px; border-radius: 999px; background: #3A2F14; color: var(--submit); }
 
-.chip { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
+.chip { display: inline-block; white-space: nowrap; flex: none; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
 .chip.good { background: #14301F; color: var(--good); }
 .chip.badc { background: #3A2024; color: #FF8A8A; }
 .chip.neutral { background: var(--line); color: var(--soft); }
@@ -117,3 +117,41 @@ pre.src { padding: 10px 12px; font-size: 12.5px; line-height: 1.55; color: #D6DE
 .tick { flex: 1 1 0; min-width: 2px; cursor: pointer; }
 .tick.current { outline: 2px solid #fff; outline-offset: -2px; }
 .scrubnums { display: flex; justify-content: space-between; margin-top: 4px; color: var(--muted); gap: 8px; }
+
+.viewtabs { display: flex; gap: 6px; }
+.viewtabs .btn { min-height: 34px; }
+
+.wall { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px 20px; align-items: flex-start; }
+.wall .wide { flex: 1 1 560px; }
+.wall .mid { flex: 1 1 380px; }
+.wall .full { flex: 1 1 100%; }
+.tablewrap { overflow-x: auto; margin-top: 12px; }
+.cmp { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 12.5px; }
+.cmp th { color: var(--muted); font-size: 11.5px; font-weight: 500; text-align: right; padding: 6px 8px; font-family: var(--sans); }
+.cmp td { text-align: right; padding: 10px 8px; border-top: 1px solid var(--line); white-space: nowrap; }
+.cmp .left { text-align: left; }
+.cmp .solved { color: var(--text); font-weight: 500; }
+.cmp .solved.unscored { color: var(--submit); font-weight: 400; }
+.cmp .srccell { font-size: 11px; }
+.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; }
+.cmp .chip { margin-left: 8px; }
+
+.matrix { display: flex; flex-direction: column; gap: 2px; min-width: 240px; }
+.mrow { display: grid; gap: 8px; align-items: center; padding: 4px 8px; border-radius: 6px; }
+.mrow.alt { background: var(--raised); }
+.mhead { color: var(--muted); font-size: 11px; }
+.mcol { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mid { background: transparent; border: 0; color: var(--text); font-size: 12.5px; text-align: left; padding: 4px 0; min-height: 28px; cursor: pointer; }
+.mid:hover { color: var(--teal); }
+.oc { border: 1px solid transparent; border-radius: 4px; padding: 2px 0; min-height: 28px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.oc:hover { border-color: var(--teal); }
+.legend .round { border-radius: 50%; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-top: 14px; }
+.tile { display: flex; align-items: center; gap: 12px; text-align: left; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px; color: inherit; cursor: pointer; min-width: 0; }
+.tile:hover { border-color: var(--teal) !important; }
+.thumb { flex: 0 0 64px; width: 64px; display: flex; justify-content: center; overflow: hidden; }
+.thumb-missing { width: 64px; padding: 14px 4px; border: 1px dashed var(--line); text-align: center; }
+.tmeta { min-width: 0; }
+.tstatus { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--soft); }
+.tmeta .mono.small { margin-top: 4px; }

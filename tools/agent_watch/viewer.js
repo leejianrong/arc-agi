@@ -208,7 +208,7 @@
     var w = Array.isArray(sub.wrong) ? sub.wrong : [];
     if (!w.length) return Array.isArray(sub.outputs) && sub.outputs.some(function (o) { return o == null; }) ? 'The program produced no output for some examples.' : '';
     return w.slice(0, 3).map(function (x) {
-      return 'Example ' + (num(x.ex) + 1) + ': ' + num(x.total) + ' cells wrong.';
+      return 'Example ' + (num(x.ex) + 1) + ': ' + plural(num(x.total), 'cell') + ' wrong.';
     }).join(' ');
   }
 
@@ -222,6 +222,12 @@
     var s = Math.max(0, Math.floor(num(sec)));
     function p(x) { return (x < 10 ? '0' : '') + x; }
     return p(Math.floor(s / 3600)) + ':' + p(Math.floor((s % 3600) / 60)) + ':' + p(s % 60);
+  }
+
+  /* '1 cell', '2 cells', '0 cells'. */
+  function plural(n, one, many) {
+    var v = num(n);
+    return v === 1 ? '1 ' + one : formatInt(v) + ' ' + (many || one + 's');
   }
 
   function formatInt(n) { return Math.round(num(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
@@ -265,12 +271,144 @@
     return Math.max(MIN_DELAY_MS, Math.round(s * 1000));
   }
 
+
+  /* ---------------------------------------------------------------- run wall */
+
+  function sumTokens(run) {
+    var tokens = 0;
+    run.tasks.forEach(function (t) {
+      t.events.forEach(function (e) { if (e.ev === 'turn') tokens += num(e.completion_tokens); });
+    });
+    return tokens;
+  }
+
+  /* One comparison row for a config's run: run_end.summary fields win, anything
+   * missing is computed from events. solved is null (unscored, never 0) when no
+   * task_end carries solved data and the summary has no count. */
+  function configSummary(run) {
+    var tot = computeTotals(run);
+    var hit = 0, of = 0, scored = false;
+    run.tasks.forEach(function (t) {
+      t.events.forEach(function (e) {
+        if (e.ev !== 'task_end' || !Array.isArray(e.solved)) return;
+        e.solved.forEach(function (v) {
+          if (typeof v !== 'boolean') return;
+          scored = true; of++;
+          if (v) hit++;
+        });
+      });
+    });
+    var sm = run.end && run.end.summary && typeof run.end.summary === 'object' ? run.end.summary : null;
+    function pick(key, computed) { return sm && typeof sm[key] === 'number' && isFinite(sm[key]) ? sm[key] : computed; }
+    var wall = pick('wall_s', run.lastT);
+    var tokens = pick('tokens', tot.tokens);
+    var solved = pick('solved_test_inputs', scored ? hit : null);
+    return {
+      name: run.cfg == null ? 'default' : run.cfg, source: sm ? 'run_end' : 'events', hasTrace: true,
+      tasks: pick('tasks', run.tasks.length), verified: pick('verified', tot.verified), tokens: tokens,
+      tokS: pick('tok_s', wall > 0 ? tokens / wall : null), wallS: wall,
+      solved: solved, solvedOf: scored ? of : null, unscored: solved == null, error: null
+    };
+  }
+
+  function numOrNull(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+
+  /* A bench_results.json row (see kaggle/arc2_synth/launcher.py.tmpl): name, mode,
+   * tasks, wall_s, tokens, tok_s, verified (may be null), score ([hit, total] or
+   * null). A plain `solved` number or "h/t" string is accepted too. */
+  function normalizeBenchRow(r) {
+    var solved = null, of = null, m;
+    if (Array.isArray(r.score) && numOrNull(r.score[0]) != null && numOrNull(r.score[1]) != null) { solved = r.score[0]; of = r.score[1]; }
+    else if (numOrNull(r.solved) != null) solved = r.solved;
+    else if (typeof r.solved === 'string' && (m = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(r.solved))) { solved = +m[1]; of = +m[2]; }
+    return {
+      name: r.name, mode: typeof r.mode === 'string' ? r.mode : null, source: 'bench', hasTrace: false,
+      tasks: numOrNull(r.tasks), verified: numOrNull(r.verified), tokens: numOrNull(r.tokens), tokS: numOrNull(r.tok_s),
+      wallS: numOrNull(r.wall_s), solved: solved, solvedOf: of, unscored: solved == null,
+      error: typeof r.error === 'string' ? r.error : null
+    };
+  }
+
+  /* Rows of a bench_results.json text (a JSON array, or an object holding a list
+   * under rows/results/configs), or null when the text is not that. */
+  function parseBench(text) {
+    var o;
+    try { o = JSON.parse(String(text)); } catch (err) { return null; }
+    var list = null;
+    if (Array.isArray(o)) list = o;
+    else if (o && typeof o === 'object' && typeof o.ev !== 'string') {
+      ['rows', 'results', 'configs'].forEach(function (k) { if (!list && Array.isArray(o[k])) list = o[k]; });
+    }
+    if (!list) return null;
+    var rows = list.filter(function (r) { return r && typeof r === 'object' && !Array.isArray(r) && typeof r.name === 'string'; })
+      .map(normalizeBenchRow);
+    return rows.length ? rows : null;
+  }
+
+  /* Comparison table rows: every loaded trace config, then bench rows whose name
+   * has no trace. `runs` is [{cfg, run}]. */
+  function comparisonRows(runs, bench) {
+    var rows = runs.map(function (r) { return configSummary(r.run); });
+    var have = {};
+    rows.forEach(function (r) { have[r.name] = true; });
+    (bench || []).forEach(function (b) { if (!have[b.name]) { have[b.name] = true; rows.push(b); } });
+    return rows;
+  }
+
+  /* S solved, V verified but not solved (or solved unknown), F failed, '-' not
+   * reached (nothing recorded, or still running). */
+  function taskOutcome(task) {
+    if (!task || !task.events.length) return '-';
+    var end = null;
+    task.events.forEach(function (e) { if (e.ev === 'task_end') end = e; });
+    if (end) {
+      var sol = Array.isArray(end.solved) ? end.solved.filter(function (v) { return typeof v === 'boolean'; }) : [];
+      if (sol.length && sol.every(function (v) { return v; })) return 'S';
+      return num(end.verified) > 0 || taskStatus(task.events) === 'verified' ? 'V' : 'F';
+    }
+    var st = taskStatus(task.events);
+    return st === 'verified' ? 'V' : st === 'unverified' ? 'F' : '-';
+  }
+
+  function outcomeMatrix(runs) {
+    var ids = [], seen = {};
+    runs.forEach(function (r) {
+      r.run.tasks.forEach(function (t) { if (!seen[t.id]) { seen[t.id] = true; ids.push(t.id); } });
+    });
+    var maps = runs.map(function (r) {
+      var m = {};
+      r.run.tasks.forEach(function (t) { m[t.id] = t; });
+      return m;
+    });
+    return {
+      cfgs: runs.map(function (r) { return r.cfg; }),
+      rows: ids.map(function (id) { return { id: id, outcomes: maps.map(function (m) { return taskOutcome(m[id]); }) }; })
+    };
+  }
+
+  /* What a wall tile shows: the final attempt_1 when there is one, else the first
+   * train input. */
+  function tileInfo(task) {
+    var turns = 0, tokens = 0, final = null, grid = null, gridKind = null;
+    task.events.forEach(function (e) {
+      if (e.ev === 'turn') { turns++; tokens += num(e.completion_tokens); }
+      if (e.ev === 'task_end' && Array.isArray(e.rows) && e.rows[0] && gridDims(e.rows[0].attempt_1)[0]) final = e.rows[0].attempt_1;
+    });
+    if (final) { grid = final; gridKind = 'attempt'; }
+    else if (task.start && Array.isArray(task.start.train) && task.start.train[0] && gridDims(task.start.train[0].input)[0]) {
+      grid = task.start.train[0].input; gridKind = 'input';
+    }
+    return { id: task.id, status: taskStatus(task.events), turns: turns, tokens: tokens, grid: grid, gridKind: gridKind };
+  }
+
   var api = {
     PALETTE: PALETTE, SPEEDS: [1, 2, 4, 8, 32], parseJsonl: parseJsonl, listConfigs: listConfigs, buildRun: buildRun,
     taskStatus: taskStatus, stateAt: stateAt, gridDiff: gridDiff, countPairs: countPairs,
     pickSubmitExample: pickSubmitExample, submitDetail: submitDetail, excerpt: excerpt, formatClock: formatClock,
-    formatInt: formatInt, formatDur: formatDur, computeTotals: computeTotals, heartbeatSeries: heartbeatSeries,
-    tickColor: tickColor, playbackDelayMs: playbackDelayMs, escapeHtml: escapeHtml
+    formatInt: formatInt, plural: plural, formatDur: formatDur, computeTotals: computeTotals, heartbeatSeries: heartbeatSeries,
+    tickColor: tickColor, playbackDelayMs: playbackDelayMs, escapeHtml: escapeHtml,
+    configSummary: configSummary, normalizeBenchRow: normalizeBenchRow, parseBench: parseBench,
+    comparisonRows: comparisonRows, taskOutcome: taskOutcome, outcomeMatrix: outcomeMatrix, tileInfo: tileInfo
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (typeof document === 'undefined') return;
@@ -279,7 +417,7 @@
 
   var S = {
     events: [], cfg: null, run: null, taskId: null, idx: 0, speed: 8, playing: false, timer: null,
-    tab: 0, expanded: {}, file: null, notes: ''
+    tab: 0, expanded: {}, files: [], notes: '', view: 'watch', bench: [], wallRuns: [], wallCfg: null
   };
   var $ = function (id) { return document.getElementById(id); };
 
@@ -353,12 +491,19 @@
     } else chip.textContent = 'no trace loaded';
     var cfgs = listConfigs(S.events);
     var sel = clear($('cfgsel'));
-    sel.hidden = cfgs.length < 2;
+    sel.hidden = cfgs.length < 2 || S.view !== 'watch';
     cfgs.forEach(function (c) {
       var o = h('option', { value: c, text: c });
       if (c === S.cfg) o.selected = true;
       sel.appendChild(o);
     });
+    var wallTab = $('tab-wall'), watchTab = $('tab-watch');
+    wallTab.setAttribute('aria-pressed', S.view === 'wall' ? 'true' : 'false');
+    watchTab.setAttribute('aria-pressed', S.view === 'watch' ? 'true' : 'false');
+    if (S.view === 'wall') {
+      chip.textContent = S.wallRuns.length + (S.wallRuns.length === 1 ? ' config' : ' configs') + ' from traces'
+        + (S.bench.length ? ', ' + S.bench.length + ' from bench_results' : '');
+    }
     var tot = run ? computeTotals(run) : null;
     $('t-elapsed').textContent = tot ? formatClock(tot.elapsed) : '--';
     $('t-tokens').textContent = tot ? formatInt(tot.tokens) : '--';
@@ -478,7 +623,7 @@
       });
       var pairs = countPairs(cells);
       if (pairs.length) lines.appendChild(h('div', { class: 'muted', text: 'pairs (got→expected): ' + pairs.slice(0, 6).map(function (p) { return p.got + '→' + p.expected + ' ×' + p.n; }).join(', ') }));
-      if (cells.length > 10) lines.appendChild(h('div', { class: 'muted', text: '+' + (cells.length - 10) + ' more wrong cells' }));
+      if (cells.length > 10) lines.appendChild(h('div', { class: 'muted', text: '+' + (cells.length - 10) + ' more wrong ' + (cells.length - 10 === 1 ? 'cell' : 'cells') }));
       if (!cells.length && got) lines.appendChild(h('div', { class: 'muted', text: 'No wrong cells on this example.' }));
       sp.appendChild(lines);
       var flags = Array.isArray(sub.flags) ? sub.flags : [];
@@ -572,6 +717,135 @@
     }
   }
 
+
+  /* ------------------------------------------------------------------ run wall */
+
+  var CFG_COLORS = ['#3DD9C0', '#8E7CF8', '#6CB6FF', '#FFC857', '#FF851B', '#F012BE', '#2ECC40', '#7FDBFF'];
+  var OUTCOME = {
+    S: { label: 'solved', bg: '#16301F', fg: '#4ADE80' },
+    V: { label: 'verified, not solved', bg: '#3A2F18', fg: '#FFC857' },
+    F: { label: 'failed', bg: '#3A2024', fg: '#FF8A8A' },
+    '-': { label: 'not reached', bg: '#232A33', fg: '#9AA4B2' }
+  };
+  var TILE_RING = { verified: '#2F5A3F', running: '#6B5420', unverified: '#6B2A31', queued: '#2A313B' };
+
+  function wallRun(cfg) {
+    for (var i = 0; i < S.wallRuns.length; i++) if (S.wallRuns[i].cfg === cfg) return S.wallRuns[i].run;
+    return null;
+  }
+
+  function openTask(cfg, id) {
+    stop();
+    S.view = 'watch';
+    if (cfg != null) { S.cfg = cfg; S.run = buildRun(S.events, cfg); }
+    selectTask(id);
+  }
+
+  function fmtOpt(v, f) { return v == null ? '--' : f(v); }
+
+  function renderWall() {
+    var box = clear($('wall'));
+    var runs = S.wallRuns;
+    if (!runs.some(function (r) { return r.cfg === S.wallCfg; })) S.wallCfg = runs.length ? runs[0].cfg : null;
+
+    var rows = comparisonRows(runs, S.bench);
+    var tbody = h('tbody');
+    rows.forEach(function (r, i) {
+      var solvedTxt = r.unscored ? 'unscored' : String(r.solved) + (r.solvedOf != null ? ' / ' + r.solvedOf : '');
+      var swatch = h('span', { class: 'swatch' });
+      swatch.style.background = CFG_COLORS[i % CFG_COLORS.length];
+      var nameCell = h('td', { class: 'left' }, swatch, h('span', { text: r.name }));
+      if (r.error) nameCell.appendChild(h('span', { class: 'chip small badc', title: r.error, text: 'error' }));
+      var src = r.source === 'run_end' ? 'trace, run_end summary' : r.source === 'events' ? 'trace, computed from events' : 'bench_results.json';
+      tbody.appendChild(h('tr', { title: src },
+        nameCell,
+        h('td', { text: fmtOpt(r.tasks, formatInt) }),
+        h('td', { text: fmtOpt(r.tokens, formatInt) }),
+        h('td', { text: fmtOpt(r.tokS, function (v) { return formatInt(v); }) }),
+        h('td', { text: fmtOpt(r.verified, formatInt) }),
+        h('td', { class: 'solved' + (r.unscored ? ' unscored' : ''), text: solvedTxt }),
+        h('td', { text: fmtOpt(r.wallS, formatDur) }),
+        h('td', { class: 'srccell muted', text: r.source === 'bench' ? 'bench' : 'trace' })));
+    });
+    function th(t, left) { return h('th', { class: left ? 'left' : null, text: t }); }
+    var compare = h('section', { class: 'panel wide' },
+      h('h2', { text: 'Config comparison' }),
+      h('div', { class: 'muted small', text: 'Summary from run_end when the trace has one, otherwise computed from its events. Solved needs public answers: without them it reads unscored.' }),
+      h('div', { class: 'tablewrap' }, h('table', { class: 'cmp mono' },
+        h('thead', null, h('tr', null, th('CONFIG', true), th('TASKS'), th('TOKENS'), th('TOK/S'), th('VERIFIED'), th('SOLVED'), th('WALL'), th('FROM'))),
+        tbody)));
+    box.appendChild(compare);
+
+    var mx = outcomeMatrix(runs);
+    var matrix = h('section', { class: 'panel mid' },
+      h('h2', { text: 'Per-task outcome by config' }),
+      h('div', { class: 'muted small', text: 'S solved · V verified but not solved · F failed · - not reached. Click a letter to open that task in the Watch view.' }));
+    if (!mx.rows.length) {
+      matrix.appendChild(h('p', { class: 'muted small', text: runs.length ? 'No tasks listed in the loaded traces.' : 'No trace loaded: only the table has data.' }));
+    } else {
+      var cols = 'minmax(110px, 1fr) repeat(' + mx.cfgs.length + ', minmax(64px, 96px))';
+      var grid = h('div', { class: 'matrix' });
+      var head = h('div', { class: 'mrow mhead' }, h('span', { class: 'grow', text: 'TASK' }));
+      head.style.gridTemplateColumns = cols;
+      mx.cfgs.forEach(function (c) { head.appendChild(h('span', { class: 'mcol', title: c, text: c })); });
+      grid.appendChild(head);
+      mx.rows.forEach(function (row, i) {
+        var r = h('div', { class: 'mrow' + (i % 2 ? '' : ' alt') });
+        r.style.gridTemplateColumns = cols;
+        r.appendChild(h('button', { class: 'mid mono', type: 'button', title: 'Open ' + row.id + ' in the Watch view',
+          on: { click: function () { openTask(S.wallCfg, row.id); } }, text: row.id }));
+        row.outcomes.forEach(function (o, k) {
+          var info = OUTCOME[o], cfg = mx.cfgs[k];
+          var b = h('button', { class: 'oc mono', type: 'button', title: row.id + ' in ' + cfg + ': ' + info.label,
+            'aria-label': row.id + ' in ' + cfg + ': ' + info.label, on: { click: function () { openTask(cfg, row.id); } }, text: o });
+          b.style.background = info.bg; b.style.color = info.fg;
+          r.appendChild(b);
+        });
+        grid.appendChild(r);
+      });
+      matrix.appendChild(h('div', { class: 'tablewrap' }, grid));
+    }
+    box.appendChild(matrix);
+
+    var tiles = h('section', { class: 'panel full' });
+    var run = wallRun(S.wallCfg);
+    var sel = null;
+    if (runs.length > 1) {
+      sel = h('select', { class: 'btn', 'aria-label': 'Config for the tile wall', on: { change: function (e) { S.wallCfg = e.target.value; renderWall(); } } });
+      runs.forEach(function (r) { sel.appendChild(h('option', { value: r.cfg, text: r.cfg, selected: r.cfg === S.wallCfg })); });
+    }
+    tiles.appendChild(h('div', { class: 'row-between wrap' },
+      h('h2', null, run ? 'Tasks in ' : 'Tasks', run ? h('span', { class: 'mono', text: S.wallCfg }) : null,
+        h('span', { class: 'muted small', text: run ? '  click a tile to open it in the Watch view' : '' })),
+      sel,
+      h('div', { class: 'legend small' }, ['verified', 'running', 'unverified', 'queued'].map(function (k) {
+        var d = h('i', { class: 'round' });
+        d.style.background = STATUS[k][0];
+        return h('span', null, d, k);
+      }))));
+    if (!run) {
+      tiles.appendChild(h('p', { class: 'muted small', text: 'Load a trace.jsonl to see its tasks as tiles.' }));
+    } else {
+      var wallGrid = h('div', { class: 'tiles' });
+      run.tasks.forEach(function (t) {
+        var ti = tileInfo(t), info = STATUS[ti.status];
+        var thumb = ti.grid ? gridEl(ti.grid, { box: 64, max: 8, label: ti.gridKind === 'attempt' ? 'final attempt for ' + t.id : 'first example input of ' + t.id })
+          : h('div', { class: 'thumb-missing small muted', text: 'no grid' });
+        var meta = ti.turns || ti.tokens ? plural(ti.turns, 'turn') + ' · ' + formatInt(ti.tokens) + ' tok' : 'not started';
+        var tile = h('button', { class: 'tile', type: 'button', on: { click: function () { openTask(S.wallCfg, t.id); } } },
+          h('div', { class: 'thumb' }, thumb),
+          h('div', { class: 'tmeta' },
+            h('div', { class: 'mono', text: t.id }),
+            h('div', { class: 'tstatus small' }, h('i', { class: 'dot', style: 'background:' + info[0] }), info[1]),
+            h('div', { class: 'mono muted small', text: meta })));
+        tile.style.borderColor = TILE_RING[ti.status];
+        wallGrid.appendChild(tile);
+      });
+      tiles.appendChild(wallGrid);
+    }
+    box.appendChild(tiles);
+  }
+
   function renderScrubber(task, state) {
     var track = clear($('ticks'));
     var evs = task ? task.events : [];
@@ -609,13 +883,21 @@
     var state = task && n ? stateAt(task, S.idx) : null;
     var main = $('main');
     var scrollTop = main ? main.scrollTop : 0;
-    $('empty').hidden = !!S.run;
-    $('layout').hidden = !S.run;
+    var watch = S.view === 'watch';
+    var has = !!S.run || S.bench.length > 0;
+    $('empty').hidden = watch ? !!S.run : has;
+    $('layout').hidden = !watch || !S.run;
+    $('wall').hidden = watch || !has;
+    $('footer').hidden = !watch;
     renderHeader();
-    renderRight(state);
-    renderLeft(task, state);
-    renderCenter(task, state);
-    renderScrubber(task, state);
+    if (watch) {
+      renderRight(state);
+      renderLeft(task, state);
+      renderCenter(task, state);
+      renderScrubber(task, state);
+    } else {
+      renderWall();
+    }
     if (keepScroll && main) main.scrollTop = scrollTop;
   }
 
@@ -656,17 +938,34 @@
     schedule();
   }
 
-  function loadText(text, name) {
+  /* items: [{name, text}] from one pick or drop. Traces are merged per cfg (a later
+   * file replaces an earlier one with the same cfg); bench_results.json rows go to
+   * the comparison table. A new load replaces what was loaded before. */
+  function loadItems(items) {
     stop();
-    var p = parseJsonl(text);
-    S.events = p.events;
-    var cfgs = listConfigs(p.events);
+    var byCfg = {}, order = [], notes = [], bench = [];
+    items.forEach(function (it) {
+      var rows = parseBench(it.text);
+      if (rows) { bench = bench.concat(rows); notes.push(it.name + ': ' + plural(rows.length, 'bench row')); return; }
+      var p = parseJsonl(it.text);
+      p.events.forEach(function (e) {
+        var c = cfgOf(e);
+        if (!byCfg[c] || byCfg[c].file !== it.name) { if (!byCfg[c]) order.push(c); byCfg[c] = { file: it.name, events: [] }; }
+        byCfg[c].events.push(e);
+      });
+      notes.push(it.name + ': ' + p.events.length + ' events'
+        + (p.truncated ? ', truncated last line ignored' : '') + (p.bad ? ', ' + p.bad + ' bad lines skipped' : '')
+        + (p.unknown ? ', ' + p.unknown + ' unknown events ignored' : '')
+        + (!p.events.length ? ' (no usable events)' : ''));
+    });
+    S.events = [];
+    order.forEach(function (c) { S.events = S.events.concat(byCfg[c].events); });
+    S.bench = bench;
+    S.notes = notes.join(' | ');
+    var cfgs = listConfigs(S.events);
+    S.wallRuns = cfgs.map(function (c) { return { cfg: c, run: buildRun(S.events, c) }; });
     S.cfg = cfgs.indexOf(S.cfg) >= 0 ? S.cfg : cfgs[0] || null;
-    S.notes = name + ': ' + p.events.length + ' events'
-      + (p.truncated ? ', truncated last line ignored' : '') + (p.bad ? ', ' + p.bad + ' bad lines skipped' : '')
-      + (p.unknown ? ', ' + p.unknown + ' unknown events ignored' : '');
-    S.run = p.events.length ? buildRun(p.events, S.cfg) : null;
-    if (!S.run) S.notes = name + ': no usable events found';
+    S.run = S.events.length ? buildRun(S.events, S.cfg) : null;
     if (S.run) {
       var pick = S.run.tasks.filter(function (t) { return t.id === S.taskId; })[0]
         || S.run.tasks.filter(function (t) { return taskStatus(t.events) === 'running'; })[0]
@@ -675,20 +974,24 @@
       var t = curTask();
       S.idx = t && t.events.length ? t.events.length - 1 : 0;
       S.tab = 0; S.expanded = {};
-    }
+    } else if (bench.length) S.view = 'wall';
+    else S.notes = (S.notes ? S.notes + ' | ' : '') + 'nothing usable found';
     render();
   }
-  function loadFile(file) {
-    if (!file) return;
-    S.file = file;
-    file.text().then(function (txt) { loadText(txt, file.name); }, function (err) {
-      S.notes = 'Could not read ' + file.name + ': ' + (err && err.message ? err.message : 'error') + '. Pick the file again.';
-      render();
-    });
+  function loadFiles(list) {
+    var files = Array.prototype.slice.call(list || []);
+    if (!files.length) return;
+    S.files = files;
+    Promise.all(files.map(function (f) { return f.text().then(function (txt) { return { name: f.name, text: txt }; }); }))
+      .then(loadItems, function (err) {
+        S.notes = 'Could not read the file(s): ' + (err && err.message ? err.message : 'error') + '. Pick them again.';
+        render();
+      });
   }
 
   function onKey(ev) {
     var tg = ev.target, tag = tg && tg.tagName;
+    if (S.view !== 'watch') return;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     if (ev.key === 'ArrowLeft') { ev.preventDefault(); stop(); seek(S.idx - 1); }
     else if (ev.key === 'ArrowRight') { ev.preventDefault(); stop(); seek(S.idx + 1); }
@@ -698,9 +1001,11 @@
   }
 
   function init() {
-    $('file').addEventListener('change', function (e) { loadFile(e.target.files && e.target.files[0]); e.target.value = ''; });
+    $('file').addEventListener('change', function (e) { loadFiles(e.target.files); e.target.value = ''; });
+    $('tab-watch').addEventListener('click', function () { stop(); S.view = 'watch'; render(); });
+    $('tab-wall').addEventListener('click', function () { stop(); S.view = 'wall'; render(); });
     $('btn-open').addEventListener('click', function () { $('file').click(); });
-    $('btn-reload').addEventListener('click', function () { if (S.file) loadFile(S.file); else $('file').click(); });
+    $('btn-reload').addEventListener('click', function () { if (S.files.length) loadFiles(S.files); else $('file').click(); });
     $('cfgsel').addEventListener('change', function (e) {
       stop(); S.cfg = e.target.value; S.run = buildRun(S.events, S.cfg);
       var first = S.run.tasks.filter(function (t) { return t.events.length; })[0] || S.run.tasks[0];
@@ -714,7 +1019,7 @@
     document.addEventListener('dragleave', function (e) { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
     document.addEventListener('drop', function (e) {
       e.preventDefault(); document.body.classList.remove('dragging');
-      loadFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+      loadFiles(e.dataTransfer && e.dataTransfer.files);
     });
     render();
   }

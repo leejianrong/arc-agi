@@ -24,6 +24,18 @@ mode (several `cfg` values) a config selector appears in the header.
 - Centre: turn timeline of THINKING, PYTHON and SUBMIT cards, a THINKING NOW card when the attempt has no reply yet.
 - Footer scrubber: one tick per event of the selected task. Everything shows the state as of the chosen event.
 
+## Run wall
+
+The **Run wall** tab (header, next to **Watch**) compares configs. Pick or drop several files at once: each trace is one
+or more configs (`cfg`), and a `bench_results.json` (the notebook's bench output) adds table rows for configs that have no
+trace. A new load replaces the previous one. Try `sample/sample_trace.jsonl` and `sample/sample_trace_b.jsonl` together.
+
+- Config comparison: from `run_end.summary` when present, else computed from events (solved reads `unscored`, never 0,
+  when no `task_end` has solved data).
+- Per-task outcome matrix: S solved, V verified but not solved, F failed, - not reached.
+- Tile wall for one config (selector above it): thumbnail, status, turns and tokens. Clicking a tile, a matrix letter
+  or a task id opens that task in Watch.
+
 ## Keyboard
 
 Left and right arrows step one event, Home and End jump, space plays or pauses (when a button is not focused).
@@ -32,4 +44,4 @@ Playback waits the event `t` gap divided by the speed (1x, 2x, 4x, 8x, 32x), cap
 ## Tests and sample
 
 - `node --test tools/agent_watch/test` (also run by `tests/test_agent_watch_js.py` when `node` is installed).
-- `python3 tools/agent_watch/sample/make_sample.py` regenerates the synthetic sample trace.
+- `python3 tools/agent_watch/sample/make_sample.py` regenerates the synthetic sample traces (`sample_trace.jsonl`, and `sample_trace_b.jsonl`, a second config).

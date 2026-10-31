@@ -13,9 +13,13 @@
     <h1>ARC Agent Watch</h1>
   </div>
   <div class="runchip mono" id="runchip">no trace loaded</div>
+  <div class="viewtabs" role="group" aria-label="View">
+    <button class="btn" id="tab-watch" type="button" aria-pressed="true">Watch</button>
+    <button class="btn" id="tab-wall" type="button" aria-pressed="false">Run wall</button>
+  </div>
   <select id="cfgsel" class="btn" aria-label="Config" hidden></select>
-  <button class="btn primary" id="btn-open" type="button">Open trace.jsonl</button>
-  <input type="file" id="file" class="visually-hidden" tabindex="-1" aria-hidden="true" accept=".jsonl,.json,.txt,application/json,text/plain">
+  <button class="btn primary" id="btn-open" type="button">Open trace(s)</button>
+  <input type="file" id="file" multiple class="visually-hidden" tabindex="-1" aria-hidden="true" accept=".jsonl,.json,.txt,application/json,text/plain">
   <button class="btn" id="btn-reload" type="button">Reload</button>
   <div class="grow"></div>
   <div class="totals mono">
@@ -30,8 +34,9 @@
 <main id="main">
   <div id="empty" class="empty">
     <p><strong>Open a trace to start.</strong></p>
-    <p class="muted">Use the button above or drop a <span class="mono">trace.jsonl</span> anywhere on this page. Nothing leaves your browser.</p>
+    <p class="muted">Use the button above or drop one or several <span class="mono">trace.jsonl</span> files (and optionally a <span class="mono">bench_results.json</span>) anywhere on this page. Nothing leaves your browser.</p>
   </div>
+  <div id="wall" class="wall" hidden></div>
   <div id="layout" class="layout" hidden>
     <div id="left" class="col left"></div>
     <div id="center" class="col center"></div>
@@ -39,7 +44,7 @@
   </div>
 </main>
 
-<footer class="scrubber">
+<footer class="scrubber" id="footer">
   <div class="controls">
     <button class="btn" id="btn-prev" type="button" aria-label="Previous event">Prev</button>
     <button class="btn primary" id="btn-play" type="button" aria-label="Play replay">Play</button>

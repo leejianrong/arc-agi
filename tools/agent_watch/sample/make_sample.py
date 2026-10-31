@@ -3,12 +3,14 @@
 Run: python3 tools/agent_watch/sample/make_sample.py
 Three tasks: 135a2760 (failing submit first, then verified), 136b0064 (never verified),
 142ca369 (cut-off turn, still running). Two more ids are listed in run_start only (queued).
+sample_trace_b.jsonl is a second config ("fresh") over the same tasks, so the run wall has two columns to compare.
 """
 
 import json
 from pathlib import Path
 
 OUT = Path(__file__).with_name("sample_trace.jsonl")
+OUT_B = Path(__file__).with_name("sample_trace_b.jsonl")
 CFG = "default"
 
 
@@ -124,6 +126,39 @@ turn(160, C, 2, 49152, "Let me define the ray carefully. The pixel at (1,1) shoo
 for i, (t, tok) in enumerate([(30, 212), (90, 251), (150, 268), (165, 259)]):
     ev(t + 0.5, "heartbeat", tok_s=tok, running=3 - (1 if t > 140 else 0), waiting=0, kv_pct=40 + i * 6, gpu_mem_mib=71000 + i * 120)
 
-events.sort(key=lambda e: e["t"])
-OUT.write_text("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in events))
-print(f"wrote {len(events)} events to {OUT}")
+def write(path):
+    events.sort(key=lambda e: e["t"])
+    path.write_text("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in events))
+    print(f"wrote {len(events)} events to {path}")
+
+
+write(OUT)
+
+# ---------------------------------------------------------------- config "fresh": same tasks, other outcomes
+# A verified but wrong on the test input (V), B never verified (F), C verified and solved (S), two tasks never reached.
+# Has a run_end summary (the default config above deliberately has none, so the wall shows both sources).
+CFG = "fresh"
+events = []
+ev(0.0, "run_start", run="sample-001", model="synthetic-model", effort="low", mode="agent", persist=0,
+   tasks=[A, B, C, "16b78196", "1818057f"], started_at="2026-11-01T09:00:00Z")
+ev(1.0, "task_start", A, train=a_train, test=[{"input": a_test_in}], answers=[a_test_out])
+turn(20, A, 1, 2100, "Fix the stray cells by looking two columns back.", [("submit", prog1)], dur=18.0)
+submit(20.4, A, 1, prog1, a_train, [a_train[0]["output"], a_train[1]["output"]], tests=[with_cells(a_test_out, {(0, 0): 9})])
+ev(21, "attempt_end", A, att=0, status="verified", verified=True, tokens=2100, turns=1, python_calls=0, submits=1, wall_s=20.0)
+ev(21.1, "task_end", A, rows=[{"attempt_1": with_cells(a_test_out, {(0, 0): 9}), "attempt_2": None}], verified=1, solved=[False])
+ev(22.0, "task_start", B, train=b_train, test=[{"input": [[3, 3, 0, 0], [0, 3, 0, 3], [3, 0, 3, 0]]}], answers=[None])
+turn(40, B, 1, 1800, "Try the flip-and-roll idea.", [("submit", prog_b1)], dur=17.0)
+submit(40.4, B, 1, prog_b1, b_train, ob, flags=["hardcodes training literal"])
+ev(41, "attempt_end", B, att=0, status="max_turns", verified=False, tokens=1800, turns=1, python_calls=0, submits=1, wall_s=19.0)
+ev(41.1, "task_end", B, rows=[{"attempt_1": None, "attempt_2": None}], verified=0, solved=[False])
+c_out = [[0, 0, 0], [0, 4, 0], [0, 0, 4]]
+ev(42.0, "task_start", C, train=c_train, test=[{"input": [[0, 0, 0], [0, 4, 0], [0, 0, 0]]}], answers=[c_out])
+prog_c = "def solve(g):\n    out = [row[:] for row in g]\n    for r in range(len(g) - 1):\n        for c in range(len(g[0]) - 1):\n            if g[r][c]:\n                out[r + 1][c + 1] = g[r][c]\n    return out\n"
+turn(60, C, 1, 2600, "One step down and right.", [("submit", prog_c)], dur=18.0)
+submit(60.4, C, 1, prog_c, c_train, [g["output"] for g in c_train], tests=[c_out])
+ev(61, "attempt_end", C, att=0, status="verified", verified=True, tokens=2600, turns=1, python_calls=0, submits=1, wall_s=19.0)
+ev(61.1, "task_end", C, rows=[{"attempt_1": c_out, "attempt_2": None}], verified=1, solved=[True])
+for t, tok in [(30, 190), (55, 205)]:
+    ev(t + 0.5, "heartbeat", tok_s=tok, running=1, waiting=0, kv_pct=22, gpu_mem_mib=70500)
+ev(62, "run_end", summary={"tasks": 5, "verified": 2, "solved_test_inputs": 1, "tokens": 6500, "tok_s": 105.0, "wall_s": 62.0})
+write(OUT_B)
