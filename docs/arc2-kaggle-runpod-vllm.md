@@ -152,3 +152,24 @@ A rented pod has no public IP and `rp logs` shows only container stdout, so we b
   crash artifact before relaunching; when a pod stalls past its expected phase time, tear it down rather than wait.
 - **Gap:** no remote shell (sshd is not started because `rp` overrides the container start command), so we cannot
   inspect a live pod beyond what the job prints. Anything we might need to see must be printed by the job.
+
+## Kaggle integration run that worked (2026-10-31, kernel v3, `machine_shape: NvidiaL4`)
+
+First end-to-end run of the generated notebook on the real competition hardware (`kaggle/arc2_synth/launcher.py.tmpl`,
+synth mode, 4 tasks, 8192-token calls, MTP=2):
+
+| Phase | Time into run |
+|---|---|
+| baseline submission written | +0.0 min |
+| `uv venv` (py3.12) | +0.0 min |
+| `uv pip install` of the wheelhouse (cold mount) | **+22.9 min** (the 4 GPUs were visible only after this) |
+| vLLM boot, MTP=2 (no retry needed), 8-request smoke passed | +31.2 min |
+| 4 tasks solved and verified | +35.0 min (225 s of solving, 23,355 tokens) |
+| submission validated: 240 tasks, 0 repaired | +35.0 min |
+
+- 4 GPUs of about 21 GB used each; **about 41 tokens/sec per sequence at 4 concurrent requests** (measured from the
+  calls, with MTP=2), aggregate about 104 tok/s at that concurrency. Better than the 4090 RunPod pods at 16-32 sequences.
+- Startup eats about 31 min of the 12 h budget; most of it is the cold wheelhouse install. Budget for it.
+- The competition's `arc-agi_test_challenges.json` mounted in the kernel contains 240 tasks whose first sorted ids are
+  ARC-AGI-1-style tasks (for example 007bbfb7), so "verified" there says nothing about ARC-AGI-2 difficulty.
+- Not yet exercised on Kaggle: the forced-code path, the MTP=0 retry, higher concurrency, long thinking.
