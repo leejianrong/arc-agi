@@ -9,11 +9,14 @@ turn, overflow retry, repetition guard) are individually switchable and counted 
     python synth_agent.py --challenges C.json --out sub.json [--solutions S.json]
 """
 import argparse
+import contextlib
+import importlib.util
 import json
 import os
 import signal
 import sys
 import threading
+import time
 import urllib.error
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +26,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm_solve as ls
 import repl as rp
 import synth as sy
+
+# loaded by path (the stdlib has a module named `trace`); optional so a kernel bundled without trace.py still runs
+_TRACE_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trace.py")
+tr = None
+if os.path.exists(_TRACE_PY):
+    _spec = importlib.util.spec_from_file_location("arc2_trace", _TRACE_PY)
+    tr = importlib.util.module_from_spec(_spec)
+    sys.modules["arc2_trace"] = tr
+    _spec.loader.exec_module(tr)
 
 SYSTEM_PROMPT = (
     "You are an expert at ARC puzzles. Every puzzle's examples follow one hidden rule that maps an input grid "
@@ -265,8 +277,9 @@ def _default_repl(task, persist=True):
 def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40, max_tokens=32768,
                 attempt_tokens=120000, request_timeout=3600, temperature=0.6, effort="", thinking_budget=0,
                 sandbox_timeout=10, repl_factory=None, hooks=None, on_cand=None, max_hints=1,
-                tool_timeout=None, control=None, persist=1):
-    """One conversation. Returns an Attempt (cands feed ``synth.select_attempts``)."""
+                tool_timeout=None, control=None, persist=1, trace=None, task_id="", att_idx=0):
+    """One conversation. Returns an Attempt (cands feed ``synth.select_attempts``).
+    ``trace``: optional ``trace.TraceWriter``; task_id/att_idx label its events."""
     pre = f"[task {tag}] " if tag else ""
     ctl = control or Control()
     hooks = hooks or ctl
@@ -279,6 +292,31 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
     repl, hints, think = None, 0, thinking_budget
     state = {"attempt": att}
     sigs, overflowed = [], False
+    t_att = sy.clock()
+
+    def emit(ev, **f):
+        if trace:
+            trace.emit(ev, task=task_id, att=att_idx, **f)
+
+    def trace_submit(cand, code):
+        train = task["train"]
+        res = sy.run_program(code, [p["input"] for p in train])  # trace-only re-run for the per-example outputs
+        outs = [r["grid"] if r["status"] == "ok" else None for r in res]
+        wrong = []
+        for i, (o, p) in enumerate(zip(outs, train), 1):
+            want = p["output"]
+            if o == want:
+                continue
+            same = o is not None and len(o) == len(want) and len(o[0]) == len(want[0])
+            cells = [[r, c, g, w] for r, (gr, wr) in enumerate(zip(o, want)) for c, (g, w) in enumerate(zip(gr, wr))
+                     if g != w] if same else []
+            wrong.append({"ex": i, "total": len(cells) if same else len(want) * len(want[0]), "cells": cells[:10]})
+        flags = []
+        if cand["verified"]:
+            flags = list(dict.fromkeys(w for _, ws in sy.plausibility(task, cand) for w in ws))
+        emit("submit", turn=len(att.turns), program=code, reproduced=len(train) - len(cand["fails"]),
+             n_train=len(train), verified=cand["verified"], outputs=outs, wrong=wrong, flags=flags,
+             test_outputs=cand["test_outputs"])
 
     def submit(code):
         att.submits += 1
@@ -295,6 +333,9 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
         att.cands.append(cand)
         if on_cand:
             on_cand(cand)
+        if trace:
+            with contextlib.suppress(Exception):  # tracing must not change the attempt
+                trace_submit(cand, code)
         if cand["verified"]:
             att.verified = True
         seen[key] = (att.submits, reply := submit_reply(cand, task))
@@ -319,21 +360,39 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             return submit(code)
         return f"Unknown tool {call['name']!r}. Tools: python, submit."
 
+    def emit_turn(r, dur, error=None):
+        if not trace:
+            return
+        if r is None:
+            emit("turn", turn=len(att.turns), prompt_tokens=0, completion_tokens=0, reasoning_tokens=0,
+                 finish="error", dur_s=round(dur, 3), reasoning="", content=repr(error), tool_calls=[])
+            return
+        det = r["usage"].get("completion_tokens_details") or {}
+        fin = r["finish_reason"] if r["finish_reason"] in ("stop", "length", "tool_calls") else "stop"
+        emit("turn", turn=len(att.turns), prompt_tokens=r["prompt_tokens"], completion_tokens=r["completion_tokens"],
+             reasoning_tokens=det.get("reasoning_tokens") or 0, finish=fin, dur_s=round(dur, 3),
+             reasoning=r["reasoning"], content=r["content"],
+             tool_calls=[{"id": c["id"], "name": c["name"], "args": c["arguments"]} for c in r["tool_calls"]])
+
     def rescue(why):
         """One last request with thinking off, asking for the best submit; a call or fenced code counts."""
         lim = budget.call_limits(ctl.rescue_tokens, request_timeout)
         if not ctl.rescue or att.events.get("rescue") or sy.clock() > deadline or lim is None:
             return
         att.events["rescue"] = why
+        emit("rescue", turn=len(att.turns) + 1, reason=why)
         att.messages.append({"role": "user", "content": pre + RESCUE_PROMPT})
         info = {"turn": len(att.turns), "rescue": why}
         att.turns.append(info)
+        t_r = sy.clock()
         try:
             r = ls.chat_full(base_url, model, hooks.prepare(att.messages, state), lim[0], lim[1], temperature,
                              {"enable_thinking": False}, tools=TOOLS, tool_choice="auto")
         except Exception as e:  # noqa: BLE001
             info["error"] = repr(e)
+            emit_turn(None, 0.0, error=e)
             return
+        emit_turn(r, sy.clock() - t_r)
         att.tokens += r["completion_tokens"]
         budget.add_tokens(r["completion_tokens"])
         code = next((c["arguments"]["code"] for c in r["tool_calls"] if c["name"] == "submit"
@@ -381,10 +440,12 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                     continue
                 info["error"] = repr(e)
                 att.status = "error"
+                emit_turn(None, sy.clock() - t0, error=e)
                 break
             except Exception as e:  # noqa: BLE001
                 info["error"] = repr(e)
                 att.status = "error"
+                emit_turn(None, sy.clock() - t0, error=e)
                 break
             overflowed = False
             state["prompt_tokens"] = r["prompt_tokens"]
@@ -401,9 +462,14 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             else:
                 msg["content"] = content or "(no reply)"
             att.messages.append(msg)
+            emit_turn(r, sy.clock() - t0)
             if calls:
                 for c in calls:
+                    t_c = sy.clock()
                     text = pre + hooks.tool_result(c["name"], dispatch(c), state)
+                    if c["name"] in ("python", "submit"):
+                        emit("tool_result", turn=len(att.turns), name=c["name"], text=text,
+                             dur_s=round(sy.clock() - t_c, 3))
                     att.messages.append({"role": "tool", "tool_call_id": c["id"], "content": text})
                 if att.verified:
                     att.status = "verified"
@@ -434,6 +500,9 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
         else:
             att.status = "max_turns"
     finally:
+        emit("attempt_end", status=att.status if att.status in tr.STATUSES else "error", verified=att.verified,
+             tokens=att.tokens, turns=len(att.turns), python_calls=att.python_calls, submits=att.submits,
+             wall_s=round(sy.clock() - t_att, 3))
         if repl is not None:
             try:
                 repl.close()
@@ -442,12 +511,24 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
     return att
 
 
+NO_ANSWERS = object()  # solve_task default: no solutions known, task_start carries no `answers`
+
+
+def trace_task_end(trace, tid, rows, verified, answers):
+    solved = [a in (r["attempt_1"], r["attempt_2"]) for r, a in zip(rows, answers)] if answers else None
+    trace.emit("task_end", task=tid, rows=rows, verified=verified, solved=solved)
+
+
 def solve_task(task, args, deadline, on_update=None, fallback_rows=None, tag="", budget=None, repl_factory=None,
-               hooks=None):
-    """Up to args.attempts sequential attempts (stops once args.want_verified programs verified); returns (rows, log)."""
+               hooks=None, trace=None, task_id="", answers=NO_ANSWERS):
+    """Up to args.attempts sequential attempts (stops once args.want_verified programs verified); returns (rows, log).
+    ``answers`` (public solutions, list or None) is only for the trace; the model never sees it."""
     budget = budget or sy.Budget(deadline, 1, 1, args.reserve_sec, args.min_call_tokens)
     fallback_rows = fallback_rows or ls.load_fallback()(task)
     cands, logs = [], []
+    if trace:
+        trace.emit("task_start", task=task_id, train=task["train"], test=[{"input": t["input"]} for t in task["test"]],
+                   **({} if answers is NO_ANSWERS else {"answers": answers}))
 
     def update():
         rows = sy.select_attempts(task, cands, fallback_rows)
@@ -455,7 +536,7 @@ def solve_task(task, args, deadline, on_update=None, fallback_rows=None, tag="",
             on_update(rows)
         return rows
 
-    for _ in range(args.attempts):
+    for idx in range(args.attempts):
         if sy.clock() > deadline or sum(c["verified"] for c in cands) >= args.want_verified:
             break
         att = run_attempt(
@@ -464,7 +545,7 @@ def solve_task(task, args, deadline, on_update=None, fallback_rows=None, tag="",
             request_timeout=args.request_timeout, temperature=args.temperature, effort=args.effort,
             thinking_budget=args.thinking_budget, sandbox_timeout=args.sandbox_timeout,
             repl_factory=repl_factory, hooks=hooks, persist=getattr(args, "persist", 1),
-            on_cand=lambda c: (cands.append(c), update()))
+            on_cand=lambda c: (cands.append(c), update()), trace=trace, task_id=task_id, att_idx=idx)
         logs.append(dict(att.log(), turns_detail=att.turns))
     rows = update()
     best = max(cands, key=lambda c: (c["verified"], c["frac"]), default=None)
@@ -473,6 +554,8 @@ def solve_task(task, args, deadline, on_update=None, fallback_rows=None, tag="",
            "tokens": sum(lg["tokens"] for lg in logs), "verified": sum(c["verified"] for c in cands),
            "candidates": len(cands), "final_program": best["code"] if best else None,
            "final_frac": round(best["frac"], 3) if best else None}
+    if trace:
+        trace_task_end(trace, task_id, rows, log["verified"], answers)
     return rows, log
 
 
@@ -491,6 +574,14 @@ def run(args):
     deadline = t_start + args.deadline_min * 60
     budget = sy.Budget(deadline, len(ids), args.n_parallel, args.reserve_sec, args.min_call_tokens)
     os.makedirs(args.log_dir, exist_ok=True)
+    tw = tr.TraceWriter(args.trace) if getattr(args, "trace", None) else None  # needs trace.py beside this file
+    sol = None
+    if tw:
+        if args.solutions:
+            with open(args.solutions) as f:
+                sol = json.load(f)
+        tw.emit("run_start", run=tw.run_id, model=args.model, effort=args.effort, mode="agent",
+                persist=args.persist, tasks=ids, started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
 
     def flush():
         tmp = f"{args.out}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -517,9 +608,12 @@ def run(args):
             stats["inflight"] += 1
         try:
             rows, log = solve_task(challenges[tid], args, deadline, lambda r: set_rows(tid, r), fallback_rows=fb[tid],
-                                   tag=tid if args.tag_prompts else "", budget=budget)
+                                   tag=tid if args.tag_prompts else "", budget=budget, trace=tw, task_id=tid,
+                                   **({"answers": sol.get(tid)} if sol is not None else {}))
         except Exception as e:  # noqa: BLE001 - one task's failure must not stop the run
             rows, log = fb[tid], {"error": repr(e), "tokens": 0, "verified": 0}
+            if tw:
+                trace_task_end(tw, tid, rows, 0, sol.get(tid) if sol is not None else None)
         dt = sy.clock() - t0
         with lock:
             sub[tid] = rows
@@ -563,6 +657,11 @@ def run(args):
         hits = sum(1 for tid in ids for row, s in zip(sub[tid], sol[tid]) if s in (row["attempt_1"], row["attempt_2"]))
         summary["solved_test_inputs"] = f"{hits}/{sum(len(sol[tid]) for tid in ids)}"
     print("SUMMARY " + json.dumps(summary), flush=True)
+    if tw:
+        tw.emit("run_end", summary={
+            "tasks": len(ids), "verified": stats["verified"], "solved_test_inputs": summary.get("solved_test_inputs"),
+            "tokens": budget.tokens, "tok_s": summary["tok_per_s"], "wall_s": summary["wall_s"]})
+        tw.close()
     return summary
 
 
@@ -592,6 +691,7 @@ def main(argv=None):
     ap.add_argument("--log-dir", default="agent_logs")
     ap.add_argument("--persist", type=int, choices=[0, 1], default=1, help="python variables survive between calls")
     ap.add_argument("--tag-prompts", type=int, default=0, help="prefix every user message with [task <id>]")
+    ap.add_argument("--trace", default=None, help="append a JSONL event trace (docs/arc2-trace-schema.md) here")
     return run(ap.parse_args(argv))
 
 
