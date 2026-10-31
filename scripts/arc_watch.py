@@ -16,6 +16,7 @@ the viewer's file input, so viewer.js needs no change. Stdlib only.
 import argparse
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -140,14 +141,52 @@ def download_kaggle_output(slug, dest):
     subprocess.run(["kaggle", "kernels", "output", slug, "-p", str(dest)], check=True)
 
 
+def _is_wsl():
+    """True under WSL, where a Windows browser cannot open /tmp paths via file:// but can open Windows paths."""
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+def _run_text(cmd):
+    """Stdout of a Windows interop command (cwd on /mnt/c so cmd.exe does not complain about UNC paths)."""
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False, cwd="/mnt/c")
+    return r.stdout.replace("\r", "").strip()
+
+
+def _windows_temp():
+    """The Windows %TEMP% directory as a Linux path, or None when interop is unavailable."""
+    try:
+        win = _run_text(["cmd.exe", "/c", "echo %TEMP%"])
+        return Path(_run_text(["wslpath", "-u", win])) if win else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _default_out(label):
-    return Path(tempfile.gettempdir()) / f"arc_watch_{label}.html"
+    tmp = _windows_temp() if _is_wsl() else None  # on WSL, Windows can only open files on a Windows drive
+    return (tmp or Path(tempfile.gettempdir())) / f"arc_watch_{label}.html"
+
+
+def _open_in_browser(path):
+    path = Path(path).resolve()
+    if _is_wsl():
+        try:
+            win = _run_text(["wslpath", "-w", str(path)])
+            subprocess.run(["cmd.exe", "/c", "start", "", win], capture_output=True, timeout=15, check=False, cwd="/mnt/c")
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    webbrowser.open(path.as_uri())
 
 
 def _finish(code, msg, open_browser):
     print(msg, file=sys.stderr if code else sys.stdout)
     if code == 0 and open_browser:
-        webbrowser.open(Path(msg).resolve().as_uri())
+        _open_in_browser(msg)
     return code
 
 

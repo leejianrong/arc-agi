@@ -5,6 +5,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("arc_watch", ROOT / "scripts/arc_watch.py")
 aw = importlib.util.module_from_spec(_spec)
@@ -71,6 +73,7 @@ def test_open_no_browser(tmp_path, capsys, monkeypatch):
 
 def test_open_calls_browser(tmp_path, monkeypatch):
     seen = []
+    monkeypatch.setattr(aw, "_is_wsl", lambda: False)  # on WSL the page opens through cmd.exe (tested separately)
     monkeypatch.setattr(aw.webbrowser, "open", seen.append)
     assert aw.main(["open", str(A), "--out", str(tmp_path / "o.html")]) == 0
     assert seen and seen[0].startswith("file://")
@@ -114,3 +117,49 @@ def test_make_target(tmp_path):
     assert r.returncode == 0 and "scripts/arc_watch.py open some/path" in r.stdout
     h = subprocess.run(["make", "help"], cwd=ROOT, capture_output=True, text=True, check=False).stdout
     assert "arc-watch" in h and 'make arc-watch ARGS=' in h
+
+
+def test_wsl_opens_through_windows_and_writes_to_a_windows_path(tmp_path, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("arc_watch_wsl", Path(__file__).resolve().parent.parent / "scripts/arc_watch.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    win_tmp = tmp_path / "winTemp"
+    win_tmp.mkdir()
+    monkeypatch.setattr(mod, "_is_wsl", lambda: True)
+    monkeypatch.setattr(mod, "_windows_temp", lambda: win_tmp)
+    assert mod._default_out("open") == win_tmp / "arc_watch_open.html"
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd, kw.get("cwd")))
+        class R:
+            stdout = "C:\\\\Users\\\\x\\\\Temp\\\\arc_watch_open.html\\r\\n"
+        return R()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod.webbrowser, "open", lambda *_: pytest.fail("must not use webbrowser under WSL"))
+    f = win_tmp / "arc_watch_open.html"
+    f.write_text("x")
+    mod._open_in_browser(f)
+    assert calls[0][0][:2] == ["wslpath", "-w"]
+    assert calls[1][0][:4] == ["cmd.exe", "/c", "start", ""] and calls[1][1] == "/mnt/c"
+
+
+def test_non_wsl_still_uses_webbrowser(tmp_path, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("arc_watch_nowsl", Path(__file__).resolve().parent.parent / "scripts/arc_watch.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "_is_wsl", lambda: False)
+    opened = []
+    monkeypatch.setattr(mod.webbrowser, "open", lambda u: opened.append(u))
+    f = tmp_path / "a.html"
+    f.write_text("x")
+    mod._open_in_browser(f)
+    assert opened == [f.resolve().as_uri()]
