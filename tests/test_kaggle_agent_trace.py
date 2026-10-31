@@ -49,8 +49,8 @@ def test_scripted_run_trace_is_valid_with_expected_sequence(tmp_path, monkeypatc
     bad, good = (e for e in evs if e["ev"] == "submit")
     assert bad["turn"] == 2 and bad["reproduced"] == 0 and not bad["verified"] and bad["n_train"] == 2
     assert bad["outputs"] == [[[1, 2], [3, 4]], [[5, 0], [0, 6]]]
-    assert [w["ex"] for w in bad["wrong"]] == [1, 2] and bad["wrong"][0] == {
-        "ex": 1, "total": 4, "cells": [[0, 0, 1, 4], [0, 1, 2, 3], [1, 0, 3, 2], [1, 1, 4, 1]]}
+    assert [w["ex"] for w in bad["wrong"]] == [0, 1] and bad["wrong"][0] == {
+        "ex": 0, "total": 4, "cells": [[0, 0, 1, 4], [0, 1, 2, 3], [1, 0, 3, 2], [1, 1, 4, 1]]}
     assert good["verified"] and good["wrong"] == [] and good["test_outputs"] == [ta.ANS]
     turn = evs[2]
     assert turn["tool_calls"] == [{"id": "c_python", "name": "python", "args": {"code": "print(1)"}}]

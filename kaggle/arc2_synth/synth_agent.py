@@ -303,7 +303,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
         res = sy.run_program(code, [p["input"] for p in train])  # trace-only re-run for the per-example outputs
         outs = [r["grid"] if r["status"] == "ok" else None for r in res]
         wrong = []
-        for i, (o, p) in enumerate(zip(outs, train), 1):
+        for i, (o, p) in enumerate(zip(outs, train)):  # `ex` is a 0-based index into train, like `outputs`
             want = p["output"]
             if o == want:
                 continue
