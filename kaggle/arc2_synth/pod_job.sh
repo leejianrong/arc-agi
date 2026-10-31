@@ -24,6 +24,21 @@ echo "PHASE=vllm_installed $(date -u +%FT%TZ)"
 
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export PYTORCH_ALLOC_CONF=expandable_segments:True
+
+# One-line health snapshot so a quiet vLLM log is not mistaken for progress: model download size,
+# GPU memory/utilisation, and how long the vLLM log has been silent. STALL = nothing moved for 5+ min.
+HB_LAST=""; HB_SINCE=$(date +%s)
+hb() { # $1 = vllm log path
+  local hf gpu age sig now
+  hf=$(du -sm /root/.cache/huggingface 2>/dev/null | cut -f1)
+  gpu=$(nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | tr '\n' ';')
+  age=$(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || date +%s) ))
+  sig="${hf}|${gpu}|$(wc -c < "$1" 2>/dev/null)"
+  now=$(date +%s)
+  if [ "$sig" != "$HB_LAST" ]; then HB_LAST="$sig"; HB_SINCE=$now; fi
+  echo "HB hf_cache=${hf:-0}MB gpu(mem MiB,util %)=${gpu} vllm_log_age=${age}s unchanged=$((now - HB_SINCE))s$([ $((now - HB_SINCE)) -gt 300 ] && echo ' STALL?')"
+}
+
 mkdir -p out
 
 # Configs tried in order: "<MTP tokens> <kv dtype> <attention backend>". SM89 (L4 and RTX 4090) needs
@@ -48,7 +63,7 @@ for cfg in "${CFGS[@]}"; do
   for i in $(seq 1 180); do   # 30 min: cold compile on a slow host exceeded 20
     if curl -sf --max-time 5 http://127.0.0.1:8000/health >/dev/null; then ok=1; break; fi
     kill -0 "$VLLM_PID" 2>/dev/null || { echo "VLLM_DIED $name"; break; }
-    [ $((i % 6)) -eq 0 ] && { echo "waiting for vllm $name ($((i * 10))s)"; tail -n 1 "/workspace/vllm_$name.log" | cut -c1-200; }
+    [ $((i % 6)) -eq 0 ] && { echo "waiting for vllm $name ($((i * 10))s)"; hb "/workspace/vllm_$name.log"; tail -n 1 "/workspace/vllm_$name.log" | cut -c1-200; }
     sleep 10
   done
   if [ "$ok" = 1 ]; then
@@ -70,7 +85,7 @@ echo "CHOSEN_CONFIG=$CHOSEN" | tee out/config.txt
 echo "PHASE=vllm_up=$up $(date -u +%FT%TZ)"
 
 if [ "$up" = 1 ]; then
-  ( while true; do sleep 120; grep -E "generation throughput|SpecDecoding" /workspace/vllm.log | tail -n 2 | cut -c1-260; done ) &
+  ( while true; do sleep 120; hb /workspace/vllm.log; grep -E "generation throughput|SpecDecoding" /workspace/vllm.log | tail -n 2 | cut -c1-260; done ) &
   STATS_PID=$!
   if [ "${MODE:-direct}" = synth ]; then
     python3 synth.py --challenges challenges.json --solutions solutions.json --out out/submission.json \
