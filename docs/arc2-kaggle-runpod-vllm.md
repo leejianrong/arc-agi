@@ -173,3 +173,18 @@ synth mode, 4 tasks, 8192-token calls, MTP=2):
 - The competition's `arc-agi_test_challenges.json` mounted in the kernel contains 240 tasks whose first sorted ids are
   ARC-AGI-1-style tasks (for example 007bbfb7), so "verified" there says nothing about ARC-AGI-2 difficulty.
 - Not yet exercised on Kaggle: the forced-code path, the MTP=0 retry, higher concurrency, long thinking.
+
+## Real-Qwen synthesis on RunPod (1x L40S, medium effort, 32K cap), 2026-10-31
+
+`synth.py` against Qwen3.8-27B-FP8 on 16 public-eval tasks (first 16 by id), TP=1, MTP off, 16 concurrent calls, 3000 s
+deadline, no scheduler floor: **1 of 16 verified (`1818057f`, one round, 20K tokens) and that program solved its test
+input (1 of 28 test inputs)**. 414K completion tokens in 3000 s, about 138 tok/s aggregate (about 8-15 tok/s per
+sequence; the KV cache hit 99.6% at 16 sequences, which causes preemption, so one 48 GB card cannot hold 16 long
+sequences).
+
+- 11 tasks used a whole 32-35K-token first call; each was cut off, the **forced-code path produced a program anyway
+  (confirmed working on real vLLM via `/v1/completions` with raw ChatML)**, and every forced program failed the demos.
+  The second round found no time left. 3 tasks never reached the model.
+- Reading: medium effort with a 32K cap leaves almost every ARC-AGI-2 task unsolved, in line with ARC Prize's
+  13.2% (medium) vs 42.4% (xhigh). More tokens per task (xhigh, bigger caps) and faster serving are the levers, which
+  is what the REPL-agent measurement (ARC-136) is for.
