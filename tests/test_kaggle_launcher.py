@@ -89,7 +89,7 @@ def _run(tmp_path, srv, mode="synth", extra=(), eval_files=None, env_extra=None,
     if work_setup:
         work_setup(work)
     env = dict(os.environ, ARC_EXTERNAL_SERVER=f"http://127.0.0.1:{srv.server_port}/v1", ARC_INPUT_ROOT=str(inp),
-               ARC_WORK=str(work), ARC_EFFORT="", ARC_MODEL="qwen", **(env_extra or {}))
+               ARC_WORK=str(work), ARC_EFFORT="", ARC_MODEL="qwen", **{"ARC_FORCE_RERUN": "1", **(env_extra or {})})
     r = subprocess.run([sys.executable, str(kern / "main.py")], env=env, capture_output=True, text=True, timeout=120, check=False)
     sub = json.loads((work / "submission.json").read_text())
     return r, sub
@@ -323,3 +323,86 @@ def test_bundle_contains_trace_py(tmp_path):
         m = re.search(r'^BUNDLE_B64 = "([^"]*)"', (tmp_path / "main.py").read_text(), re.MULTILINE)
         with tarfile.open(fileobj=io.BytesIO(base64.b64decode(m.group(1))), mode="r:gz") as tf:
             assert "trace.py" in tf.getnames()
+
+
+def _dev(tmp_path, mode, solutions=True, eval_tasks=True, rerun="0", npar="2"):
+    """A run over 3 test tasks (t*) plus 5 eval tasks (e0..e4); the e1 solution is deliberately wrong."""
+    ev = {f"e{i}": _tasks()["t0"] for i in range(5)}
+    files = {"arc-agi_evaluation_challenges.json": ev} if eval_tasks else {}
+    if solutions:
+        sol = {t: [[[9, 8, 7], [3, 2, 1]]] for t in ev}
+        sol["e1"] = [[[0]]]
+        files["arc-agi_evaluation_solutions.json"] = sol
+    srv = _server()
+    r, sub = _run(tmp_path, srv, mode, ["--npar", npar, "--dev-tasks", "2"], files, env_extra={"ARC_FORCE_RERUN": rerun})
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    return r, sub, tmp_path / "work"
+
+
+def test_dev_run_solves_only_the_eval_slice_and_keeps_the_baseline_submission(tmp_path):
+    for mode in ("agent", "direct"):
+        d = tmp_path / mode
+        d.mkdir()
+        r, sub, work = _dev(d, mode)
+        dev = json.loads((work / "dev_submission.json").read_text())
+        assert sorted(dev) == ["e0", "e1"]  # first 2 ids by sorted order
+        assert "RERUN: dev slice of 2 eval tasks" in r.stdout and "RERUN: full run" not in r.stdout
+        assert "DEV score: solved 1 of 2 test inputs (pass@2) on 2 eval tasks in " in r.stdout
+        assert _valid(sub) and "submission validated: 3 tasks, 0 repaired" in r.stdout
+        assert (work / "trace.jsonl").exists() == (mode == "agent")
+
+
+def test_dev_run_agent_trace_carries_the_answers(tmp_path):
+    _, _, work = _dev(tmp_path, "agent")
+    starts = [e for e in _events(work / "trace.jsonl") if e["ev"] == "task_start"]
+    assert len(starts) == 2 and all(e["answers"] for e in starts)
+
+
+def test_dev_run_without_solutions_is_unscored(tmp_path):
+    r, sub, _ = _dev(tmp_path, "direct", solutions=False)
+    assert "DEV: unscored (no solutions file)" in r.stdout and "DEV score" not in r.stdout
+    assert _valid(sub)
+
+
+def test_dev_run_without_eval_file_falls_back_to_test_tasks(tmp_path):
+    r, sub, work = _dev(tmp_path, "direct", solutions=False, eval_tasks=False)
+    assert "sampling the test challenges instead" in r.stdout
+    assert sorted(json.loads((work / "dev_submission.json").read_text())) == ["t0", "t1"]
+    assert _valid(sub)
+
+
+def test_rerun_solves_every_test_task_into_submission_json(tmp_path):
+    for mode in ("agent", "synth"):
+        d = tmp_path / mode
+        d.mkdir()
+        r, sub, work = _dev(d, mode, rerun="1")
+        assert "RERUN: full run over 3 test tasks" in r.stdout and "DEV" not in r.stdout
+        assert _valid(sub) and not (work / "dev_submission.json").exists()
+        assert all(rows[0]["attempt_1"] == [[9, 8, 7], [3, 2, 1]] for rows in sub.values())
+
+
+def test_kaggle_env_var_selects_rerun_when_not_forced(tmp_path):
+    import os
+    src = (ROOT / "kaggle/arc2_synth/launcher.py.tmpl").read_text()
+    line = next(ln for ln in src.splitlines() if ln.startswith("RERUN = "))
+    for force, kaggle, want in ((None, "1", True), (None, None, False), ("0", "1", False), ("1", None, True)):
+        env = {k: v for k, v in (("ARC_FORCE_RERUN", force), ("KAGGLE_IS_COMPETITION_RERUN", kaggle)) if v}
+        old = {k: os.environ.pop(k, None) for k in ("ARC_FORCE_RERUN", "KAGGLE_IS_COMPETITION_RERUN")}
+        try:
+            os.environ.update(env)
+            ns = {"os": os, "_force": os.environ.get("ARC_FORCE_RERUN")}
+            exec(line, ns)  # noqa: S102 - our own template line
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+        assert ns["RERUN"] is want, (force, kaggle)
+
+
+def test_builder_dev_flags(tmp_path):
+    subprocess.run([sys.executable, str(ROOT / "kaggle/arc2_synth/build_kernel.py"), str(tmp_path), "--dev-tasks", "7",
+                    "--dev-budget-min", "9"], check=True, capture_output=True)
+    src = (tmp_path / "main.py").read_text()
+    assert '"ARC_DEV_TASKS", "7"' in src and '"ARC_DEV_BUDGET_MIN", "9"' in src

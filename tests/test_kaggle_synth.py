@@ -377,3 +377,20 @@ def test_plausibility_change_envelope():
     assert _flags(resized, [[1, 1]])[0] == 0
     assert _flags(t, [[2]])[0] >= 1  # shape change is caught by the shape rule, not the envelope
     assert all("changes" not in w for w in _flags(t, [[2]])[1])
+
+
+def test_change_envelope_catches_the_135a2760_proportions():
+    """Real case: train changed 1.5% and 1.9% of cells; the verified-but-wrong program changed 5.6% of the test grid
+    (threshold at k=2.5 is 4.9%; k=3 would not have flagged it)."""
+    def grid_with(n_changed, h, w):
+        g = [[1] * w for _ in range(h)]
+        for i in range(n_changed):
+            g[i // w][i % w] = 2
+        return g
+    base_a, base_b = [[1] * 13 for _ in range(5)], [[1] * 22 for _ in range(21)]
+    t = _task([(base_a, grid_with(1, 5, 13)), (base_b, grid_with(9, 21, 22))], [[1] * 29 for _ in range(29)])
+    over = grid_with(47, 29, 29)   # 5.6% of 841 cells
+    under = grid_with(30, 29, 29)  # 3.6%, inside the envelope
+    n, why = _flags(t, over)
+    assert n == 1 and "changes 6% of cells" in why[0]
+    assert _flags(t, under)[0] == 0

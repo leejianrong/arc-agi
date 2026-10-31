@@ -48,11 +48,18 @@ flagged, measured on the true outputs of all public tasks:
 | Rule | False alarms, 1,076 training test inputs | False alarms, 167 eval test inputs |
 |---|---|---|
 | Leaked colour: a colour in every train input and in no train output appears in the test output | 1.7% | 4.8% |
-| Change envelope: for same-shape tasks, test changed-cell fraction > max(3x the largest train fraction, that + 0.02) | 0.3% | 0.6% |
+| Change envelope, k = 3: for same-shape tasks, test changed-cell fraction > max(3x the largest train fraction, that + 0.02) | 0.3% | 0.6% |
+| Change envelope, k = 2.5 (adopted) | 0.4% | 1.8% |
+| Change envelope, k = 2 | 0.8% | 3.6% |
 
-On our own data the two rules flag both verified-but-wrong programs (one each). That is two cases, so it is encouraging,
-not proof. Used only to **re-rank** candidates and to **keep refining instead of stopping**, a few percent of false
-alarms is cheap.
+**Correction (checked by running the implemented function on the real programs):** the leaked-colour rule flags the
+`0934a4d8` program, but the change envelope at k = 3 does NOT flag `135a2760`'s (5.6% changed vs a 5.8% threshold); an
+earlier version of this note said both rules caught both programs, which I had not verified. At k = 2.5 the threshold is
+4.9% and it is flagged. k was chosen because its false-alarm cost stays under 2%, not by fitting this one example, and
+one example is weak evidence either way. Counting all eight plausibility rules together, **5.4% of the true answers
+(67 of 1,243 test inputs) carry at least one flag** (39 from the older shape/palette rules, 29 from leaked colour). Because
+flags only re-rank candidates and trigger a bounded number of extra rounds (and a flagged correct program stays in the
+candidate list, so it can still be attempt 2 under pass@2), that cost is acceptable, but it is not zero.
 
 ## Ideas, ranked
 

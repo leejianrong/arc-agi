@@ -6,6 +6,12 @@ vLLM from the attached wheelhouse, serves the attached Qwen model, proves it can
 retried off if the first burst fails), and overwrites submission.json incrementally as tasks solve.
 The submission is validated and repaired at the end. Never exits non-zero.
 
+Kaggle sets KAGGLE_IS_COMPETITION_RERUN only when it re-executes the notebook on the hidden test set.
+That scored rerun solves every test task into submission.json. Any other run (a push, an interactive
+run) is a dev run: it solves a small fixed slice of the public eval set into dev_submission.json,
+scores it when the solutions file is mounted, and leaves submission.json as the valid baseline.
+ARC_FORCE_RERUN=1/0 overrides the detection.
+
 Dry-run (no GPU, no install): set ARC_EXTERNAL_SERVER=http://host:port/v1 plus ARC_INPUT_ROOT and
 ARC_WORK; ARC_LIMIT / ARC_BUDGET_MIN / ARC_NPAR override the baked-in values.
 """
@@ -32,6 +38,10 @@ MTP = @@MTP@@                      # speculative tokens (0 = off)
 MODE = "@@MODE@@"                  # "direct" (answer grids), "synth" (verified programs), "agent" (tool-calling REPL) or "bench"
 BENCH_CONFIGS = @@BENCH_CONFIGS@@  # bench: [{name, mode, effort, ...extra solver args}], run in order on one server
 BENCH_TASKS = int(os.environ.get("ARC_BENCH_TASKS", "@@BENCH_TASKS@@"))
+DEV_TASKS = int(os.environ.get("ARC_DEV_TASKS", "@@DEV_TASKS@@"))      # dev run: first N public-eval ids by sorted order
+DEV_BUDGET_MIN = float(os.environ.get("ARC_DEV_BUDGET_MIN", "@@DEV_BUDGET@@"))  # dev run: minutes after startup
+_force = os.environ.get("ARC_FORCE_RERUN")
+RERUN = _force in ("1", "true") or (_force is None and bool(os.environ.get("KAGGLE_IS_COMPETITION_RERUN")))
 BENCH_BUDGET_MIN = float(os.environ.get("ARC_BENCH_BUDGET_MIN", "@@BENCH_BUDGET@@"))  # minutes after startup, all configs
 SERVES_TOOLS = MODE == "agent" or any(c.get("mode") == "agent" for c in BENCH_CONFIGS)  # vLLM needs the tool-call flags
 SYNTH_ARGS = @@SYNTH_ARGS@@        # extra synth.py flags
@@ -303,10 +313,13 @@ class Tee:
         sys.__stdout__.flush()
 
 
-def bench_sample():
-    """Fixed sample: every k-th public-eval task by sorted id (stable), plus solutions when mounted."""
+def bench_sample(n=None, first=False, name="bench_challenges.json"):
+    """Fixed sample: every k-th (or the first, for dev runs) public-eval task by sorted id, plus solutions when mounted."""
+    n = n or BENCH_TASKS
     ch_path = find_dir_with(INPUT_ROOT, lambda d, f: "arc-agi_evaluation_challenges.json" in f)
     ch_file = os.path.join(ch_path, "arc-agi_evaluation_challenges.json") if ch_path else challenges_path
+    if not ch_path:
+        log("eval challenges file not found; sampling the test challenges instead")
     with open(ch_file) as f:
         challenges = json.load(f)
     sol_file = os.path.join(os.path.dirname(ch_file), "arc-agi_evaluation_solutions.json")
@@ -315,11 +328,11 @@ def bench_sample():
         with open(sol_file) as f:
             solutions = json.load(f)
     ids = sorted(challenges)
-    ids = ids[:: max(1, len(ids) // max(1, BENCH_TASKS))][:BENCH_TASKS]
-    sample = os.path.join(WORK, "bench_challenges.json")
+    ids = ids[:n] if first else ids[:: max(1, len(ids) // max(1, n))][:n]
+    sample = os.path.join(WORK, name)
     with open(sample, "w") as f:
         json.dump({t: challenges[t] for t in ids}, f)
-    log(f"bench sample: {len(ids)} tasks from {ch_file}; solutions: {bool(solutions)}")
+    log(f"sample: {len(ids)} tasks from {ch_file}; solutions: {bool(solutions)}")
     return sample, ids, solutions, sol_file if solutions else None
 
 
@@ -416,16 +429,40 @@ def bench_run():
             json.dump(results, f, indent=1)
 
 
+def solve_args(challenges, out, deadline_min):
+    args = ["--challenges", challenges, "--out", out, "--log-dir", os.path.join(WORK, "llm_logs"),
+            "--base-url", BASE_URL, "--n-parallel", str(N_PARALLEL), "--max-tokens", str(MAX_TOKENS),
+            "--deadline-min", str(max(1.0, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", EFFORT)]
+    return args + (["--model", os.environ.get("ARC_MODEL", "qwen")] if EXTERNAL else [])
+
+
+def dev_run():
+    """Not a scored rerun: solve a small public-eval slice into dev_submission.json and log its score."""
+    sample, ids, solutions, sol_file = bench_sample(DEV_TASKS, first=True, name="dev_challenges.json")
+    log(f"RERUN: dev slice of {len(ids)} eval tasks (not a scored rerun); budget {DEV_BUDGET_MIN:g} min; "
+        f"submission.json stays the baseline")
+    out, t0 = os.path.join(WORK, "dev_submission.json"), time.time()
+    solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(
+        MODE, (llm_solve, []))
+    if MODE == "agent":
+        extra = extra + trace_args(os.path.join(WORK, "trace.jsonl"), sol_file, "agent")
+    try:
+        solver.main(solve_args(sample, out, min(DEV_BUDGET_MIN, TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15)) + extra)
+    finally:
+        sc = bench_score(out, ids, solutions) if solutions is not None and os.path.exists(out) else None
+        log(f"DEV score: solved {sc[0]} of {sc[1]} test inputs (pass@2) on {len(ids)} eval tasks in "
+            f"{round(time.time() - t0)} s" if sc else "DEV: unscored (no solutions file)")
+
+
 try:
     if MODE == "bench":
         bench_run()
+    elif not RERUN:
+        dev_run()
     else:
-        deadline_min = TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15
-        args = ["--challenges", challenges_path, "--out", OUT, "--log-dir", os.path.join(WORK, "llm_logs"),
-                "--base-url", BASE_URL, "--n-parallel", str(N_PARALLEL), "--max-tokens", str(MAX_TOKENS),
-                "--deadline-min", str(max(1.0, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", EFFORT)]
-        if EXTERNAL:
-            args += ["--model", os.environ.get("ARC_MODEL", "qwen")]
+        with open(challenges_path) as f:
+            log(f"RERUN: full run over {len(json.load(f))} test tasks")
+        args = solve_args(challenges_path, OUT, TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15)
         if LIMIT:
             args += ["--limit", str(LIMIT)]
         solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(

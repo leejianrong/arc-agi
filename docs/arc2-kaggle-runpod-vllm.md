@@ -192,3 +192,17 @@ sequences).
 ## Pre-flight gate
 
 Run `make arc2-preflight` (or `uv run python scripts/arc2_preflight.py [--fast] [--modes direct,synth,agent,bench]`) before pushing any notebook to Kaggle. It runs ruff, the Kaggle tests, builds each mode and checks `kernel-metadata.json` (L4, no internet, private, one competition source, wheelhouse and Qwen sources) and `main.py` (compiles, no `@@` placeholders, under 1 MB, bundle holds the expected modules), then dry-runs each built notebook against a fake OpenAI server and requires a validated 3-task `submission.json`. It stops at the first failure and ends with `PREFLIGHT OK` or `PREFLIGHT FAILED: <step>`; `--fast` runs only the launcher and agent tests. It cannot see real vLLM, the real Kaggle mounts or the wheelhouse install.
+
+## Dev run vs scored rerun
+
+The notebook (`launcher.py.tmpl`) checks `KAGGLE_IS_COMPETITION_RERUN`, which Kaggle sets only when it
+re-executes a submitted notebook on the hidden test set. Pushing the kernel or running it interactively
+does not set it.
+
+- Scored rerun: solves every test task into `submission.json` with the baked budget (log line `RERUN: full run over N test tasks`).
+- Anything else (dev run): solves the first `--dev-tasks` (default 4, env `ARC_DEV_TASKS`) public-eval tasks
+  by sorted id within `--dev-budget-min` (default 20, env `ARC_DEV_BUDGET_MIN`) into `dev_submission.json`,
+  then logs `DEV score: solved A of B test inputs (pass@2) ...` (or `DEV: unscored` without the solutions file).
+  `submission.json` stays the valid baseline for the test tasks. Agent mode still writes `trace.jsonl`.
+- Both modes write the baseline for the test file first and validate/repair `submission.json` at the end.
+- `ARC_FORCE_RERUN=1`/`0` overrides detection (tests, dry runs). Bench mode ignores all of this.

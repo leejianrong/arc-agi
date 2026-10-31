@@ -254,6 +254,9 @@ def _colors(g):
     return {c for row in g for c in row}
 
 
+ENVELOPE_K = 2.5  # the change-envelope rule flags a test change fraction above ENVELOPE_K x the largest train fraction
+
+
 def _changed(a, b):
     """Fraction of cells that differ between two same-shape grids."""
     return sum(x != y for ra, rb in zip(a, b) for x, y in zip(ra, rb)) / (len(a) * len(a[0]))
@@ -280,7 +283,8 @@ def plausibility(task, cand):
     pal_ok = all(_colors(o) <= _colors(i) | shared for i, o in zip(ins, outs))
     leaked = set.intersection(*(_colors(i) for i in ins)) - seen.keys() if len(train) >= 2 else set()
     fracs = [_changed(i, o) for i, o in zip(ins, outs)] if same else []
-    cap = max(3 * max(fracs), max(fracs) + 0.02) if fracs else None
+    # k=2.5: 0.4% (train) / 1.8% (eval) false alarms on true answers; k=3 costs 0.3% / 0.6% but misses 135a2760's overfit
+    cap = max(ENVELOPE_K * max(fracs), max(fracs) + 0.02) if fracs else None
     res = []
     for t, out in zip(task["test"], cand["test_outputs"]):
         why = []

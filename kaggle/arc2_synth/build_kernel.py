@@ -1,6 +1,7 @@
 # MIT No Attribution (MIT-0). Build the single-file Kaggle kernel from launcher.py.tmpl.
 """python build_kernel.py OUT_DIR [--limit N] [--budget-min M] [--npar N] [--max-tokens T] [--mtp K] [--machine S] [--mode direct|synth|agent|bench] [--effort E] [--max-model-len N]
-[--thinking-budget N] [--attempts N] [--max-turns N] [--task-budget N] [--bench-config PATH] [--bench-tasks N] [--bench-budget-min M]"""
+[--thinking-budget N] [--attempts N] [--max-turns N] [--task-budget N] [--bench-config PATH] [--bench-tasks N] [--bench-budget-min M]
+[--dev-tasks N] [--dev-budget-min M]"""
 import argparse
 import base64
 import io
@@ -30,6 +31,8 @@ ap.add_argument("--task-budget", type=int, default=120000, help="agent: completi
 ap.add_argument("--bench-config", default=None, help="bench: JSON list of {name, mode, effort, ...extra solver args}")
 ap.add_argument("--bench-tasks", type=int, default=12, help="bench: public-eval tasks in the fixed sample")
 ap.add_argument("--bench-budget-min", type=int, default=150, help="bench: minutes for all configs after startup")
+ap.add_argument("--dev-tasks", type=int, default=4, help="non-rerun runs: first N public-eval tasks solved into dev_submission.json")
+ap.add_argument("--dev-budget-min", type=int, default=20, help="non-rerun runs: minutes after startup for the dev slice")
 a = ap.parse_args()
 DEFAULT_BENCH = [{"name": "agent_xhigh_persist", "mode": "agent", "effort": "xhigh", "persist": 1},
                  {"name": "agent_xhigh_fresh", "mode": "agent", "effort": "xhigh", "persist": 0},
@@ -60,7 +63,7 @@ for k, v in {"BUNDLE": base64.b64encode(buf.getvalue()).decode(), "LIMIT": a.lim
              "NPAR": a.npar, "MAX_TOKENS": a.max_tokens, "MTP": a.mtp, "MODE": a.mode,
              "SYNTH_ARGS": repr(a.synth_args.split()), "AGENT_ARGS": repr([str(x) for x in agent_args]),
              "EFFORT": effort, "MAX_LEN": max_len, "BENCH_CONFIGS": repr(bench), "BENCH_TASKS": a.bench_tasks,
-             "BENCH_BUDGET": a.bench_budget_min}.items():
+             "BENCH_BUDGET": a.bench_budget_min, "DEV_TASKS": a.dev_tasks, "DEV_BUDGET": a.dev_budget_min}.items():
     src = src.replace(f"@@{k}@@", str(v))
 os.makedirs(a.out_dir, exist_ok=True)
 with open(os.path.join(a.out_dir, "main.py"), "w") as f:
