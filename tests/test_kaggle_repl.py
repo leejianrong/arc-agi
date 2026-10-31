@@ -228,3 +228,43 @@ def test_has_numpy_reported_by_worker(repl):
     for n in ("show", "diff", "objects", "colors", "crop", "rot90", "flip", "transpose", "train", "test_inputs"):
         assert "NameError" not in repl.run(n)
     assert "NameError" in repl.run("train_inputs")
+
+
+def test_push_round_trip_and_initial_submissions(repl):
+    assert repl.run("print(submissions)") == "[]"
+    repl.push("submissions", [{"n": 1, "code": "x"}])
+    assert repl.run("print(submissions[0]['n'], submissions[0]['code'])") == "1 x"
+    assert repl.run("submissions[0]['n'] += 1; submissions[0]['n']") == "2"  # a live, mutable copy
+
+
+def test_push_validates_name_and_value(repl):
+    with pytest.raises(ValueError):
+        repl.push("_x", 1)
+    with pytest.raises(ValueError):
+        repl.push("a b", 1)
+    with pytest.raises(TypeError):
+        repl.push("v", {1, 2})  # not JSON-serialisable
+    assert repl.run("print(submissions)") == "[]"
+
+
+def test_push_before_worker_start_and_after_timeout_restart():
+    with rp.Repl(TASK, timeout=10) as r:
+        r.push("submissions", [{"n": 7}])  # no worker yet: delivered when it starts
+        assert r.run("print(submissions[0]['n'])") == "7"
+        assert "timed out" in r.run("while True: pass", timeout=1)
+        r.push("submissions", [{"n": 8}])  # worker is dead: remembered
+        assert r.run("print(submissions[0]['n'])") == "8"
+        assert "timed out" in r.run("while True: pass", timeout=1)
+        assert r.run("print(submissions[0]['n'])") == "8"  # replayed into the new worker
+
+
+def test_push_with_persist_false():
+    with rp.Repl(TASK, persist=False, timeout=10) as r:
+        r.push("submissions", [{"n": 3}])
+        assert r.run("print(submissions[0]['n'])") == "3"
+        assert r.run("print(submissions[0]['n'])") == "3"  # each call gets a fresh worker, re-pushed
+
+
+def test_namespace_doc_lists_submissions():
+    for np_ in (True, False):
+        assert "submissions = list of your earlier submits with their results and code, for diffing" in rp.namespace_doc(np_)

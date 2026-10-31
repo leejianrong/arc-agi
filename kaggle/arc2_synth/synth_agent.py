@@ -13,6 +13,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -49,8 +50,8 @@ SUBMIT_ENV = ("submit runs your program in a separate plain Python process, not 
 TOOLS = [
     {"type": "function", "function": {
         "name": "python",
-        "description": ("Run Python to inspect the puzzle in a restricted sandbox. State persists between calls. "
-                        + rp.namespace_doc(NUMPY) + " Print compact summaries, never whole large grids."),
+        "description": ("Run Python to inspect the puzzle in a restricted sandbox. State persists between calls "
+                        "(`submissions` is filled in as you call submit). " + rp.namespace_doc(NUMPY) + " Print compact summaries, never whole large grids."),
         "parameters": {"type": "object", "properties": {"code": {"type": "string", "description": "Python code; "
                        "print() what you need."}}, "required": ["code"]}}},
     {"type": "function", "function": {
@@ -109,10 +110,64 @@ def diff_detail(got, want, cells=True):
 
 
 REPLY_CAP = 6000  # characters in one submit reply; the first failing example's grids (<= 30x30) always fit
+KEEP_RECENT = 5   # progress block: the best plus this many latest submits
+SUBMISSIONS_KEPT = 12  # `submissions` in the REPL: this many latest submits plus the best
+CODE_CAP = 6000   # characters of one program pushed into `submissions`
+STALL = 3         # distinct submits in a row that all scored worse than the best
 
 
-def submit_reply(cand, task, max_examples=2):
-    """Reply text for a submit; may re-run the failing examples to show their wrong-cell maps."""
+def wrong_cells(cand, task):
+    """Wrong cells summed over the failing examples (a missing or wrong-shaped output counts every cell)."""
+    total = 0
+    for f in cand["fails"]:
+        m = re.search(r"(\d+) of \d+ cells wrong", f)
+        if m:
+            total += int(m.group(1))
+        else:
+            want = task["train"][int(f.split(":")[0].split()[1]) - 1]["output"]
+            total += len(want) * len(want[0])
+    return total
+
+
+def _rank(e):
+    return (-e["reproduced"], e["wrong_cells"])
+
+
+def _best(hist):
+    return min(hist, key=_rank)  # min keeps the earliest of equal entries
+
+
+def progress_block(hist, hinted=False):
+    """Compact history of this attempt's submits (``hist``, latest last) and how the latest compares to the best
+    earlier one. Returns (text, gave_hint)."""
+    best, cur = _best(hist), hist[-1]
+    shown = {best["n"]} | {e["n"] for e in hist[-KEEP_RECENT:]}
+    parts, prev = [], -1
+    for i, e in enumerate(hist):
+        if e["n"] not in shown:
+            continue
+        if i - prev > 1 and parts:
+            parts.append("...")
+        first = "" if parts else " reproduced"
+        parts.append(f"#{e['n']} {e['reproduced']} of {e['of']}{first}, {e['wrong_cells']} wrong"
+                     + (" cells" if first else ""))
+        prev = i
+    text = f"Submissions so far: {'; '.join(parts)}. Best: #{best['n']}."
+    if len(hist) > 1:
+        old = _best(hist[:-1])
+        cmp_ = ("better than" if _rank(cur) < _rank(old) else "same as" if _rank(cur) == _rank(old)
+                else "worse than")
+        text += f" This one (#{cur['n']}) is {cmp_} your {'previous best' if cmp_ == 'better than' else 'best'}."
+    gave = not hinted and len(hist) > STALL and all(_rank(e) > _rank(best) for e in hist[-STALL:])
+    if gave:
+        text += (f"\nYour last {STALL} attempts did not beat #{best['n']}; consider building on #{best['n']}'s "
+                 "idea or trying a different approach.")
+    return text, gave
+
+
+def submit_reply(cand, task, max_examples=2, progress=""):
+    """Reply text for a submit; may re-run the failing examples to show their wrong-cell maps. ``progress`` (the
+    submit history block) goes after the failure details and is kept whole inside REPLY_CAP."""
     train = task["train"]
     n = len(train)
     if cand["verified"]:
@@ -149,12 +204,12 @@ def submit_reply(cand, task, max_examples=2):
             out.append(f.split(": ", 1)[1])
             if "wrong shape" in f and len(want) * len(want[0]) <= 900:
                 out.append(f"Expected output:\n{ls.grid_text(want)}")
-    out.append("Fix the rule and submit again.")
+    tail = "\n".join(([progress] if progress else []) + ["Fix the rule and submit again."])
     text = "\n".join(out)
-    if len(text) > REPLY_CAP:
-        keep = REPLY_CAP - 80
+    if len(text) + len(tail) + 1 > REPLY_CAP:
+        keep = REPLY_CAP - 80 - len(tail) - 1
         text = f"{text[:keep]}\n[... reply truncated: {len(text) - keep} chars cut ...]"
-    return text
+    return f"{text}\n{tail}"
 
 
 class Hooks:
@@ -292,6 +347,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
     att.messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": pre + task_message(task)}]
     kwargs = {"reasoning_effort": effort} if effort else None
     seen_cand = {}
+    hist, hinted = [], False  # one entry per distinct submit: n, reproduced, of, wrong_cells, code
     seen = {}  # code -> (cand, reply, submit number), to flag identical resubmissions without re-running them
     repl, hints, think = None, 0, thinking_budget
     state = {"attempt": att}
@@ -325,7 +381,17 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
              n_train=len(train), verified=cand["verified"], outputs=outs, wrong=wrong, flags=flags,
              test_outputs=cand["test_outputs"], suspect=att.pending)
 
+    def push_submissions():
+        """Mirror the submit history into the REPL namespace (only REPLs that support it)."""
+        if repl is None or not hasattr(repl, "push") or not hist:
+            return
+        keep = {e["n"] for e in hist[-SUBMISSIONS_KEPT:]} | {_best(hist)["n"]}
+        subs = [dict(e, code=e["code"][:CODE_CAP]) for e in hist if e["n"] in keep]
+        with contextlib.suppress(Exception):  # a broken sandbox must not kill the attempt
+            repl.push("submissions", subs)
+
     def submit(code):
+        nonlocal hinted
         att.submits += 1
         state["py_run"] = 0
         key = code.strip()
@@ -353,6 +419,10 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                 trace_submit(cand, code)
         if cand["verified"]:
             att.verified = True
+        n_train = len(task["train"])
+        hist.append({"n": att.submits, "reproduced": n_train - len(cand["fails"]), "of": n_train,
+                     "wrong_cells": wrong_cells(cand, task), "code": code})
+        push_submissions()
         seen_cand[key] = cand
         if suspect:
             k, ws = suspect[0]
@@ -361,7 +431,9 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                      "Fix the rule so it generalizes (the test input is a different instance of the same puzzle), "
                      "then submit again.")
         else:
-            reply = submit_reply(cand, task)
+            prog, gave = progress_block(hist, hinted)
+            hinted = hinted or gave
+            reply = submit_reply(cand, task, progress=prog)
         seen[key] = (att.submits, reply)
         return reply
 
@@ -374,7 +446,9 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             if not code.strip():
                 return "Missing 'code' argument. Call python with a JSON object {\"code\": \"...\"}."
             try:
-                repl = repl or (repl_factory or _default_repl)(task, persist=bool(persist))
+                if repl is None:
+                    repl = (repl_factory or _default_repl)(task, persist=bool(persist))
+                    push_submissions()
                 return repl.run(code, tool_timeout) if tool_timeout else repl.run(code)
             except Exception as e:  # noqa: BLE001 - a broken sandbox must not kill the attempt
                 return f"[python tool error: {e!r}]"

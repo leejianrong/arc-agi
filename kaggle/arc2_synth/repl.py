@@ -55,7 +55,8 @@ def namespace_doc(has_numpy):
         "{\"color\", \"cells\" [(r, c)], \"bbox\" (r0, c0, r1, c1 inclusive), \"size\"}, bg defaults to the most "
         "common colour (bg=-1 keeps every colour); colors(g) -> {colour: count}, most common first; "
         "crop(g, r0, c0, r1, c1) with inclusive corners; rot90(g, k=1) clockwise; flip(g, axis=0) (0 = upside down, "
-        "1 = left-right); transpose(g)." + (" np = numpy (no file I/O)." if has_numpy else "")
+        "1 = left-right); transpose(g). submissions = list of your earlier submits with their results and code, for "
+        "diffing: {\"n\", \"reproduced\", \"of\", \"wrong_cells\", \"code\"}." + (" np = numpy (no file I/O)." if has_numpy else "")
         + f" Allowed imports (plain `import x` / `from x import y`, no dotted imports): {mods}. Forbidden here: "
         "type, exec, eval, compile, open, getattr, setattr, vars, globals, dir, id, input, dunder names and "
         "attributes starting with an underscore.")
@@ -283,6 +284,7 @@ def main():
     task = init["task"]
     glb["train"] = [{"input": _g(p["input"]), "output": _g(p["output"])} for p in task.get("train", [])]
     glb["test_inputs"] = [_g(p["input"] if isinstance(p, dict) else p) for p in task.get("test", [])]
+    glb["submissions"] = []
     for fn in (show, diff, objects, colors, crop, rot90, flip, transpose):
         glb[fn.__name__] = fn
     if np_proxy is not None:
@@ -294,6 +296,13 @@ def main():
         if not line:
             return
         req = json_loads(line)
+        if "push" in req:  # trusted assignment of plain JSON data; never runs user-visible code
+            name = req["push"]
+            ok = isinstance(name, str) and name.isidentifier() and not name.startswith("_") and name not in FORBIDDEN_NAMES
+            if ok:
+                glb[name] = req["value"]
+            send({"pushed": ok})
+            continue
         del buf[:]
         size[0] = 0
         used = resource.getrusage(resource.RUSAGE_SELF)
@@ -356,6 +365,7 @@ class Repl:
         self.has_numpy = None  # set from the worker's ready message on first start
         self._proc = None
         self._buf = b""
+        self._pushed = {}  # name -> value, replayed into every fresh worker
         self._workdir = tempfile.mkdtemp(prefix="repl-")
         self._closed = False
         _LIVE.add(self)
@@ -399,6 +409,20 @@ class Repl:
             parts.append(reply["err"].rstrip("\n"))
         return _truncate("\n".join(parts))
 
+    def push(self, name, value):
+        """Set ``name`` in the worker namespace to a JSON-serialisable ``value``. Remembered and re-sent when
+        the worker restarts (timeout, crash, ``persist=False``), so the next ``run`` always sees it."""
+        json.dumps(value)  # reject non-serialisable values before they reach the protocol
+        if not (isinstance(name, str) and name.isidentifier() and not name.startswith("_")):
+            raise ValueError(f"bad variable name {name!r}")
+        self._pushed[name] = value
+        if self._closed or self._proc is None or self._proc.poll() is not None:
+            return  # a fresh worker gets it from _start
+        try:
+            self._exchange({"push": name, "value": value}, self.timeout)
+        except (TimeoutError, EOFError, OSError, ValueError):
+            self._kill()  # the next run starts a worker and replays _pushed
+
     def close(self):
         self._closed = True
         proc, self._proc = self._proc, None
@@ -427,6 +451,8 @@ class Repl:
         if not ready.get("ready"):
             raise ValueError("worker did not start")
         self.has_numpy = bool(ready.get("numpy"))
+        for name, value in self._pushed.items():
+            self._exchange({"push": name, "value": value}, max(timeout, 20))
 
     def _exchange(self, obj, timeout):
         self._proc.stdin.write(json.dumps(obj).encode() + b"\n")

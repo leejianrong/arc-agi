@@ -377,3 +377,114 @@ def test_select_attempts_unchanged_for_unflagged():
     cands = [{"verified": True, "frac": 1.0, "code": "x", "test_outputs": [ANS]}]
     fb = [{"attempt_1": [[0]], "attempt_2": [[0]]}]
     assert sy.select_attempts(TASK, cands, fb)[0]["attempt_1"] == ANS
+
+
+# progress block in failing submit replies -------------------------------------------------------------
+
+def entry(n, rep, w, of=2):
+    return {"n": n, "reproduced": rep, "of": of, "wrong_cells": w, "code": f"c{n}"}
+
+
+def test_progress_block_worsening_improving_equal():
+    h = [entry(1, 1, 6), entry(2, 0, 33), entry(3, 1, 20)]
+    text, gave = sa.progress_block(h)
+    assert text == ("Submissions so far: #1 1 of 2 reproduced, 6 wrong cells; #2 0 of 2, 33 wrong; #3 1 of 2, 20 wrong. "
+                    "Best: #1. This one (#3) is worse than your best.") and not gave
+    text, _ = sa.progress_block([entry(1, 1, 6), entry(2, 1, 3)])
+    assert text.endswith("Best: #2. This one (#2) is better than your previous best.")
+    text, _ = sa.progress_block([entry(1, 1, 6), entry(2, 1, 6)])
+    assert "Best: #1. This one (#2) is same as your best." in text
+    assert "This one" not in sa.progress_block([entry(1, 1, 6)])[0]
+
+
+def test_progress_block_hint_after_three_worse_once():
+    h = [entry(1, 1, 6), entry(2, 0, 33), entry(3, 0, 30), entry(4, 1, 7)]
+    text, gave = sa.progress_block(h)
+    assert gave and text.endswith("Your last 3 attempts did not beat #1; consider building on #1's idea or trying "
+                                  "a different approach.")
+    text, gave = sa.progress_block(h + [entry(5, 0, 9)], hinted=True)
+    assert not gave and "Your last 3" not in text
+    assert not sa.progress_block(h[:3])[1]  # only two since the best
+    assert not sa.progress_block([entry(1, 1, 6), entry(2, 0, 9), entry(3, 1, 2), entry(4, 0, 9)])[1]
+
+
+def test_progress_block_keeps_best_and_last_five():
+    h = [entry(i, 0, 100 + i) for i in range(1, 13)]
+    h[2] = entry(3, 1, 4)  # the best is old
+    text, _ = sa.progress_block(h)
+    assert text.startswith("Submissions so far: #3 1 of 2 reproduced, 4 wrong cells; ...; #8 0 of 2, 108 wrong;")
+    assert "#4" not in text and "#7 " not in text and text.count("#") >= 7 and "#12 0 of 2, 112 wrong" in text
+    assert text.count("...") == 1
+
+
+def test_reply_cap_holds_with_long_history_on_30x30():
+    big = [[(r + c) % 10 for c in range(30)] for r in range(30)]
+    task = {"train": [{"input": big, "output": [[0] * 30 for _ in range(30)]}] * 2, "test": [{"input": big}]}
+    code = "def transform(grid):\n    return grid"
+    cand = sy.evaluate(code, task)
+    hist = [entry(i, 0, 800 + i) for i in range(1, 31)]
+    prog, _ = sa.progress_block(hist)
+    reply = sa.submit_reply(cand, task, progress=prog)
+    assert len(reply) <= sa.REPLY_CAP and prog in reply and reply.endswith("Fix the rule and submit again.")
+    assert reply.index(prog) < reply.index("Fix the rule")
+
+
+def test_wrong_cells_counts_shape_errors_as_all_cells():
+    cand = sy.evaluate("def transform(grid):\n    return [[0]]", TASK)
+    assert sa.wrong_cells(cand, TASK) == 8
+    assert sa.wrong_cells(sy.evaluate(WRONG, TASK), TASK) == 6
+
+
+PARTIAL = "def transform(grid):\n    return [r[::-1] for r in grid[::-1]] if grid[0][0] == 5 else grid"
+
+
+def test_agent_run_shows_progress_line_and_pushes_submissions():
+    class PushRepl(StubRepl):
+        pushed: ClassVar[list] = []
+
+        def push(self, name, value):
+            PushRepl.pushed.append((name, value))
+
+    PushRepl.pushed = []
+    srv, seen = server([call_reply(tc("python", "1")), call_reply(tc("submit", WRONG)),
+                        call_reply(tc("submit", PARTIAL)), call_reply(tc("submit", GOOD))])
+    budget = sy.Budget(time.time() + 600, 1, 1)
+    try:
+        att = sa.run_attempt(TASK, base_url=f"http://127.0.0.1:{srv.server_port}/v1", model="m", budget=budget,
+                             deadline=time.time() + 600, repl_factory=PushRepl)
+    finally:
+        srv.shutdown()
+    assert att.verified
+    replies = [m["content"] for m in seen[-1]["messages"] if m["role"] == "tool"]
+    assert "Submissions so far: #1 0 of 2 reproduced, 6 wrong cells. Best: #1." in replies[1]
+    assert ("#2 1 of 2, 4 wrong. Best: #2. This one (#2) is better than your previous best.") in replies[2]
+    name, subs = PushRepl.pushed[-1]
+    assert name == "submissions" and [s["n"] for s in subs] == [1, 2, 3]
+    assert subs[1] == {"n": 2, "reproduced": 1, "of": 2, "wrong_cells": 4, "code": PARTIAL}
+    assert subs[2]["reproduced"] == 2 and subs[2]["wrong_cells"] == 0
+
+
+def test_submissions_capped_and_stub_without_push_still_works():
+    srv, _ = server([call_reply(tc("python", "1")), call_reply(tc("submit", WRONG)), call_reply(tc("submit", GOOD))])
+    budget = sy.Budget(time.time() + 600, 1, 1)
+    try:  # StubRepl has no push
+        att = sa.run_attempt(TASK, base_url=f"http://127.0.0.1:{srv.server_port}/v1", model="m", budget=budget,
+                             deadline=time.time() + 600, repl_factory=StubRepl)
+    finally:
+        srv.shutdown()
+    assert att.verified
+    pushed = []
+
+    class R(StubRepl):
+        def push(self, name, value):
+            pushed.append(value)
+
+    codes = [f"def transform(grid):\n    return [[{i}]]\n# {'x' * 7000}" for i in range(20)]
+    srv, _ = server([call_reply(tc("python", "1"))] + [call_reply(tc("submit", c)) for c in codes])
+    try:
+        sa.run_attempt(TASK, base_url=f"http://127.0.0.1:{srv.server_port}/v1", model="m", budget=budget,
+                       deadline=time.time() + 600, repl_factory=R, max_turns=21)
+    finally:
+        srv.shutdown()
+    last = pushed[-1]
+    assert len(last) <= 13 and last[-1]["n"] == 20 and all(len(s["code"]) <= sa.CODE_CAP for s in last)
