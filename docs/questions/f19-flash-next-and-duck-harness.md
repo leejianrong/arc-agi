@@ -15,11 +15,13 @@ score only 15-27 on Kaggle, so the gap to 42 is tokens per task and throughput, 
 harness: one sandboxed `python(code)` tool over a persistent REPL, observations as variables plus an image and a
 letter-coded ASCII grid, 4-connected segmentation, oldest messages evicted. Tufa Labs is #1 on the ARC-AGI-2 board
 (88.06); forum claims say the leaders use Flash-Next plus Duck. Unverified for ARC-AGI-2, and no leader notebook is
-public. A public 27B notebook (`madarshbb/arc-agent-sub-q38-direct-b98k-c16-792ef9`, credits dfranzen's Duck fork)
-already contains a REPL agent mode: `python(code)` and `submit(code)` tools, `submit` runs `transform` on every demo and
-returns a cell diff, verified programs end the attempt, a nudge every 6 python calls without a submit, context trimming
-that keeps prefix-cache hits, per-attempt token cap = throughput x time / tasks, voting over verified programs, an
-8192-token no-think rescue turn.
+public. Public 27B notebooks (`madarshbb/arc-agent-sub-q38-direct-b98k-c16-792ef9`, `madarshbb/arc-qwen-3-8-27b-agent`, crediting
+dfranzen's Duck fork) ship a REPL agent (`python(code)` and `submit(code)` tools; `submit` runs `transform` on every demo
+and returns a cell diff; nudges, context trimming, voting over verified programs, a no-think rescue turn) but **both are
+configured `mode: direct`**: two no-tool xhigh samples per task (thinking budget 98304 or 40960). The REPL code is dormant,
+so **no scored REPL-agent result is public**, and the scores of 15-27 belong to direct xhigh. Details:
+`docs/research/arc2-repl-agent-spec.md` (it also notes the notebook's `python` tool is not persistent: each call is a
+fresh process).
 
 **Flash-Next is a runtime change, not a drop-in.** MoE, 125B total, 6B active (+51B n-gram table, 4B MTP layer), licence
 qwen-community-1.0 (hosts declined to rule on prize eligibility; hearsay says ARC Prize allowed it). vLLM needs >= 0.30
@@ -38,7 +40,8 @@ launchers, and the semula + Haiku loop (`docs/SEMULA-HAIKU-LOOP.md`). Qwen3.6 on
 
 ## Decision
 
-The user prefers the Duck-style method over TTT. Plan:
+The user prefers the Duck-style method over TTT. Caveat: the REPL agent is unproven here (no public scored run), so its
+settings are hypotheses to A/B against direct xhigh in a measured integration run. Plan:
 
 1. **Build a Duck-style REPL agent mode for ARC-AGI-2** on Qwen3.8-27B (reimplemented, MIT-0; do not copy Duck code or
    prompts): persistent sandboxed `python` tool with the task preloaded as variables and helper functions, `submit`
