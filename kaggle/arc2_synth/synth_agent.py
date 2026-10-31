@@ -15,6 +15,7 @@ import signal
 import sys
 import threading
 import urllib.error
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 
@@ -87,6 +88,14 @@ def diff_map(got, want):
     return "\n".join("".join("." if g == w else str(g) for g, w in zip(gr, wr)) for gr, wr in zip(got, want))
 
 
+def diff_detail(got, want, cells=True):
+    """Up to 10 wrong cells ('(r,c) got A expected B') and the 5 commonest got->expected colour pairs."""
+    wrong = [(r, c, g, w) for r, (gr, wr) in enumerate(zip(got, want)) for c, (g, w) in enumerate(zip(gr, wr)) if g != w]
+    pairs = ", ".join(f"{g}->{w} x{n}" for (g, w), n in Counter((g, w) for _, _, g, w in wrong).most_common(5))
+    lines = [f"Wrong cells: {'; '.join(f'({r},{c}) got {g} expected {w}' for r, c, g, w in wrong[:10])}"] if cells else []
+    return "\n".join(lines + [f"Colour pairs (got->expected): {pairs}"])
+
+
 REPLY_CAP = 6000  # characters in one submit reply; the first failing example's grids (<= 30x30) always fit
 
 
@@ -106,6 +115,7 @@ def submit_reply(cand, task, max_examples=2):
         res = sy.run_program(cand["code"], [train[i - 1]["input"] for i in wrong_cells])
         got = {i: r["grid"] for i, r in zip(wrong_cells, res) if r["status"] == "ok"}
     out = [f"Reproduced {n - len(cand['fails'])} of {n} examples."]
+    detailed = False  # cell/pair diagnostics for the first right-shaped failure only
     for i, f in zip(idx, cand["fails"]):
         want = train[i - 1]["output"]
         out.append(f"## Example {i} failed")
@@ -115,9 +125,14 @@ def submit_reply(cand, task, max_examples=2):
             total = len(want) * len(want[0])
             if total > 900:
                 out.append(f"{bad} of {total} cells are wrong")
+                if not detailed:
+                    out.append(diff_detail(g, want, cells=False))
             else:
                 out.append(f"{bad} of {total} cells are wrong. Expected output:\n{ls.grid_text(want)}\n"
                            f"Your output ('.' = correct cell, digit = wrong cell):\n{diff_map(g, want)}")
+                if not detailed:
+                    out.append(diff_detail(g, want))
+            detailed = True
         else:
             out.append(f.split(": ", 1)[1])
             if "wrong shape" in f and len(want) * len(want[0]) <= 900:
@@ -234,11 +249,12 @@ class Attempt:
         self.tokens = self.python_calls = self.submits = 0
         self.status = "running"
         self.verified = False
+        self.persist = True
 
     def log(self):
         return {"status": self.status, "verified": self.verified, "tokens": self.tokens, "turns": len(self.turns),
                 "python_calls": self.python_calls, "submits": self.submits, "events": self.events,
-                "control": self.control}
+                "control": self.control, "persist": self.persist}
 
 
 def _default_repl(task, persist=True):
@@ -249,13 +265,14 @@ def _default_repl(task, persist=True):
 def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40, max_tokens=32768,
                 attempt_tokens=120000, request_timeout=3600, temperature=0.6, effort="", thinking_budget=0,
                 sandbox_timeout=10, repl_factory=None, hooks=None, on_cand=None, max_hints=1,
-                tool_timeout=None, control=None):
+                tool_timeout=None, control=None, persist=1):
     """One conversation. Returns an Attempt (cands feed ``synth.select_attempts``)."""
     pre = f"[task {tag}] " if tag else ""
     ctl = control or Control()
     hooks = hooks or ctl
     att = Attempt()
     att.control = asdict(ctl)
+    att.persist = bool(persist)
     att.messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": pre + task_message(task)}]
     kwargs = {"reasoning_effort": effort} if effort else None
     seen = {}  # code -> (cand, reply, submit number), to flag identical resubmissions without re-running them
@@ -292,7 +309,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             if not code.strip():
                 return "Missing 'code' argument. Call python with a JSON object {\"code\": \"...\"}."
             try:
-                repl = repl or (repl_factory or _default_repl)(task, persist=True)
+                repl = repl or (repl_factory or _default_repl)(task, persist=bool(persist))
                 return repl.run(code, tool_timeout) if tool_timeout else repl.run(code)
             except Exception as e:  # noqa: BLE001 - a broken sandbox must not kill the attempt
                 return f"[python tool error: {e!r}]"
@@ -446,7 +463,8 @@ def solve_task(task, args, deadline, on_update=None, fallback_rows=None, tag="",
             max_turns=args.max_turns, max_tokens=args.max_tokens, attempt_tokens=args.task_budget,
             request_timeout=args.request_timeout, temperature=args.temperature, effort=args.effort,
             thinking_budget=args.thinking_budget, sandbox_timeout=args.sandbox_timeout,
-            repl_factory=repl_factory, hooks=hooks, on_cand=lambda c: (cands.append(c), update()))
+            repl_factory=repl_factory, hooks=hooks, persist=getattr(args, "persist", 1),
+            on_cand=lambda c: (cands.append(c), update()))
         logs.append(dict(att.log(), turns_detail=att.turns))
     rows = update()
     best = max(cands, key=lambda c: (c["verified"], c["frac"]), default=None)
@@ -572,6 +590,7 @@ def main(argv=None):
     ap.add_argument("--reserve-sec", type=float, default=120)
     ap.add_argument("--order", choices=["easy", "given"], default="easy")
     ap.add_argument("--log-dir", default="agent_logs")
+    ap.add_argument("--persist", type=int, choices=[0, 1], default=1, help="python variables survive between calls")
     ap.add_argument("--tag-prompts", type=int, default=0, help="prefix every user message with [task <id>]")
     return run(ap.parse_args(argv))
 

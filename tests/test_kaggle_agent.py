@@ -278,3 +278,53 @@ def test_submit_reply_shows_full_30x30_diff_and_caps_length():
     cand = {"code": "", "verified": False, "frac": 0.0, "fails": ["Example 1: exception: " + "x" * 9000]}
     text = sa.submit_reply(cand, big)
     assert len(text) <= sa.REPLY_CAP and "chars cut" in text
+
+
+def test_submit_reply_colour_pairs_and_wrong_cells(monkeypatch):
+    want = _grid(30, lambda r, c: (r + c) % 10)
+    task = {"train": [{"input": want, "output": want}], "test": []}
+    cand = sy.evaluate("def transform(grid):\n    return [[7] * 30 for _ in grid]", task)
+    text = sa.submit_reply(cand, task)
+    assert "Colour pairs (got->expected): 7->" in text and text.count(" x") >= 5
+    assert "Wrong cells: (0,0) got 7 expected 0; (0,1) got 7 expected 1" in text and len(text) <= sa.REPLY_CAP
+    assert text.count("got 7 expected") == 10  # capped at 10 cells
+    # over 900 cells (the sandbox caps grids at 30x30, so stub the run): count and pair summary only
+    w = _grid(31, lambda r, c: 8)
+    task = {"train": [{"input": w, "output": w}], "test": []}
+    monkeypatch.setattr(sa.sy, "run_program", lambda code, ins: [{"status": "ok", "grid": _grid(31, lambda r, c: 1)}])
+    cand = {"code": "", "verified": False, "frac": 0.0, "fails": ["Example 1: 961 of 961 cells wrong"]}
+    text = sa.submit_reply(cand, task)
+    assert "961 of 961 cells are wrong\nColour pairs (got->expected): 1->8 x961" in text and "Wrong cells" not in text
+    monkeypatch.undo()
+    # small example, exact text
+    small = {"train": [{"input": [[1, 2]], "output": [[1, 3]]}], "test": []}
+    cand = sy.evaluate("def transform(grid):\n    return [[1, 2]]", small)
+    assert sa.submit_reply(cand, small) == (
+        "Reproduced 0 of 1 examples.\n## Example 1 failed\n1 of 2 cells are wrong. Expected output:\n"
+        f"{sa.ls.grid_text([[1, 3]])}\nYour output ('.' = correct cell, digit = wrong cell):\n.2\n"
+        "Wrong cells: (0,1) got 2 expected 3\nColour pairs (got->expected): 2->3 x1\nFix the rule and submit again.")
+
+
+def test_persist_flag_reaches_repl_factory_and_log():
+    for flag, want in ((0, False), (1, True)):
+        att, _ = attempt([call_reply(tc("python", "1")), call_reply(tc("submit", GOOD))], persist=flag)
+        assert StubRepl.made[0].persist is want and att.log()["persist"] is want
+    att, _ = attempt([call_reply(tc("submit", GOOD))])
+    assert att.log()["persist"] is True
+
+
+def test_persist_flag_real_repl_state_survives_only_when_persisting():
+    for persist, kept in ((False, False), (True, True)):
+        with sa.rp.Repl(TASK, persist=persist, timeout=10) as r:
+            r.run("k = 5")
+            assert ("NameError" not in r.run("print(k)")) is kept
+
+
+def test_main_persist_flag_default_and_zero(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(sa, "_default_repl", lambda task, persist=True: seen.append(persist) or StubRepl(task, persist))
+    for extra, want in (([], True), (["--persist", "0"], False)):
+        srv, _ = server([call_reply(tc("python", "1")), call_reply(tc("submit", GOOD))])
+        _main(tmp_path, srv, *extra)
+        srv.shutdown()
+        assert seen[-1] is want
