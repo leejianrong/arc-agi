@@ -432,11 +432,13 @@
       else if (k === 'on') Object.keys(v).forEach(function (ev) { el.addEventListener(ev, v[ev]); });
       else el.setAttribute(k, v === true ? '' : String(v));
     });
-    for (var i = 2; i < arguments.length; i++) {
-      var kid = arguments[i];
-      if (kid == null || kid === false) continue;
+    // Children may be nested arrays (e.g. the result of .map); a real DOM rejects an array node.
+    function add(kid) {
+      if (kid == null || kid === false) return;
+      if (Array.isArray(kid)) { kid.forEach(add); return; }
       el.appendChild(typeof kid === 'string' ? document.createTextNode(kid) : kid);
     }
+    for (var i = 2; i < arguments.length; i++) add(arguments[i]);
     return el;
   }
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
