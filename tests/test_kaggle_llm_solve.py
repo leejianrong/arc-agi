@@ -36,17 +36,20 @@ def test_merge_never_returns_none_and_prefers_model_answer():
 
 
 def _server(reply, think_reply=None):
-    """think_reply: what a thinking-mode request gets (default: same as reply)."""
+    """think_reply: chat reply text (default same as reply). /completions always returns reply's tail."""
 
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
-            req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            nothink = req.get("chat_template_kwargs", {}).get("enable_thinking") is False
-            content = reply if (nothink or think_reply is None) else think_reply
-            body = json.dumps(
-                {"choices": [{"message": {"content": content}, "finish_reason": "stop"}],
-                 "usage": {"completion_tokens": 5}}
-            ).encode()
+            self.rfile.read(int(self.headers["Content-Length"]))
+            if self.path.endswith("/completions") and not self.path.endswith("chat/completions"):
+                out = {"choices": [{"text": reply.split('{"outputs": [', 1)[1] if '{"outputs": [' in reply else reply}],
+                       "usage": {"completion_tokens": 7}}
+            else:
+                content = reply if think_reply is None else think_reply
+                out = {"choices": [{"message": {"content": content, "reasoning": "step one... step two..."},
+                                    "finish_reason": "length" if think_reply == "" else "stop"}],
+                       "usage": {"completion_tokens": 5}}
+            body = json.dumps(out).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -90,9 +93,9 @@ def test_unreachable_model_still_writes_valid_fallback(tmp_path):
     assert set(out["t1"][0]) == {"attempt_1", "attempt_2"}
 
 
-def test_nothink_retry_rescues_a_truncated_thinking_call(tmp_path):
+def test_forced_answer_rescues_a_truncated_thinking_call(tmp_path):
     good = '```json\n{"outputs": [{"attempt_1": [[8, 7], [6, 5]], "attempt_2": [[0, 0], [0, 0]]}]}\n```'
-    srv = _server(good, think_reply="")  # thinking mode "runs out of tokens": empty content
+    srv = _server(good, think_reply="")  # thinking "runs out of tokens": empty content, finish=length
     _, argv = _args(tmp_path, srv)
     ls.main(argv)
     out = json.loads((tmp_path / "o.json").read_text())

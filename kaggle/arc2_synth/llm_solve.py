@@ -102,8 +102,31 @@ def chat(base_url, model, prompt, max_tokens, timeout, temperature, template_kwa
     text = msg.get("content") or ""
     usage = dict(d.get("usage", {}))
     usage["finish_reason"] = choice.get("finish_reason")
-    usage["reasoning_chars"] = len(msg.get("reasoning_content") or msg.get("reasoning") or "")
+    reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+    usage["reasoning_chars"] = len(reasoning)
+    usage["reasoning_text"] = reasoning
     return text, usage
+
+
+FORCE_TAIL = (
+    "\n\nTime is up. I must stop reasoning and commit to my best final answer now.\n</think>\n\n"
+    '```json\n{"outputs": ['
+)
+
+
+def force_answer(base_url, model, prompt, reasoning, max_tokens, timeout, temperature):
+    """Continue a truncated reasoning trace straight into the JSON answer (budget forcing).
+
+    Uses raw ChatML via /completions, since the chat endpoint cannot prefill a reasoning trace.
+    """
+    raw = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n{reasoning}{FORCE_TAIL}"
+    body = json.dumps({"model": model, "prompt": raw, "max_tokens": max_tokens,
+                       "temperature": temperature}).encode()
+    req = urllib.request.Request(base_url.rstrip("/") + "/completions", body, {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        d = json.load(r)
+    choice = d["choices"][0]
+    return FORCE_TAIL.split("</think>")[1] + choice.get("text", ""), d.get("usage", {})
 
 
 def merge(fallback_rows, parsed):
@@ -148,14 +171,15 @@ def run(args):
         except Exception as e:  # noqa: BLE001 - one task's failure must not stop the run
             err = repr(e)
         parsed = parse_outputs(text, len(task["test"])) if text else None
-        if not parsed and args.nothink_retry and time.time() < deadline:
+        reasoning = usage.pop("reasoning_text", "")
+        if not parsed and args.force_answer and reasoning and time.time() < deadline:
             retried = True
             try:
-                text, usage2 = chat(args.base_url, args.model, prompt, args.nothink_max_tokens,
-                                    max(30, min(600, deadline - time.time())), args.temperature,
-                                    {"enable_thinking": False})
+                text2, usage2 = force_answer(args.base_url, args.model, prompt, reasoning, args.force_max_tokens,
+                                             max(30, min(900, deadline - time.time())), args.temperature)
                 usage["retry_completion_tokens"] = usage2.get("completion_tokens", 0)
-                parsed = parse_outputs(text, len(task["test"])) if text else None
+                parsed = parse_outputs(text2, len(task["test"]))
+                text = text + "\n=====FORCED=====\n" + text2
             except Exception as e:  # noqa: BLE001
                 err = (err or "") + " retry:" + repr(e)
         dt = time.time() - t0
@@ -174,7 +198,8 @@ def run(args):
                   f"tok={usage.get('completion_tokens')} fin={usage.get('finish_reason')} retry={retried} "
                   f"{dt:.0f}s", flush=True)
         with open(os.path.join(args.log_dir, f"{tid}.json"), "w") as f:
-            json.dump({"usage": usage, "error": err, "elapsed": dt, "text": text}, f)
+            json.dump({"usage": usage, "error": err, "elapsed": dt, "text": text,
+                       "reasoning_tail": reasoning[-1500:]}, f)
 
     flush()
     t_start = time.time()
@@ -206,8 +231,8 @@ def main(argv=None):
     ap.add_argument("--max-tokens", type=int, default=32768)
     ap.add_argument("--temperature", type=float, default=0.6)
     ap.add_argument("--effort", default="medium", help="reasoning_effort template kwarg ('' to omit)")
-    ap.add_argument("--nothink-retry", type=int, default=1)
-    ap.add_argument("--nothink-max-tokens", type=int, default=4096)
+    ap.add_argument("--force-answer", type=int, default=1)
+    ap.add_argument("--force-max-tokens", type=int, default=8192)
     ap.add_argument("--request-timeout", type=int, default=3600)
     ap.add_argument("--deadline-min", type=float, default=60)
     ap.add_argument("--log-dir", default="llm_logs")
