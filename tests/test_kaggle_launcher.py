@@ -262,6 +262,7 @@ def test_bench_agent_configs_write_one_valid_trace_each(tmp_path):
         assert errs == [] and n > 0
         evs = _events(path)
         assert evs[0]["ev"] == "run_start" and evs[-1]["ev"] == "run_end"
+        assert {e["cfg"] for e in evs} == {name}  # the viewer merges files with the same cfg
         starts = [e for e in evs if e["ev"] == "task_start"]
         ends = [e for e in evs if e["ev"] == "task_end"]
         assert len(starts) == len(ends) == 3

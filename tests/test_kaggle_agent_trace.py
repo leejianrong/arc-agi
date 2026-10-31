@@ -121,3 +121,8 @@ def test_without_trace_no_file_and_no_events(tmp_path, monkeypatch):
     srv.shutdown()
     assert summary["verified"] == 1 and out["t1"][0]["attempt_1"] == ta.ANS
     assert sorted(p.name for p in tmp_path.iterdir()) == ["c.json", "logs", "o.json", "s.json"]
+
+
+def test_cfg_flag_labels_every_event(tmp_path, monkeypatch):
+    _, tp = _run(tmp_path, monkeypatch, [ta.call_reply(ta.tc("submit", ta.GOOD))], None, "--cfg", "agent_xhigh_fresh")
+    assert {e["cfg"] for e in _events(tp)} == {"agent_xhigh_fresh"}

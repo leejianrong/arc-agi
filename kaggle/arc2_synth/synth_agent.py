@@ -574,7 +574,7 @@ def run(args):
     deadline = t_start + args.deadline_min * 60
     budget = sy.Budget(deadline, len(ids), args.n_parallel, args.reserve_sec, args.min_call_tokens)
     os.makedirs(args.log_dir, exist_ok=True)
-    tw = tr.TraceWriter(args.trace) if getattr(args, "trace", None) else None  # needs trace.py beside this file
+    tw = tr.TraceWriter(args.trace, cfg=getattr(args, "cfg", "default")) if getattr(args, "trace", None) else None  # needs trace.py beside this file
     sol = None
     if tw:
         if args.solutions:
@@ -692,6 +692,7 @@ def main(argv=None):
     ap.add_argument("--persist", type=int, choices=[0, 1], default=1, help="python variables survive between calls")
     ap.add_argument("--tag-prompts", type=int, default=0, help="prefix every user message with [task <id>]")
     ap.add_argument("--trace", default=None, help="append a JSONL event trace (docs/arc2-trace-schema.md) here")
+    ap.add_argument("--cfg", default="default", help="config name written on every trace event (bench: one per config)")
     return run(ap.parse_args(argv))
 
 

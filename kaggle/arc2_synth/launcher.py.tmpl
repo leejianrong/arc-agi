@@ -47,7 +47,7 @@ OUT = os.path.join(WORK, "submission.json")
 T0 = time.time()
 server = None
 HB_SEC = float(os.environ.get("ARC_HB_SEC", "120"))
-ACTIVE_TRACE = None  # {"path", "t0"} of the trace being written now; only agent runs emit traces (direct/synth do not)
+ACTIVE_TRACE = None  # {"path", "t0", "cfg"} of the trace being written now; only agent runs emit traces (direct/synth do not)
 
 
 def log(*a):
@@ -167,7 +167,7 @@ def trace_heartbeat(gpu_mem):
         tr = ACTIVE_TRACE
         if not tr or not os.path.exists(tr["path"]):  # run_start must stay the first event
             return
-        ev = {"ev": "heartbeat", "t": round(time.time() - tr["t0"], 3), "cfg": "default",
+        ev = {"ev": "heartbeat", "t": round(time.time() - tr["t0"], 3), "cfg": tr.get("cfg", "default"),
               "tok_s": None, "running": None, "waiting": None, "kv_pct": None, "gpu_mem_mib": gpu_mem}
         with contextlib.suppress(OSError), open(os.path.join(WORK, "vllm_server.log"), "rb") as f:
             f.seek(0, os.SEEK_END)
@@ -323,11 +323,11 @@ def bench_sample():
     return sample, ids, solutions, sol_file if solutions else None
 
 
-def trace_args(path, solutions_file):
+def trace_args(path, solutions_file, cfg="default"):
     """`--trace` (and `--solutions` when known) for synth_agent; the trace's clock for heartbeats starts here."""
     global ACTIVE_TRACE
-    ACTIVE_TRACE = {"path": path, "t0": time.time()}
-    return ["--trace", path] + (["--solutions", solutions_file] if solutions_file else [])
+    ACTIVE_TRACE = {"path": path, "t0": time.time(), "cfg": cfg}
+    return ["--trace", path, "--cfg", cfg] + (["--solutions", solutions_file] if solutions_file else [])
 
 
 def trace_done(path):
@@ -383,7 +383,7 @@ def bench_run():
         extra = [x for k, v in cfg.items() if k not in skip for x in (f"--{k.replace('_', '-')}", str(v))]
         trace = os.path.join(WORK, f"trace_{name}.jsonl") if mode == "agent" and solver is not None else None
         if trace:
-            extra += trace_args(trace, sol_file)
+            extra += trace_args(trace, sol_file, name)
         log(f"bench {name}: mode={mode} args={extra}")
         tee, t0 = Tee(), time.time()
         res = {"name": name, "mode": mode, "tasks": len(ids)}
@@ -432,7 +432,7 @@ try:
             MODE, (llm_solve, []))
         if MODE == "agent":  # direct and synth do not emit traces
             sol = os.path.join(os.path.dirname(challenges_path), "arc-agi_evaluation_solutions.json")
-            extra = extra + trace_args(os.path.join(WORK, "trace.jsonl"), sol if os.path.exists(sol) else None)
+            extra = extra + trace_args(os.path.join(WORK, "trace.jsonl"), sol if os.path.exists(sol) else None, "agent")
         solver.main(args + extra)
 except Exception as e:  # noqa: BLE001 - never lose the submission to a solver crash
     log("solver crashed:", repr(e))
