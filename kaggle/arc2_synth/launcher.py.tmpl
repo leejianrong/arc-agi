@@ -57,15 +57,21 @@ if not wheelhouse or not model_dir:
     log("FATAL: missing wheelhouse or model; leaving the baseline submission")
     sys.exit(0)
 
-r = subprocess.run(
-    [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-index",
-     "--find-links", wheelhouse, "-r", os.path.join(wheelhouse, "requirements.lock")],
-    capture_output=True, text=True,
-)
-log("pip install exit", r.returncode)
-if r.returncode != 0:
-    print(r.stdout[-3000:], r.stderr[-3000:])
-    sys.exit(0)
+log("system python:", sys.version.split()[0])
+# The wheelhouse is cp312 but Kaggle's default Python is 3.13: build a 3.12 venv (in /tmp; the
+# 20 GB /kaggle/working is too small) and install the wheels into it offline.
+VENV = "/tmp/vllm-venv"
+VPY = os.path.join(VENV, "bin", "python")
+for step in (
+    ["uv", "venv", VENV, "--python", "/usr/bin/python3.12"],
+    ["uv", "pip", "install", "--python", VPY, "--no-index", "--find-links", wheelhouse,
+     "-r", os.path.join(wheelhouse, "requirements.lock")],
+):
+    r = subprocess.run(step, capture_output=True, text=True)
+    log(" ".join(step[:3]), "exit", r.returncode)
+    if r.returncode != 0:
+        print(r.stdout[-3000:], r.stderr[-3000:])
+        sys.exit(0)
 
 env = os.environ.copy()
 env["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -80,7 +86,7 @@ if os.path.exists(os.path.join(real_cuda, "libcuda.so")):
 n_gpu = len([ln for ln in subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True).stdout.splitlines() if ln])
 log("gpus:", n_gpu)
 cmd = [
-    sys.executable, "-m", "vllm.entrypoints.openai.api_server", "--model", model_dir,
+    VPY, "-m", "vllm.entrypoints.openai.api_server", "--model", model_dir,
     "--served-model-name", "qwen", "--host", "127.0.0.1", "--port", "8000",
     "--tensor-parallel-size", str(max(1, n_gpu)), "--gpu-memory-utilization", "0.94",
     "--max-model-len", "65536", "--max-num-seqs", str(N_PARALLEL), "--trust-remote-code",
@@ -114,7 +120,8 @@ while time.time() - T0 < 40 * 60:
         time.sleep(10)
 log("vllm up:", up)
 if not up:
-    print(open(os.path.join(WORK, "vllm_server.log")).read()[-4000:])
+    with open(os.path.join(WORK, "vllm_server.log")) as f:
+        print(f.read()[-4000:])
     stop_server()
     sys.exit(0)
 

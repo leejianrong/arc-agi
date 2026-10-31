@@ -87,8 +87,10 @@ def parse_outputs(text, n_test):
 
 
 def chat(base_url, model, prompt, max_tokens, timeout, temperature, template_kwargs=None):
+    """prompt: a user string, or a full OpenAI-style messages list."""
+    messages = prompt if isinstance(prompt, list) else [{"role": "user", "content": prompt}]
     payload = {
-        "model": model, "messages": [{"role": "user", "content": prompt}],
+        "model": model, "messages": messages,
         "max_tokens": max_tokens, "temperature": temperature,
     }
     if template_kwargs:

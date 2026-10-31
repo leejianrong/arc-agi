@@ -24,7 +24,8 @@ buf = io.BytesIO()
 with tarfile.open(fileobj=buf, mode="w:gz") as tf:
     tf.add(os.path.join(HERE, "llm_solve.py"), arcname="llm_solve.py")
     tf.add(os.path.join(HERE, "..", "arc2_baseline", "solve.py"), arcname="solve.py")
-src = open(os.path.join(HERE, "launcher.py.tmpl")).read()
+with open(os.path.join(HERE, "launcher.py.tmpl")) as f:
+    src = f.read()
 for k, v in {"BUNDLE": base64.b64encode(buf.getvalue()).decode(), "LIMIT": a.limit, "BUDGET": a.budget_min,
              "NPAR": a.npar, "MAX_TOKENS": a.max_tokens, "MTP": a.mtp}.items():
     src = src.replace(f"@@{k}@@", str(v))
