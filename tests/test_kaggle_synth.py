@@ -3,7 +3,7 @@ import json
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -65,8 +65,8 @@ def test_verified_and_feedback():
     assert "ZeroDivisionError" in sy.feedback_text(boom, 2)
 
 
-def _cand(out, verified=True, frac=1.0):
-    return {"verified": verified, "frac": frac, "test_outputs": [out]}
+def _cand(out, verified=True, frac=1.0, code=""):
+    return {"verified": verified, "frac": frac, "test_outputs": [out], "code": code}
 
 
 def test_selection_majority_ties_partial_and_fallback():
@@ -74,6 +74,10 @@ def test_selection_majority_ties_partial_and_fallback():
     a, b, c = [[1]], [[2]], [[3]]
     rows = sy.select_attempts(TASK, [_cand(a), _cand(b), _cand(b), _cand(c)], fb)
     assert rows == [{"attempt_1": b, "attempt_2": a}]  # majority first, then earlier round on ties
+    rows = sy.select_attempts(TASK, [_cand(a, code="long program"), _cand(b, code="short")], fb)
+    assert rows == [{"attempt_1": b, "attempt_2": a}]  # equal votes: shorter source wins
+    rows = sy.select_attempts(TASK, [_cand(a, code="xx"), _cand(b, code="xx"), _cand(b, code="xxxxx")], fb)
+    assert rows[0]["attempt_1"] == b  # more votes beat shorter code
     rows = sy.select_attempts(TASK, [_cand(a), _cand(c, False, 0.2), _cand(b, False, 0.8)], fb)
     assert rows == [{"attempt_1": a, "attempt_2": b}]  # best partial fills slot 2
     rows = sy.select_attempts(TASK, [_cand(a)], fb, direct_rows=[{"attempt_1": None, "attempt_2": c}])
@@ -81,13 +85,14 @@ def test_selection_majority_ties_partial_and_fallback():
     assert sy.select_attempts(TASK, [], fb) == fb
 
 
-def _server(replies):
+def _server(replies, delay=0):
     """Chat replies are served in order (last repeats); records each request's messages."""
     seen = []
 
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
             req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            time.sleep(delay)
             if self.path.endswith("/chat/completions"):
                 seen.append(req["messages"])
                 content, reasoning, fin = replies[min(len(seen) - 1, len(replies) - 1)]
@@ -105,7 +110,8 @@ def _server(replies):
         def log_message(self, *a):
             pass
 
-    srv = HTTPServer(("127.0.0.1", 0), H)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, seen
 
@@ -183,3 +189,89 @@ def test_feedback_shows_grids_color_pairs_and_flags_repeats():
     text = sy.feedback_text(cand, 1, repeated=True)
     assert "identical to your previous one" in text
     assert "1->8 x3" in text and "expected output:\n88\n81" in text and "your output:\n11\n11" in text
+
+
+def test_budget_share_rate_and_limits(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(sy, "clock", lambda: now[0])
+    b = sy.Budget(deadline=1000 + 10_000, n_tasks=40, n_parallel=4, reserve_sec=400, min_call_tokens=2048)
+    assert b.share() == (10_000 - 400) / 10  # 10 waves of 4 tasks
+    assert b.rate() == 20
+    assert b.call_limits(32768, 3600) == (960 * 20, 960 * 1.2 + 30)
+    b.observe(3000, 100)
+    b.observe(1000, 100)
+    assert b.rate() == 20  # ratio of sums: 4000 tokens / 200 s
+    b.observe(6000, 100)
+    assert b.rate() == 10_000 / 300
+    b.done = 38
+    assert b.share() == 9600  # last wave: one task gets everything
+    assert b.call_limits(4096, 3600)[0] == 4096  # flag values are upper bounds
+    now[0] += 9_700  # 300 s left, 400 s reserve
+    assert b.share() < 0 and b.call_limits(32768, 3600) is None
+    now[0] = 1000 + 9_600 - 50  # 50 s of share: 50 * 33 tokens < min_call_tokens
+    assert b.call_limits(32768, 3600) is None
+
+
+def test_tight_budget_skips_model_and_keeps_fallback(tmp_path):
+    srv, seen = _server([(_py(GOOD), "", "stop")])
+    _, out = _run(tmp_path, srv, "--deadline-min", "3", "--reserve-sec", "120")  # 60 s share * 20 tok/s < 2048
+    srv.shutdown()
+    assert seen == [] and set(out["t1"][0]) == {"attempt_1", "attempt_2"}
+
+
+def test_calls_are_capped_by_share_times_rate(tmp_path):
+    srv, _ = _server([(_py(GOOD), "", "stop")])
+    caps = []
+    orig = sy.ls.chat
+    sy.ls.chat = lambda *a, **k: (caps.append((a[3], a[4])), orig(*a, **k))[1]
+    try:
+        _run(tmp_path, srv, "--deadline-min", "10", "--reserve-sec", "60", "--max-tokens", "32768")
+    finally:
+        sy.ls.chat = orig
+        srv.shutdown()
+    assert len(caps) == 1 and caps[0][0] <= 540 * 20 and caps[0][1] <= 540 * 1.2 + 30
+
+
+def test_easy_tasks_first(tmp_path):
+    big = {"train": [{"input": [[1] * 9] * 9, "output": [[1] * 9] * 9}], "test": [{"input": [[1] * 9] * 9}]}
+    assert sy.task_size(TASK) < sy.task_size(big)
+    ch = tmp_path / "c.json"
+    ch.write_text(json.dumps({"a_big": big, "z_small": TASK}))
+    srv, seen = _server([(_py(GOOD), "", "stop")])
+    sy.main(["--challenges", str(ch), "--out", str(tmp_path / "o.json"), "--log-dir", str(tmp_path / "l"),
+             "--base-url", f"http://127.0.0.1:{srv.server_port}/v1", "--n-parallel", "1", "--chains", "1",
+             "--rounds", "1"])
+    srv.shutdown()
+    assert "Input:\n12\n34" in seen[0][0]["content"]  # the small task is asked first despite sorting last by id
+
+
+def test_progress_lines_fire_without_completions(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sy, "PROGRESS_SEC", 0.05)
+    srv, _ = _server([(_py(GOOD), "", "stop")], delay=0.4)
+    _run(tmp_path, srv)
+    srv.shutdown()
+    lines = [x for x in capsys.readouterr().out.splitlines() if x.startswith("PROGRESS")]
+    assert len(lines) >= 4 and "done=0/1" in lines[0] and "done=1/1" in lines[-1]
+    assert any("inflight=1" in x for x in lines)
+    for key in ("verified=", "tokens=", "tok_s=", "seq_rate=", "left_s="):
+        assert key in lines[0]
+
+
+def test_sigterm_flushes_complete_submission(tmp_path):
+    import signal
+    import subprocess
+    ch = tmp_path / "c.json"
+    ch.write_text(json.dumps({"t1": TASK, "t2": TASK}))
+    srv, _ = _server([(_py(GOOD), "", "stop")], delay=30)
+    out = tmp_path / "o.json"
+    p = subprocess.Popen([sys.executable, str(_dir / "synth.py"), "--challenges", str(ch), "--out", str(out),
+                          "--log-dir", str(tmp_path / "l"), "--base-url", f"http://127.0.0.1:{srv.server_port}/v1",
+                          "--n-parallel", "1"], stdout=subprocess.PIPE, text=True)
+    assert p.stdout.readline().startswith("PROGRESS")  # startup line: handler is installed by now
+    time.sleep(0.3)
+    p.send_signal(signal.SIGTERM)
+    rc = p.wait(timeout=10)
+    srv.shutdown()
+    sub = json.loads(out.read_text())
+    assert rc == 128 + signal.SIGTERM
+    assert set(sub) == {"t1", "t2"} and all(set(r) == {"attempt_1", "attempt_2"} for v in sub.values() for r in v)

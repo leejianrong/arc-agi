@@ -11,6 +11,7 @@ and the baseline fill any remaining slot. Candidate code never runs in-process.
 """
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -23,6 +24,49 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm_solve as ls
+
+clock = time.time  # tests substitute a fake clock
+PROGRESS_SEC = 60
+
+
+class Budget:
+    """Deadline-aware allowance shared by all workers: time share per task and a running tokens/sec estimate."""
+
+    def __init__(self, deadline, n_tasks, n_parallel, reserve_sec=120, min_call_tokens=2048, default_rate=20.0):
+        self.deadline, self.n_tasks, self.n_parallel = deadline, n_tasks, max(1, n_parallel)
+        self.reserve, self.min_call_tokens, self.default_rate = reserve_sec, min_call_tokens, default_rate
+        self.done = self.tokens = 0
+        self._rate_tok = self._rate_sec = 0.0
+        self.lock = threading.Lock()
+
+    def observe(self, tokens, secs):
+        """Record one completed call for the per-sequence rate (ratio of sums, so long calls dominate)."""
+        if tokens > 0 and secs > 0:
+            with self.lock:
+                self._rate_tok += tokens
+                self._rate_sec += secs
+
+    def rate(self):
+        with self.lock:
+            return self._rate_tok / self._rate_sec if self._rate_sec else self.default_rate
+
+    def add_tokens(self, n):
+        with self.lock:
+            self.tokens += n
+
+    def share(self):
+        """Seconds one task may still use: time left minus the reserve, over the waves of tasks still to run."""
+        with self.lock:
+            remaining = max(1, self.n_tasks - self.done)
+        return (self.deadline - clock() - self.reserve) / math.ceil(remaining / self.n_parallel)
+
+    def call_limits(self, max_tokens, request_timeout):
+        """(max_tokens, timeout) for the next call, or None when the share is too small for a useful one."""
+        share = self.share()
+        cap = min(max_tokens, int(share * self.rate()))
+        if cap < self.min_call_tokens:
+            return None
+        return cap, max(30, min(request_timeout, share * 1.2 + 30, self.deadline - clock()))
 
 # Runs in the child (`python -I -c`). Limits are set here, not via preexec_fn, which is
 # unsafe from a threaded parent. Candidate prints go to /dev/null; only our JSON hits stdout.
@@ -207,12 +251,14 @@ def select_attempts(task, cands, fallback_rows, direct_rows=None):
     partial = sorted((c for c in cands if not c["verified"]), key=lambda c: -c["frac"])  # stable: earlier first
     rows = []
     for i in range(len(task["test"])):
-        votes = Counter()
-        for c in verified:
+        votes, best = Counter(), {}  # best[output]: (shortest source, earliest position)
+        for pos, c in enumerate(verified):
             if c["test_outputs"][i] is not None:
-                votes[json.dumps(c["test_outputs"][i])] += 1
-        # most_common is stable on insertion order, so ties go to the earlier round
-        picks = [json.loads(k) for k, _ in votes.most_common()]
+                k = json.dumps(c["test_outputs"][i])
+                votes[k] += 1
+                best[k] = min(best.get(k, (1 << 60, pos)), (len(c.get("code", "")), pos))
+        # equal votes: shorter program, then earlier round
+        picks = [json.loads(k) for k in sorted(votes, key=lambda k: (-votes[k], *best[k]))]
         picks += [c["test_outputs"][i] for c in partial]
         if direct_rows:
             picks += [direct_rows[i].get("attempt_1"), direct_rows[i].get("attempt_2")]
@@ -227,8 +273,9 @@ def select_attempts(task, cands, fallback_rows, direct_rows=None):
     return rows
 
 
-def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_rows=None, tag=""):
-    """Run up to args.chains refinement chains; returns (rows, log)."""
+def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_rows=None, tag="", budget=None):
+    """Run up to args.chains refinement chains (fewer when the budget runs short); returns (rows, log)."""
+    budget = budget or Budget(deadline, 1, 1, args.reserve_sec, args.min_call_tokens)
     fallback_rows = fallback_rows or ls.load_fallback()(task)
     n_train = len(task["train"])
     pre = f"[task {tag}] " if tag else ""  # lets semula answerers split tasks by the first 200 chars
@@ -247,26 +294,32 @@ def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_
         prev_code = None
         for rnd in range(args.rounds):
             left = args.task_budget - tokens
-            if left < 1024 or time.time() > deadline or sum(c["verified"] for c in cands) >= args.want_verified:
+            if left < 1024 or clock() > deadline or sum(c["verified"] for c in cands) >= args.want_verified:
+                break
+            limits = budget.call_limits(min(args.max_tokens, left), args.request_timeout)
+            if limits is None:  # too little time left for a useful call: keep what we have
                 break
             info = {"chain": chain, "round": rnd}
             rounds.append(info)
             text, reasoning, err = "", "", None
             try:
-                text, usage = ls.chat(args.base_url, args.model, messages, min(args.max_tokens, left),
-                                      max(30, min(args.request_timeout, deadline - time.time())),
+                t_call = clock()
+                text, usage = ls.chat(args.base_url, args.model, messages, limits[0], limits[1],
                                       args.temperature, kwargs)
                 reasoning = usage.pop("reasoning_text", "")
                 tokens += usage.get("completion_tokens", 0)
+                budget.add_tokens(usage.get("completion_tokens", 0))
+                budget.observe(usage.get("completion_tokens", 0), clock() - t_call)
                 info.update(tokens=usage.get("completion_tokens", 0), finish=usage.get("finish_reason"))
             except Exception as e:  # noqa: BLE001 - one task's failure must not stop the run
                 err = repr(e)
             code = extract_code(text) if text else None
-            if code is None and reasoning and args.force_answer and time.time() < deadline:
+            if code is None and reasoning and args.force_answer and clock() < deadline:
                 try:
                     text2, t2 = force_code(args.base_url, args.model, messages, reasoning, args.force_max_tokens,
-                                           max(30, min(900, deadline - time.time())), args.temperature)
+                                           max(30, min(900, deadline - clock())), args.temperature)
                     tokens += t2
+                    budget.add_tokens(t2)
                     code = extract_code("```python\n" + text2)
                     info.update(forced=True, tokens=info.get("tokens", 0) + t2)
                 except Exception as e:  # noqa: BLE001
@@ -300,22 +353,32 @@ def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_
     return rows, log
 
 
+def task_size(task):
+    """Total cells over train and test grids: the easiest-first proxy."""
+    grids = [g for p in task["train"] for g in (p["input"], p["output"])] + [t["input"] for t in task["test"]]
+    return sum(len(g) * len(g[0]) for g in grids)
+
+
 def run(args):
     with open(args.challenges) as f:
         challenges = json.load(f)
     ids = sorted(challenges)[: args.limit] if args.limit else sorted(challenges)
+    if args.order == "easy":
+        ids.sort(key=lambda t: (task_size(challenges[t]), t))
     fallback = ls.load_fallback()
     fb = {tid: fallback(challenges[tid]) for tid in challenges}
     sub = {tid: fb[tid] for tid in challenges}
     lock = threading.Lock()
-    stats = {"done": 0, "verified": 0, "tokens": 0}
-    deadline = time.time() + args.deadline_min * 60
+    stats = {"done": 0, "verified": 0, "inflight": 0}
+    t_start = clock()
+    deadline = t_start + args.deadline_min * 60
+    budget = Budget(deadline, len(ids), args.n_parallel, args.reserve_sec, args.min_call_tokens)
     os.makedirs(args.log_dir, exist_ok=True)
 
     def flush():
-        tmp = args.out + ".tmp"
+        tmp = f"{args.out}.{os.getpid()}.{threading.get_ident()}.tmp"  # unique: the SIGTERM handler may race a flush
         with open(tmp, "w") as f:
-            json.dump(sub, f)
+            json.dump(dict(sub), f)
         os.replace(tmp, args.out)
 
     def set_rows(tid, rows):
@@ -323,34 +386,60 @@ def run(args):
             sub[tid] = rows
             flush()
 
+    def progress():
+        el = max(clock() - t_start, 1e-9)
+        print(f"PROGRESS done={stats['done']}/{len(ids)} inflight={stats['inflight']} verified={stats['verified']} "
+              f"tokens={budget.tokens} tok_s={budget.tokens / el:.1f} seq_rate={budget.rate():.1f} "
+              f"left_s={max(0, int(deadline - clock()))}", flush=True)
+
     def work(tid):
-        if time.time() > deadline:
+        if clock() > deadline:
             return
-        t0 = time.time()
+        t0 = clock()
+        with lock:
+            stats["inflight"] += 1
         try:
             rows, log = synthesize(challenges[tid], args, deadline, lambda r: set_rows(tid, r), fallback_rows=fb[tid],
-                                   tag=tid if args.tag_prompts else "")
+                                   tag=tid if args.tag_prompts else "", budget=budget)
         except Exception as e:  # noqa: BLE001
             rows, log = fb[tid], {"error": repr(e), "tokens": 0, "verified": 0}
-        dt = time.time() - t0
+        dt = clock() - t0
         with lock:
             sub[tid] = rows
             stats["done"] += 1
+            stats["inflight"] -= 1
             stats["verified"] += bool(log.get("verified"))
-            stats["tokens"] += log.get("tokens", 0)
+            budget.done += 1
             flush()
             print(f"[{stats['done']}/{len(ids)}] {tid} verified={log.get('verified')} tok={log.get('tokens')} "
                   f"rounds={len(log.get('rounds', []))} {dt:.0f}s", flush=True)
         with open(os.path.join(args.log_dir, f"{tid}.json"), "w") as f:
             json.dump(dict(log, elapsed=dt), f)
 
+    def on_term(signum, frame):  # lock-free: the main thread may be inside a flush when this fires
+        flush()
+        progress()
+        os._exit(128 + signum)
+
     flush()
-    t_start = time.time()
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, on_term)
+    stop = threading.Event()
+
+    def ticker():
+        while not stop.wait(PROGRESS_SEC):
+            progress()
+
+    progress()
+    threading.Thread(target=ticker, daemon=True).start()
     with ThreadPoolExecutor(args.n_parallel) as ex:
         list(ex.map(work, ids))
-    wall = time.time() - t_start
+    stop.set()
+    flush()
+    progress()
+    wall = clock() - t_start
     summary = {"tasks": len(ids), "done": stats["done"], "verified": stats["verified"], "wall_s": round(wall),
-               "completion_tokens": stats["tokens"], "tok_per_s": round(stats["tokens"] / wall, 1) if wall else 0}
+               "completion_tokens": budget.tokens, "tok_per_s": round(budget.tokens / wall, 1) if wall else 0}
     if args.solutions:
         with open(args.solutions) as f:
             sol = json.load(f)
@@ -381,6 +470,11 @@ def main(argv=None):
     ap.add_argument("--sandbox-timeout", type=float, default=10)
     ap.add_argument("--request-timeout", type=int, default=3600)
     ap.add_argument("--deadline-min", type=float, default=60)
+    ap.add_argument("--min-call-tokens", type=int, default=2048,
+                    help="skip the model for a task when its time share allows fewer tokens than this")
+    ap.add_argument("--reserve-sec", type=float, default=120, help="kept back from the deadline for forced answers/writes")
+    ap.add_argument("--order", choices=["easy", "given"], default="easy",
+                    help="easy: fewest total grid cells first, so a deadline cut covers the most tasks")
     ap.add_argument("--log-dir", default="synth_logs")
     ap.add_argument("--tag-prompts", type=int, default=0, help="prefix every user message with [task <id>]")
     return run(ap.parse_args(argv))
