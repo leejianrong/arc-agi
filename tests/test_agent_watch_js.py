@@ -17,5 +17,6 @@ def test_agent_watch_node_tests():
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
