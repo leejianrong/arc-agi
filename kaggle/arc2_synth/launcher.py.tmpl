@@ -27,8 +27,11 @@ TOTAL_BUDGET_MIN = float(os.environ.get("ARC_BUDGET_MIN", "@@BUDGET@@"))  # whol
 N_PARALLEL = int(os.environ.get("ARC_NPAR", "@@NPAR@@"))
 MAX_TOKENS = @@MAX_TOKENS@@
 MTP = @@MTP@@                      # speculative tokens (0 = off)
-MODE = "@@MODE@@"                  # "direct" (answer grids) or "synth" (verified programs)
+MODE = "@@MODE@@"                  # "direct" (answer grids), "synth" (verified programs) or "agent" (tool-calling REPL)
 SYNTH_ARGS = @@SYNTH_ARGS@@        # extra synth.py flags
+AGENT_ARGS = @@AGENT_ARGS@@        # extra synth_agent.py flags
+EFFORT = "@@EFFORT@@"              # default reasoning_effort; env ARC_EFFORT overrides
+MAX_LEN = @@MAX_LEN@@              # first-choice --max-model-len; the ladder's last rung is always 65536
 WORK = os.environ.get("ARC_WORK", "/kaggle/working")
 INPUT_ROOT = os.environ.get("ARC_INPUT_ROOT", "/kaggle/input")
 EXTERNAL = os.environ.get("ARC_EXTERNAL_SERVER", "")
@@ -57,6 +60,9 @@ sys.path.insert(0, SRC)
 import llm_solve  # noqa: E402
 import solve as baseline  # noqa: E402
 import synth  # noqa: E402
+
+if MODE == "agent":
+    import synth_agent  # noqa: E402
 
 challenges_path = baseline.find_challenges(INPUT_ROOT)
 baseline.main(["--challenges", challenges_path, "--out", OUT])
@@ -106,6 +112,23 @@ def finish(code=0):
     sys.exit(code)
 
 
+def tool_smoke():
+    """Agent mode: the server must accept the `tools` parameter. A tool call or a plain text reply both pass."""
+    tool = {"type": "function", "function": {
+        "name": "python", "description": "Run Python code.",
+        "parameters": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}}}
+    try:
+        r = llm_solve.chat_full(BASE_URL, "qwen" if not EXTERNAL else os.environ.get("ARC_MODEL", "qwen"),
+                                [{"role": "user", "content": "Call the python tool with code print(1+1)."}], 512, 180,
+                                0.6, {"enable_thinking": False}, tools=[tool], tool_choice="auto")
+        ok = bool(r["tool_calls"] or r["content"])
+        log("tool smoke", "tool_call" if r["tool_calls"] else "text reply", ok)
+        return ok
+    except Exception as e:  # noqa: BLE001
+        log("tool smoke failed:", repr(e))
+        return False
+
+
 def smoke():
     """A burst of real generations; /health alone has passed before the server died on real requests."""
     try:
@@ -120,7 +143,7 @@ def smoke():
         with ThreadPoolExecutor(8) as ex:
             res = list(ex.map(one, range(8)))
         log("smoke", res)
-        return all(res)
+        return all(res) and (MODE != "agent" or tool_smoke())
     except Exception as e:  # noqa: BLE001
         log("smoke failed:", repr(e))
         return False
@@ -141,7 +164,7 @@ def heartbeat():
         log(f"HB gpu(mem MiB,util %)={gpu} vllm_log_age={age}s")
 
 
-def launch_server(mtp):
+def launch_server(mtp, max_len):
     global server
     env = os.environ.copy()
     env["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -156,10 +179,12 @@ def launch_server(mtp):
         VPY, "-m", "vllm.entrypoints.openai.api_server", "--model", model_dir,
         "--served-model-name", "qwen", "--host", "127.0.0.1", "--port", "8000",
         "--tensor-parallel-size", str(max(1, n_gpu)), "--gpu-memory-utilization", "0.94",
-        "--max-model-len", "65536", "--max-num-seqs", str(N_PARALLEL), "--trust-remote-code",
+        "--max-model-len", str(max_len), "--max-num-seqs", str(N_PARALLEL), "--trust-remote-code",
         "--kv-cache-dtype", "fp8", "--attention-backend", "TRITON_ATTN", "--no-async-scheduling",
         "--reasoning-parser", "qwen3",
     ]
+    if MODE == "agent":
+        cmd += ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
     if mtp:
         cmd += ["--speculative-config", f'{{"method":"mtp","num_speculative_tokens":{mtp}}}']
     server_log = open(os.path.join(WORK, "vllm_server.log"), "w")  # noqa: SIM115 - lives as long as the server
@@ -207,13 +232,19 @@ if not EXTERNAL:
     n_gpu = len([ln for ln in subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, check=False)
                  .stdout.splitlines() if ln])
     log("gpus:", n_gpu)
-    ready = launch_server(MTP)
-    if not ready and MTP:
-        log(f"MTP={MTP} failed; restarting without speculative decoding")
-        stop_server()
-        time.sleep(30)
-        subprocess.run(["pkill", "-9", "-f", "vllm"], check=False)
-        ready = launch_server(0)
+    # Ladder: each rung is tried only if the previous one failed to become ready or failed the smoke test.
+    rungs = list(dict.fromkeys([(MTP, MAX_LEN), (0, MAX_LEN), (0, 65536)]))
+    ready = False
+    for i, (mtp, max_len) in enumerate(rungs):
+        if i:
+            log(f"rung {rungs[i - 1]} failed; restarting with mtp={mtp} max_model_len={max_len}")
+            stop_server()
+            time.sleep(30)
+            subprocess.run(["pkill", "-9", "-f", "vllm"], check=False)
+        ready = launch_server(mtp, max_len)
+        if ready:
+            log(f"vllm rung worked: mtp={mtp} max_model_len={max_len}")
+            break
     log("vllm ready:", ready)
     if not ready:
         with open(os.path.join(WORK, "vllm_server.log")) as f:
@@ -227,12 +258,14 @@ deadline_min = TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15
 try:
     args = ["--challenges", challenges_path, "--out", OUT, "--log-dir", os.path.join(WORK, "llm_logs"),
             "--base-url", BASE_URL, "--n-parallel", str(N_PARALLEL), "--max-tokens", str(MAX_TOKENS),
-            "--deadline-min", str(max(1.0, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", "medium")]
+            "--deadline-min", str(max(1.0, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", EFFORT)]
     if EXTERNAL:
         args += ["--model", os.environ.get("ARC_MODEL", "qwen")]
     if LIMIT:
         args += ["--limit", str(LIMIT)]
-    (synth if MODE == "synth" else llm_solve).main(args + (SYNTH_ARGS if MODE == "synth" else []))
+    solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(
+        MODE, (llm_solve, []))
+    solver.main(args + extra)
 except Exception as e:  # noqa: BLE001 - never lose the submission to a solver crash
     log("solver crashed:", repr(e))
 finally:
