@@ -254,6 +254,11 @@ def _colors(g):
     return {c for row in g for c in row}
 
 
+def _changed(a, b):
+    """Fraction of cells that differ between two same-shape grids."""
+    return sum(x != y for ra, rb in zip(a, b) for x, y in zip(ra, rb)) / (len(a) * len(a[0]))
+
+
 def plausibility(task, cand):
     """Overfit guard: per test input, (n_flags, reasons) for a verified candidate's test output.
 
@@ -273,6 +278,9 @@ def plausibility(task, cand):
     seen = Counter(c for o in outs for c in _colors(o))
     shared = {c for c, n in seen.items() if n >= 2}
     pal_ok = all(_colors(o) <= _colors(i) | shared for i, o in zip(ins, outs))
+    leaked = set.intersection(*(_colors(i) for i in ins)) - seen.keys() if len(train) >= 2 else set()
+    fracs = [_changed(i, o) for i, o in zip(ins, outs)] if same else []
+    cap = max(3 * max(fracs), max(fracs) + 0.02) if fracs else None
     res = []
     for t, out in zip(task["test"], cand["test_outputs"]):
         why = []
@@ -290,6 +298,10 @@ def plausibility(task, cand):
                 why.append("test output is one colour; no train output is")
             if pal_ok and _colors(out) - _colors(ti) - set(seen):
                 why.append("test output uses a colour seen in no train output or the test input")
+            for c in sorted(leaked & _colors(out)):
+                why.append(f"leaked colour {c} (in every train input, in no train output)")
+            if cap is not None and _shape(out) == _shape(ti) and _changed(ti, out) > cap:
+                why.append(f"changes {_changed(ti, out):.0%} of cells (train changes at most {max(fracs):.0%})")
         res.append((len(why), why))
     return res
 

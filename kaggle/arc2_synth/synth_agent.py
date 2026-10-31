@@ -261,6 +261,8 @@ class Attempt:
         self.tokens = self.python_calls = self.submits = 0
         self.status = "running"
         self.verified = False
+        self.pending = False  # verified but flagged suspect: the attempt goes on
+        self.suspect_rounds = 0
         self.persist = True
 
     def log(self):
@@ -277,7 +279,8 @@ def _default_repl(task, persist=True):
 def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40, max_tokens=32768,
                 attempt_tokens=120000, request_timeout=3600, temperature=0.6, effort="", thinking_budget=0,
                 sandbox_timeout=10, repl_factory=None, hooks=None, on_cand=None, max_hints=1,
-                tool_timeout=None, control=None, persist=1, trace=None, task_id="", att_idx=0):
+                tool_timeout=None, control=None, persist=1, trace=None, task_id="", att_idx=0,
+                suspect_rounds=2):
     """One conversation. Returns an Attempt (cands feed ``synth.select_attempts``).
     ``trace``: optional ``trace.TraceWriter``; task_id/att_idx label its events."""
     pre = f"[task {tag}] " if tag else ""
@@ -288,6 +291,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
     att.persist = bool(persist)
     att.messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": pre + task_message(task)}]
     kwargs = {"reasoning_effort": effort} if effort else None
+    seen_cand = {}
     seen = {}  # code -> (cand, reply, submit number), to flag identical resubmissions without re-running them
     repl, hints, think = None, 0, thinking_budget
     state = {"attempt": att}
@@ -297,6 +301,11 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
     def emit(ev, **f):
         if trace:
             trace.emit(ev, task=task_id, att=att_idx, **f)
+
+    def cand_flags(cand):
+        if not cand["verified"]:
+            return []
+        return list(dict.fromkeys(w for _, ws in sy.plausibility(task, cand) for w in ws))
 
     def trace_submit(cand, code):
         train = task["train"]
@@ -311,12 +320,10 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             cells = [[r, c, g, w] for r, (gr, wr) in enumerate(zip(o, want)) for c, (g, w) in enumerate(zip(gr, wr))
                      if g != w] if same else []
             wrong.append({"ex": i, "total": len(cells) if same else len(want) * len(want[0]), "cells": cells[:10]})
-        flags = []
-        if cand["verified"]:
-            flags = list(dict.fromkeys(w for _, ws in sy.plausibility(task, cand) for w in ws))
+        flags = cand_flags(cand)
         emit("submit", turn=len(att.turns), program=code, reproduced=len(train) - len(cand["fails"]),
              n_train=len(train), verified=cand["verified"], outputs=outs, wrong=wrong, flags=flags,
-             test_outputs=cand["test_outputs"])
+             test_outputs=cand["test_outputs"], suspect=att.pending)
 
     def submit(code):
         att.submits += 1
@@ -324,6 +331,8 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
         key = code.strip()
         if key in seen:
             k, reply = seen[key]
+            if att.pending and seen_cand[key]["verified"]:
+                att.pending = False  # the model insists on a flagged program: accept it
             return (f"WARNING: identical to your submission #{k}; it was not re-run, the result is the same. "
                     "Change the approach.\n" + reply)
         cand = sy.evaluate(code, task, sandbox_timeout)
@@ -331,6 +340,12 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             cand["verified"] = False  # a test input must produce a valid grid too
         cand.update(turn=len(att.turns))
         att.cands.append(cand)
+        suspect = None
+        if cand["verified"] and att.suspect_rounds < suspect_rounds:
+            suspect = [(k, ws) for k, (_, ws) in enumerate(sy.plausibility(task, cand)) if ws]
+        if cand["verified"]:
+            att.pending = bool(suspect)  # a failing submit leaves an earlier suspect pending
+        att.suspect_rounds += bool(suspect)
         if on_cand:
             on_cand(cand)
         if trace:
@@ -338,7 +353,16 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                 trace_submit(cand, code)
         if cand["verified"]:
             att.verified = True
-        seen[key] = (att.submits, reply := submit_reply(cand, task))
+        seen_cand[key] = cand
+        if suspect:
+            k, ws = suspect[0]
+            reply = (f"Accepted on all {len(task['train'])} examples, but the output for test input {k + 1} looks wrong: "
+                     f"{'; '.join(ws)}.\n{ls.grid_text(cand['test_outputs'][k])}\n"
+                     "Fix the rule so it generalizes (the test input is a different instance of the same puzzle), "
+                     "then submit again.")
+        else:
+            reply = submit_reply(cand, task)
+        seen[key] = (att.submits, reply)
         return reply
 
     def dispatch(call):
@@ -471,7 +495,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                         emit("tool_result", turn=len(att.turns), name=c["name"], text=text,
                              dur_s=round(sy.clock() - t_c, 3))
                     att.messages.append({"role": "tool", "tool_call_id": c["id"], "content": text})
-                if att.verified:
+                if att.verified and not att.pending:
                     att.status = "verified"
                     break
                 sigs.append(json.dumps([[c["name"], c["arguments"]] for c in calls], sort_keys=True))
@@ -484,7 +508,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             if code:  # a fenced program in prose counts as a submit, answered as a user message
                 info["implicit_submit"] = True
                 att.messages.append({"role": "user", "content": pre + submit(code)})
-                if att.verified:
+                if att.verified and not att.pending:
                     att.status = "verified"
                     break
                 continue
@@ -545,6 +569,7 @@ def solve_task(task, args, deadline, on_update=None, fallback_rows=None, tag="",
             request_timeout=args.request_timeout, temperature=args.temperature, effort=args.effort,
             thinking_budget=args.thinking_budget, sandbox_timeout=args.sandbox_timeout,
             repl_factory=repl_factory, hooks=hooks, persist=getattr(args, "persist", 1),
+            suspect_rounds=getattr(args, "suspect_rounds", 2),
             on_cand=lambda c: (cands.append(c), update()), trace=trace, task_id=task_id, att_idx=idx)
         logs.append(dict(att.log(), turns_detail=att.turns))
     rows = update()
@@ -691,6 +716,8 @@ def main(argv=None):
     ap.add_argument("--log-dir", default="agent_logs")
     ap.add_argument("--persist", type=int, choices=[0, 1], default=1, help="python variables survive between calls")
     ap.add_argument("--tag-prompts", type=int, default=0, help="prefix every user message with [task <id>]")
+    ap.add_argument("--suspect-rounds", type=int, default=2,
+                    help="per attempt: replies to a verified-but-implausible submit before accepting it (0 = off)")
     ap.add_argument("--trace", default=None, help="append a JSONL event trace (docs/arc2-trace-schema.md) here")
     ap.add_argument("--cfg", default="default", help="config name written on every trace event (bench: one per config)")
     return run(ap.parse_args(argv))

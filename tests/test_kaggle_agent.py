@@ -328,3 +328,52 @@ def test_main_persist_flag_default_and_zero(tmp_path, monkeypatch):
         _main(tmp_path, srv, *extra)
         srv.shutdown()
         assert seen[-1] is want
+
+
+# Suspect-submit loop: train outputs never contain 9, the test input does.
+LEAK_TASK = {
+    "train": [{"input": [[9, 1], [3, 4]], "output": [[4, 3], [1, 1]]},
+              {"input": [[9, 5], [0, 6]], "output": [[6, 0], [5, 5]]}],
+    "test": [{"input": [[9, 6], [7, 8]]}],
+}
+LEAK = ("def transform(grid):\n    if grid[0][0] == 9 and grid[0][1] in (1, 5):\n        return [[grid[1][1], grid[1][0]], "
+        "[grid[0][1], grid[0][1]]]\n    return [[grid[1][1], grid[1][0]], [9, grid[0][1]]]")
+CLEAN = LEAK + "\n# fixed\n" + "def transform(grid):\n    return [[grid[1][1], grid[1][0]], [grid[0][1], grid[0][1]]]"
+
+
+def leak_attempt(replies, **kw):
+    global TASK
+    saved, TASK = TASK, LEAK_TASK
+    try:
+        return attempt(replies, **kw)
+    finally:
+        TASK = saved
+
+
+def test_suspect_submit_continues_then_clean_submit_ends():
+    att, seen = leak_attempt([call_reply(tc("submit", LEAK)), call_reply(tc("submit", CLEAN))])
+    reply = seen[1]["messages"][-1]["content"]
+    assert reply.startswith("Accepted on all 2 examples, but the output for test input 1 looks wrong: leaked colour 9")
+    assert "\n87\n96\nFix the rule so it generalizes" in reply
+    assert att.status == "verified" and len(att.cands) == 2 and att.cands[0]["verified"]
+    assert att.suspect_rounds == 1 and att.submits == 2
+
+
+def test_suspect_cap_identical_resubmit_and_off():
+    two = [call_reply(tc("submit", LEAK)), call_reply(tc("submit", LEAK + "\n# v2"))]
+    att, seen = leak_attempt(two, suspect_rounds=1)  # second suspect submit is accepted
+    assert att.status == "verified" and att.submits == 2 and len(seen) == 2
+    att, seen = leak_attempt(two, suspect_rounds=0)  # feature off: first submit ends it
+    assert att.status == "verified" and att.submits == 1 and len(seen) == 1
+    att, seen = leak_attempt([call_reply(tc("submit", LEAK)), call_reply(tc("submit", LEAK))])
+    assert att.status == "verified" and att.submits == 2 and "identical to your submission #1" in \
+        att.messages[-1]["content"]
+    att, seen = leak_attempt([call_reply(tc("submit", LEAK)), call_reply(tc("submit", WRONG)),
+                              call_reply(tc("submit", CLEAN))])  # a failing submit keeps the suspect pending
+    assert att.status == "verified" and att.submits == 3 and att.verified
+
+
+def test_select_attempts_unchanged_for_unflagged():
+    cands = [{"verified": True, "frac": 1.0, "code": "x", "test_outputs": [ANS]}]
+    fb = [{"attempt_1": [[0]], "attempt_2": [[0]]}]
+    assert sy.select_attempts(TASK, cands, fb)[0]["attempt_1"] == ANS
