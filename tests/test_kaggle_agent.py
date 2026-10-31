@@ -207,3 +207,23 @@ def test_deadline_falls_back_to_baseline(tmp_path):
     rows, log = sa.solve_task(TASK, type("A", (), {"attempts": 1})(), time.time() - 1, fallback_rows=out["t1"],
                               budget=sy.Budget(time.time() - 1, 1, 1))
     assert rows == out["t1"] and log["candidates"] == 0
+
+
+def test_real_repl_integration_explore_then_verified_submit():
+    """The loop drives the real sandboxed REPL: state set in one python call is visible in the next,
+    preloaded helpers work, and the real tool output reaches the model before it submits."""
+    srv, seen = server([
+        call_reply(tc("python", "k = len(train)\nprint(show(train[0]['input']))")),
+        call_reply(tc("python", "print(k, diff(train[0]['input'], train[0]['output']))")),
+        call_reply(tc("submit", GOOD)),
+    ])
+    budget = sy.Budget(time.time() + 600, 1, 1)
+    try:
+        att = sa.run_attempt(TASK, base_url=f"http://127.0.0.1:{srv.server_port}/v1", model="m", budget=budget,
+                             deadline=time.time() + 600)  # default factory: the real repl.Repl
+    finally:
+        srv.shutdown()
+    assert att.status == "verified" and att.python_calls == 2 and att.submits == 1
+    tool_msgs = [m["content"] for m in seen[-1]["messages"] if m["role"] == "tool"]
+    assert tool_msgs[0].strip() == "12\n34"  # show() output from the real worker
+    assert tool_msgs[1].startswith("2 ") and "cells differ" in tool_msgs[1]  # `k` persisted; diff() ran
