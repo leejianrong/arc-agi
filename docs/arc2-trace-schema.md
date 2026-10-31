@@ -13,7 +13,7 @@ lists of integers 0-9, at most 30 by 30. Text fields are capped as stated; a cap
 | `ev` | Required fields | Meaning |
 |---|---|---|
 | `run_start` | `run` (string id), `model`, `effort`, `mode` (`agent`\|`direct`\|`synth`), `persist` (0/1 or null), `tasks` (list of ids), `started_at` (RFC 3339) | first event of a config's run |
-| `task_start` | `task`, `train` (list of `{input, output}`), `test` (list of `{input}`), `answers` (list of grids or null: public eval solutions when known, for the viewer's "expected" and scoring; never given to the model) | task begins |
+| `task_start` | `task`, `train` (list of `{input, output}`), `test` (list of `{input}`), `answers` (OPTIONAL: list of grids or null, public eval solutions when known, for the viewer's "expected" and scoring; omitted when no solutions file; never given to the model) | task begins |
 | `turn` | `task`, `att`, `turn` (1-based), `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `finish` (`stop`\|`length`\|`tool_calls`\|`error`), `dur_s`, `reasoning` (string, cap 4000 chars: head and tail), `content` (string, cap 2000), `tool_calls` (list of `{id, name, args}`; `args` for `python`/`submit` is `{code}`, cap 6000 chars each) | one model reply |
 | `tool_result` | `task`, `att`, `turn`, `name` (`python`\|`submit`), `text` (cap 4000), `dur_s` | what the tool returned to the model |
 | `submit` | `task`, `att`, `turn`, `program` (string, cap 6000), `reproduced` (int), `n_train` (int), `verified` (bool), `outputs` (list per train example: grid or null), `wrong` (list per failing train example: `{ex, total, cells: [[r,c,got,expected], ...] up to 10}`), `flags` (list of strings, plausibility reasons), `test_outputs` (list per test input: grid or null) | one `submit` evaluated on the demos |
