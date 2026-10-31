@@ -45,3 +45,18 @@ Playback waits the event `t` gap divided by the speed (1x, 2x, 4x, 8x, 32x), cap
 
 - `node --test tools/agent_watch/test` (also run by `tests/test_agent_watch_js.py` when `node` is installed).
 - `python3 tools/agent_watch/sample/make_sample.py` regenerates the synthetic sample traces (`sample_trace.jsonl`, and `sample_trace_b.jsonl`, a second config).
+
+## Opening a RunPod or Kaggle run
+
+`scripts/arc_watch.py` bundles traces into one self-contained HTML file (viewer inlined, traces embedded) so you do not
+need the file picker:
+
+```
+python scripts/arc_watch.py open path/to/out                  # unpacked RunPod result.tar.gz, or any dir/trace files
+python scripts/arc_watch.py bundle a/trace.jsonl b/bench_results.json -o run.html
+python scripts/arc_watch.py kaggle-output owner/kernel-slug   # runs `kaggle kernels output`, or pass a downloaded dir
+make arc-watch ARGS="open path/to/out"
+```
+
+Directories are searched for `trace*.jsonl` and `bench_results.json` (one level down). Traces failing
+`kaggle/arc2_synth/trace.py` validation produce warnings but are still bundled; nothing usable exits 2.
