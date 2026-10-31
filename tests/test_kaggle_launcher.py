@@ -54,10 +54,12 @@ def _server(die_after=None, smoke_fails=False, tools_fail=False):
     return srv
 
 
-def _run(tmp_path, srv, mode="synth", extra=()):
+def _run(tmp_path, srv, mode="synth", extra=(), eval_files=None):
     inp = tmp_path / "input"
     inp.mkdir()
     (inp / "arc-agi_test_challenges.json").write_text(json.dumps(_tasks()))
+    for name, data in (eval_files or {}).items():
+        (inp / name).write_text(json.dumps(data))
     kern = tmp_path / "kern"
     subprocess.run([sys.executable, str(ROOT / "kaggle/arc2_synth/build_kernel.py"), str(kern), "--mode", mode,
                     "--synth-args", "--rounds 2 --chains 1", "--budget-min", "17", *extra], check=True, capture_output=True)
@@ -152,3 +154,58 @@ def test_builder_agent_defaults_and_flags(tmp_path):
     assert "AGENT_ARGS = ['--thinking-budget', '0', '--attempts', '1', '--max-turns', '40', '--task-budget', '120000']" in src
     src = build("--mode", "synth")
     assert 'EFFORT = "medium"' in src and "MAX_LEN = 65536" in src
+
+
+def _bench(tmp_path, srv, configs, solutions=True):
+    cfg = tmp_path / "bench.json"
+    cfg.write_text(json.dumps(configs))
+    files = {"arc-agi_evaluation_challenges.json": _tasks()}
+    if solutions:
+        files["arc-agi_evaluation_solutions.json"] = {t: [[[9, 8, 7], [3, 2, 1]]] for t in _tasks()}
+    r, sub = _run(tmp_path, srv, "bench", ["--npar", "2", "--bench-config", str(cfg), "--bench-tasks", "3"], files)
+    lines = [ln for ln in r.stdout.splitlines() if " BENCH name=" in ln]
+    return r, sub, lines, tmp_path / "work" / "bench_results.json"
+
+
+def test_bench_mode_scores_each_config_on_one_server(tmp_path):
+    srv = _server()
+    r, sub, lines, res = _bench(tmp_path, srv, [{"name": "ag", "mode": "agent", "effort": "xhigh", "persist": 0},
+                                                {"name": "dir", "mode": "direct", "effort": "xhigh"}])
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    assert len(lines) == 2 and "name=ag tasks=3 solved=3/3 " in lines[0] and "name=dir tasks=3 solved=3/3 " in lines[1]
+    assert "tok_s=" in lines[0] and "wall_s=" in lines[0]
+    rows = json.loads(res.read_text())
+    assert [x["name"] for x in rows] == ["ag", "dir"] and rows[0]["score"] == [3, 3] and rows[0]["tokens"] > 0
+    assert _valid(sub) and "submission validated: 3 tasks, 0 repaired" in r.stdout
+
+
+def test_bench_mode_without_solutions_is_unscored(tmp_path):
+    srv = _server()
+    r, sub, lines, res = _bench(tmp_path, srv, [{"name": "ag", "mode": "agent"}], solutions=False)
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    assert len(lines) == 1 and "solved=UNSCORED" in lines[0]
+    assert json.loads(res.read_text())[0]["score"] is None
+    assert _valid(sub)
+
+
+def test_bench_mode_a_crashing_config_does_not_stop_the_rest(tmp_path):
+    srv = _server()
+    r, sub, lines, res = _bench(tmp_path, srv, [{"name": "bad", "mode": "direct", "no_such_flag": 1},
+                                                {"name": "ag", "mode": "agent"}])
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "bench bad crashed" in r.stdout and len(lines) == 2 and "name=ag tasks=3 solved=3/3 " in lines[1]
+    assert "error" in json.loads(res.read_text())[0]
+    assert _valid(sub)
+
+
+def test_builder_bench_defaults(tmp_path):
+    subprocess.run([sys.executable, str(ROOT / "kaggle/arc2_synth/build_kernel.py"), str(tmp_path), "--mode", "bench"],
+                   check=True, capture_output=True)
+    src = (tmp_path / "main.py").read_text()
+    for n in ("agent_xhigh_persist", "agent_xhigh_fresh", "direct_xhigh"):
+        assert n in src
+    assert "MAX_LEN = 98304" in src and '"12"' in src and '"150"' in src
+    subprocess.run([sys.executable, "-m", "py_compile", str(tmp_path / "main.py")], check=True)
