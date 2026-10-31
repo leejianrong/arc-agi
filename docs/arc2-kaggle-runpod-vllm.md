@@ -48,6 +48,12 @@ score 0.00) and `kaggle/arc2_synth/` (direct-answer solver, program-synthesis so
 - Startup on a fresh pod: install vLLM 0.5-2.5 min, weights load about 1.5 min, then torch.compile and CUDA graph
   capture 5-17 min depending on the host (cold cache). Plan 9-25 min before the first request. Kaggle's RTX PRO 6000
   runs reached model-ready in 9-11 min.
+- **Reasoning effort dominates the score.** ARC Prize's own results page for Qwen3.8-27B (run on Baseten) lists ARC-AGI-2:
+  xhigh 42.4% ($0.447/task), low 22.8%, medium 13.2%, no thinking 1.5%. Our runs used medium (the public notebook's
+  `reasoning_effort: medium` default) or the unset default, so we were operating at a fraction of the model's ability.
+  The price is tokens: xhigh thinks far longer, so throughput per token budget (concurrency, MTP, hardware) is the lever.
+  Source: https://arcprize.org/results/alibaba-qwen3-8-27b. The page says Qwen's chat template adds effort-specific
+  instructions for low and xhigh but not medium, which may explain medium scoring below low.
 - Reasoning length is the central problem. Default effort, 32K cap: 22 of 24 tasks never finished thinking; the two
   that did (24.7K and 30.5K tokens) were solved. Medium effort, 24K cap: 31 of 32 hit the cap. Plan for 40K+ tokens
   or a different method.
