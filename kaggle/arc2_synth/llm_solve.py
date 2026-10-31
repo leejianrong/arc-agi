@@ -86,8 +86,61 @@ def parse_outputs(text, n_test):
     return None
 
 
-def chat(base_url, model, prompt, max_tokens, timeout, temperature, template_kwargs=None):
-    """prompt: a user string, or a full OpenAI-style messages list."""
+def _json_args(a):
+    """Tool-call arguments arrive as a JSON string (OpenAI) or already as an object (semula); always return a dict."""
+    if isinstance(a, dict):
+        return a
+    if isinstance(a, str):
+        try:
+            v = json.loads(a) if a.strip() else {}
+        except ValueError:
+            return {"_raw": a}
+        return v if isinstance(v, dict) else {"_raw": a}
+    return {} if a is None else {"_raw": a}
+
+
+_MARKUP = re.compile(r"<tool_call>\s*<function=([\w.-]+)>(.*?)</function>\s*</tool_call>", re.DOTALL)
+
+
+def recover_markup_calls(text):
+    """Tool calls a server failed to parse, written as <tool_call><function=NAME><parameter=K>V... markup."""
+    calls = []
+    for i, m in enumerate(_MARKUP.finditer(text or "")):
+        params = {k: v.strip("\n") for k, v in re.findall(r"<parameter=([\w.-]+)>(.*?)</parameter>", m.group(2), re.DOTALL)}
+        calls.append({"id": f"recovered_{i}", "name": m.group(1), "arguments": params})
+    return calls, _MARKUP.sub("", text or "").strip()
+
+
+def chat_full(base_url, model, prompt, max_tokens, timeout, temperature, template_kwargs=None, tools=None,
+              tool_choice=None, thinking_token_budget=None):
+    """One chat call. Returns {content, reasoning, tool_calls:[{id,name,arguments(dict)}], finish_reason,
+    prompt_tokens, completion_tokens, usage}. Accepts the OpenAI body or a bare {"message": {...}}."""
+    d = _post(base_url, model, prompt, max_tokens, timeout, temperature, template_kwargs, tools, tool_choice,
+              thinking_token_budget)
+    if isinstance(d.get("choices"), list) and d["choices"]:
+        choice = d["choices"][0]
+    else:
+        choice = {"message": d["message"], "finish_reason": d.get("finish_reason")}
+    msg = choice["message"]
+    content = msg.get("content") or ""
+    reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+    calls = []
+    for i, tc in enumerate(msg.get("tool_calls") or []):
+        fn = tc.get("function") or tc
+        calls.append({"id": tc.get("id") or f"call_{i}", "name": fn.get("name", ""),
+                      "arguments": _json_args(fn.get("arguments"))})
+    if not calls and "<function=" in (content + reasoning):
+        calls, _ = recover_markup_calls(content or reasoning)
+        if calls and content:
+            content = recover_markup_calls(content)[1]
+    usage = dict(d.get("usage") or {})
+    return {"content": content, "reasoning": reasoning, "tool_calls": calls, "usage": usage,
+            "finish_reason": choice.get("finish_reason") or ("tool_calls" if calls else "stop"),
+            "prompt_tokens": usage.get("prompt_tokens", 0), "completion_tokens": usage.get("completion_tokens", 0)}
+
+
+def _post(base_url, model, prompt, max_tokens, timeout, temperature, template_kwargs, tools=None, tool_choice=None,
+          thinking_token_budget=None):
     messages = prompt if isinstance(prompt, list) else [{"role": "user", "content": prompt}]
     payload = {
         "model": model, "messages": messages,
@@ -95,19 +148,30 @@ def chat(base_url, model, prompt, max_tokens, timeout, temperature, template_kwa
     }
     if template_kwargs:
         payload["chat_template_kwargs"] = template_kwargs
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice or "auto"
+    if thinking_token_budget:
+        payload["thinking_token_budget"] = int(thinking_token_budget)
     body = json.dumps(payload).encode()
     req = urllib.request.Request(base_url.rstrip("/") + "/chat/completions", body, {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.load(r)
-    choice = d["choices"][0]
-    msg = choice["message"]
-    text = msg.get("content") or ""
-    usage = dict(d.get("usage", {}))
-    usage["finish_reason"] = choice.get("finish_reason")
-    reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
-    usage["reasoning_chars"] = len(reasoning)
-    usage["reasoning_text"] = reasoning
-    return text, usage
+        return json.load(r)
+
+
+def chat(base_url, model, prompt, max_tokens, timeout, temperature, template_kwargs=None, tools=None,
+         tool_choice=None, thinking_token_budget=None):
+    """prompt: a user string, or a full OpenAI-style messages list. Returns (text, usage); usage also carries
+    finish_reason, reasoning_text and, when the model called tools, tool_calls."""
+    r = chat_full(base_url, model, prompt, max_tokens, timeout, temperature, template_kwargs, tools, tool_choice,
+                  thinking_token_budget)
+    usage = dict(r["usage"])
+    usage["finish_reason"] = r["finish_reason"]
+    usage["reasoning_chars"] = len(r["reasoning"])
+    usage["reasoning_text"] = r["reasoning"]
+    if r["tool_calls"]:
+        usage["tool_calls"] = r["tool_calls"]
+    return r["content"], usage
 
 
 FORCE_TAIL = (
