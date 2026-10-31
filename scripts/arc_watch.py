@@ -83,7 +83,7 @@ def _safe_script(text, tag):
 
 def _json_blob(obj):
     s = json.dumps(obj, ensure_ascii=False)
-    return (s.replace("</", "<\\/").replace("<!--", "<\\!--")
+    return (s.replace("</", "<\\/").replace("<!--", "<\\u0021--")
             .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 
 
