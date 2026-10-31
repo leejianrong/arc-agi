@@ -89,7 +89,13 @@ def _run(tmp_path, srv, mode="synth", extra=(), eval_files=None, env_extra=None,
     if work_setup:
         work_setup(work)
     env = dict(os.environ, ARC_EXTERNAL_SERVER=f"http://127.0.0.1:{srv.server_port}/v1", ARC_INPUT_ROOT=str(inp),
-               ARC_WORK=str(work), ARC_EFFORT="", ARC_MODEL="qwen", **{"ARC_FORCE_RERUN": "1", **(env_extra or {})})
+               ARC_WORK=str(work), ARC_EFFORT="", ARC_MODEL="qwen")
+    env.pop("KAGGLE_IS_COMPETITION_RERUN", None)
+    for k, v in {"ARC_FORCE_RERUN": "1", **(env_extra or {})}.items():
+        if v is None:
+            env.pop(k, None)  # unset
+        else:
+            env[k] = v
     r = subprocess.run([sys.executable, str(kern / "main.py")], env=env, capture_output=True, text=True, timeout=120, check=False)
     sub = json.loads((work / "submission.json").read_text())
     return r, sub
@@ -382,23 +388,32 @@ def test_rerun_solves_every_test_task_into_submission_json(tmp_path):
         assert all(rows[0]["attempt_1"] == [[9, 8, 7], [3, 2, 1]] for rows in sub.values())
 
 
-def test_kaggle_env_var_selects_rerun_when_not_forced(tmp_path):
-    import os
-    src = (ROOT / "kaggle/arc2_synth/launcher.py.tmpl").read_text()
-    line = next(ln for ln in src.splitlines() if ln.startswith("RERUN = "))
-    for force, kaggle, want in ((None, "1", True), (None, None, False), ("0", "1", False), ("1", None, True)):
-        env = {k: v for k, v in (("ARC_FORCE_RERUN", force), ("KAGGLE_IS_COMPETITION_RERUN", kaggle)) if v}
-        old = {k: os.environ.pop(k, None) for k in ("ARC_FORCE_RERUN", "KAGGLE_IS_COMPETITION_RERUN")}
-        try:
-            os.environ.update(env)
-            ns = {"os": os, "_force": os.environ.get("ARC_FORCE_RERUN")}
-            exec(line, ns)  # noqa: S102 - our own template line
-        finally:
-            for k, v in old.items():
-                os.environ.pop(k, None)
-                if v is not None:
-                    os.environ[k] = v
-        assert ns["RERUN"] is want, (force, kaggle)
+def _detect(tmp_path, kaggle_env, placeholder):
+    """Run with ARC_FORCE_RERUN unset; `placeholder` says whether the fake test file's ids match the known placeholder."""
+    import hashlib
+    sha = hashlib.sha256("\n".join(sorted(_tasks())).encode()).hexdigest() if placeholder else "0" * 64
+    extra = {"ARC_FORCE_RERUN": None, "ARC_PLACEHOLDER_SHA": sha, "KAGGLE_IS_COMPETITION_RERUN": kaggle_env}
+    srv = _server()
+    r, sub = _run(tmp_path, srv, "direct", ["--npar", "2", "--dev-tasks", "2"], {}, env_extra=extra)
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    return r, sub, tmp_path / "work"
+
+
+def test_run_kind_detection_never_silently_downgrades_a_real_test_set(tmp_path):
+    cases = {  # (env var set, file is placeholder) -> full rerun?
+        "env_only": ("1", True, True),
+        "file_only": (None, False, True),  # env var missing but the test file is not the placeholder
+        "both": ("1", False, True),
+        "neither": (None, True, False),
+    }
+    for name, (env, placeholder, full) in cases.items():
+        d = tmp_path / name
+        d.mkdir()
+        r, sub, work = _detect(d, env, placeholder)
+        assert ("run kind: RERUN (full)" in r.stdout) is full, (name, r.stdout[-600:])
+        assert _valid(sub), name
+        assert (work / "dev_submission.json").exists() is (not full), name
 
 
 def test_builder_dev_flags(tmp_path):

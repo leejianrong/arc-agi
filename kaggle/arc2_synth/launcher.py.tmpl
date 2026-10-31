@@ -17,6 +17,7 @@ ARC_WORK; ARC_LIMIT / ARC_BUDGET_MIN / ARC_NPAR override the baked-in values.
 """
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -41,7 +42,13 @@ BENCH_TASKS = int(os.environ.get("ARC_BENCH_TASKS", "@@BENCH_TASKS@@"))
 DEV_TASKS = int(os.environ.get("ARC_DEV_TASKS", "@@DEV_TASKS@@"))      # dev run: first N public-eval ids by sorted order
 DEV_BUDGET_MIN = float(os.environ.get("ARC_DEV_BUDGET_MIN", "@@DEV_BUDGET@@"))  # dev run: minutes after startup
 _force = os.environ.get("ARC_FORCE_RERUN")
-RERUN = _force in ("1", "true") or (_force is None and bool(os.environ.get("KAGGLE_IS_COMPETITION_RERUN")))
+# sha256 of "\n".join(sorted task ids) of the PUBLIC placeholder arc-agi_test_challenges.json (240 ids, downloaded
+# 2026-11-01 with `kaggle competitions download -f arc-agi_test_challenges.json`). The scored rerun mounts the hidden
+# test file instead, whose ids differ. A second signal next to KAGGLE_IS_COMPETITION_RERUN: if the variable were ever
+# not set during the scored run, a file that is NOT the public placeholder still means "rerun", so the failure mode is
+# a wasted full run on a commit, never a silent baseline-only submission.
+PLACEHOLDER_SHA = os.environ.get("ARC_PLACEHOLDER_SHA", "0425e31f8c028fd6d6c2953fd5dbed115c065b8c657375a57f8b477c6f1d650c")
+RERUN = None  # decided once the test challenges file is known (see below)
 BENCH_BUDGET_MIN = float(os.environ.get("ARC_BENCH_BUDGET_MIN", "@@BENCH_BUDGET@@"))  # minutes after startup, all configs
 SERVES_TOOLS = MODE == "agent" or any(c.get("mode") == "agent" for c in BENCH_CONFIGS)  # vLLM needs the tool-call flags
 SYNTH_ARGS = @@SYNTH_ARGS@@        # extra synth.py flags
@@ -84,6 +91,12 @@ if SERVES_TOOLS:
 
 challenges_path = baseline.find_challenges(INPUT_ROOT)
 baseline.main(["--challenges", challenges_path, "--out", OUT])
+with open(challenges_path) as _f:
+    IS_PLACEHOLDER = hashlib.sha256("\n".join(sorted(json.load(_f))).encode()).hexdigest() == PLACEHOLDER_SHA
+RERUN = _force in ("1", "true") or (_force is None and (bool(os.environ.get("KAGGLE_IS_COMPETITION_RERUN")) or not IS_PLACEHOLDER))
+log(f"run kind: {'RERUN (full)' if RERUN else 'DEV (small slice)'} | KAGGLE_IS_COMPETITION_RERUN set: "
+    f"{bool(os.environ.get('KAGGLE_IS_COMPETITION_RERUN'))} | test file is the public placeholder: {IS_PLACEHOLDER} | "
+    f"ARC_FORCE_RERUN: {_force}")
 log("baseline submission written; challenges at", challenges_path)
 
 
