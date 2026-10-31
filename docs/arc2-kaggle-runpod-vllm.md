@@ -24,8 +24,12 @@ score 0.00) and `kaggle/arc2_synth/` (direct-answer solver, program-synthesis so
   -r requirements.lock`. Use `/tmp`; `/kaggle/working` is only 20 GB.
 - Mounts: `/kaggle/input/competitions/arc-prize-2026-arc-agi-2/`, `/kaggle/input/datasets/<owner>/<slug>`,
   `/kaggle/input/models/<owner>/<model>/pytorch/<variant>/<n>`. The notebook finds dirs by content, not path.
-- `kernel-metadata.json` `machine_shape` values seen: `NvidiaRtxPro6000`, `NvidiaL4`, `NvidiaTeslaT4`; we pushed
-  `NvidiaL4X4` and the CLI accepted it (that it really gave 4 GPUs is *unverified* until the GPU line shows in a log).
+- `kernel-metadata.json` `machine_shape` values seen: `NvidiaRtxPro6000`, `NvidiaL4`, `NvidiaTeslaT4`. **`NvidiaL4X4` is
+  accepted by the CLI but silently ignored: the kernel got 2x Tesla T4** (16 GB, no FP8/bf16), so the 27B model
+  OOMed. The public ARC-AGI-2 notebooks all use `machine_shape: NvidiaL4`, which is the competition's L4 pool.
+  Always check the `gpus:` and device name in the kernel log.
+- Cold-mount cost: `uv pip install` of the wheelhouse took 13.6 min on a cold mount (the ARC-AGI-3 notes saw 22 min
+  once); budget it inside the run.
 - Wheelhouse pins: vllm 0.19.0, torch 2.10.0 (cu128), transformers 4.57.6, triton 3.6.0, flashinfer 0.6.6.
   Third-party datasets can vanish (one was re-created after deletion); keep private mirrors if time allows.
 - Kaggle credentials here are OAuth tokens (`~/.kaggle/credentials.json`). Never copy them to a rented pod.
@@ -79,7 +83,10 @@ score 0.00) and `kaggle/arc2_synth/` (direct-answer solver, program-synthesis so
   Also persist crash traces: the artifact keeps only the last lines, which are dominated by 500s.
 - Shared account: another Claude session (ARC-AGI-3) also starts pods. Check `runpodctl pod list` names; never delete
   pods that are not yours. Balance and spend rate: `runpodctl me`.
-- Cost so far this effort: about $12 for four direct-answer runs and one synthesis run. Typical run: boot 10-25 min
+- Hosts that failed us: 2x L40S with TP=2 hung twice at NCCL init ("vLLM is using nccl", then silence for 15 min);
+  a single L40S (TP=1, no NCCL) served the 27B FP8 model fine. One 4x4090 host needed 30+ min of torch.compile with no
+  readiness and was torn down. On a slow host, abort early instead of waiting out the timeout.
+- Cost so far this effort: about $15 for four direct-answer runs and one synthesis run. Typical run: boot 10-25 min
   (billed) plus 30-60 min of solving.
 
 ## Iteration strategy: spend RunPod only on questions that are worth $4
