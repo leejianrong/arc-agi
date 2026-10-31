@@ -10,6 +10,7 @@ Dry-run (no GPU, no install): set ARC_EXTERNAL_SERVER=http://host:port/v1 plus A
 ARC_WORK; ARC_LIMIT / ARC_BUDGET_MIN / ARC_NPAR override the baked-in values.
 """
 import base64
+import contextlib
 import io
 import json
 import os
@@ -27,8 +28,15 @@ TOTAL_BUDGET_MIN = float(os.environ.get("ARC_BUDGET_MIN", "@@BUDGET@@"))  # whol
 N_PARALLEL = int(os.environ.get("ARC_NPAR", "@@NPAR@@"))
 MAX_TOKENS = @@MAX_TOKENS@@
 MTP = @@MTP@@                      # speculative tokens (0 = off)
-MODE = "@@MODE@@"                  # "direct" (answer grids) or "synth" (verified programs)
+MODE = "@@MODE@@"                  # "direct" (answer grids), "synth" (verified programs), "agent" (tool-calling REPL) or "bench"
+BENCH_CONFIGS = @@BENCH_CONFIGS@@  # bench: [{name, mode, effort, ...extra solver args}], run in order on one server
+BENCH_TASKS = int(os.environ.get("ARC_BENCH_TASKS", "@@BENCH_TASKS@@"))
+BENCH_BUDGET_MIN = float(os.environ.get("ARC_BENCH_BUDGET_MIN", "@@BENCH_BUDGET@@"))  # minutes after startup, all configs
+SERVES_TOOLS = MODE == "agent" or any(c.get("mode") == "agent" for c in BENCH_CONFIGS)  # vLLM needs the tool-call flags
 SYNTH_ARGS = @@SYNTH_ARGS@@        # extra synth.py flags
+AGENT_ARGS = @@AGENT_ARGS@@        # extra synth_agent.py flags
+EFFORT = "@@EFFORT@@"              # default reasoning_effort; env ARC_EFFORT overrides
+MAX_LEN = @@MAX_LEN@@              # first-choice --max-model-len; the ladder's last rung is always 65536
 WORK = os.environ.get("ARC_WORK", "/kaggle/working")
 INPUT_ROOT = os.environ.get("ARC_INPUT_ROOT", "/kaggle/input")
 EXTERNAL = os.environ.get("ARC_EXTERNAL_SERVER", "")
@@ -57,6 +65,9 @@ sys.path.insert(0, SRC)
 import llm_solve  # noqa: E402
 import solve as baseline  # noqa: E402
 import synth  # noqa: E402
+
+if SERVES_TOOLS:
+    import synth_agent  # noqa: E402
 
 challenges_path = baseline.find_challenges(INPUT_ROOT)
 baseline.main(["--challenges", challenges_path, "--out", OUT])
@@ -106,6 +117,23 @@ def finish(code=0):
     sys.exit(code)
 
 
+def tool_smoke():
+    """Agent mode: the server must accept the `tools` parameter. A tool call or a plain text reply both pass."""
+    tool = {"type": "function", "function": {
+        "name": "python", "description": "Run Python code.",
+        "parameters": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}}}
+    try:
+        r = llm_solve.chat_full(BASE_URL, "qwen" if not EXTERNAL else os.environ.get("ARC_MODEL", "qwen"),
+                                [{"role": "user", "content": "Call the python tool with code print(1+1)."}], 512, 180,
+                                0.6, {"enable_thinking": False}, tools=[tool], tool_choice="auto")
+        ok = bool(r["tool_calls"] or r["content"])
+        log("tool smoke", "tool_call" if r["tool_calls"] else "text reply", ok)
+        return ok
+    except Exception as e:  # noqa: BLE001
+        log("tool smoke failed:", repr(e))
+        return False
+
+
 def smoke():
     """A burst of real generations; /health alone has passed before the server died on real requests."""
     try:
@@ -120,7 +148,7 @@ def smoke():
         with ThreadPoolExecutor(8) as ex:
             res = list(ex.map(one, range(8)))
         log("smoke", res)
-        return all(res)
+        return all(res) and (not SERVES_TOOLS or tool_smoke())
     except Exception as e:  # noqa: BLE001
         log("smoke failed:", repr(e))
         return False
@@ -141,7 +169,7 @@ def heartbeat():
         log(f"HB gpu(mem MiB,util %)={gpu} vllm_log_age={age}s")
 
 
-def launch_server(mtp):
+def launch_server(mtp, max_len):
     global server
     env = os.environ.copy()
     env["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -156,10 +184,12 @@ def launch_server(mtp):
         VPY, "-m", "vllm.entrypoints.openai.api_server", "--model", model_dir,
         "--served-model-name", "qwen", "--host", "127.0.0.1", "--port", "8000",
         "--tensor-parallel-size", str(max(1, n_gpu)), "--gpu-memory-utilization", "0.94",
-        "--max-model-len", "65536", "--max-num-seqs", str(N_PARALLEL), "--trust-remote-code",
+        "--max-model-len", str(max_len), "--max-num-seqs", str(N_PARALLEL), "--trust-remote-code",
         "--kv-cache-dtype", "fp8", "--attention-backend", "TRITON_ATTN", "--no-async-scheduling",
         "--reasoning-parser", "qwen3",
     ]
+    if SERVES_TOOLS:
+        cmd += ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
     if mtp:
         cmd += ["--speculative-config", f'{{"method":"mtp","num_speculative_tokens":{mtp}}}']
     server_log = open(os.path.join(WORK, "vllm_server.log"), "w")  # noqa: SIM115 - lives as long as the server
@@ -207,13 +237,19 @@ if not EXTERNAL:
     n_gpu = len([ln for ln in subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, check=False)
                  .stdout.splitlines() if ln])
     log("gpus:", n_gpu)
-    ready = launch_server(MTP)
-    if not ready and MTP:
-        log(f"MTP={MTP} failed; restarting without speculative decoding")
-        stop_server()
-        time.sleep(30)
-        subprocess.run(["pkill", "-9", "-f", "vllm"], check=False)
-        ready = launch_server(0)
+    # Ladder: each rung is tried only if the previous one failed to become ready or failed the smoke test.
+    rungs = list(dict.fromkeys([(MTP, MAX_LEN), (0, MAX_LEN), (0, 65536)]))
+    ready = False
+    for i, (mtp, max_len) in enumerate(rungs):
+        if i:
+            log(f"rung {rungs[i - 1]} failed; restarting with mtp={mtp} max_model_len={max_len}")
+            stop_server()
+            time.sleep(30)
+            subprocess.run(["pkill", "-9", "-f", "vllm"], check=False)
+        ready = launch_server(mtp, max_len)
+        if ready:
+            log(f"vllm rung worked: mtp={mtp} max_model_len={max_len}")
+            break
     log("vllm ready:", ready)
     if not ready:
         with open(os.path.join(WORK, "vllm_server.log")) as f:
@@ -223,16 +259,121 @@ elif not os.environ.get("ARC_SKIP_SMOKE") and not smoke():
     log("external server failed the smoke test")
     finish()
 
-deadline_min = TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15
+class Tee:
+    """stdout that also keeps a copy, so a solver's SUMMARY line can be parsed after it returns."""
+
+    def __init__(self):
+        self.buf = []
+
+    def write(self, text):
+        self.buf.append(text)
+        return sys.__stdout__.write(text)
+
+    def flush(self):
+        sys.__stdout__.flush()
+
+
+def bench_sample():
+    """Fixed sample: every k-th public-eval task by sorted id (stable), plus solutions when mounted."""
+    ch_path = find_dir_with(INPUT_ROOT, lambda d, f: "arc-agi_evaluation_challenges.json" in f)
+    ch_file = os.path.join(ch_path, "arc-agi_evaluation_challenges.json") if ch_path else challenges_path
+    with open(ch_file) as f:
+        challenges = json.load(f)
+    sol_file = os.path.join(os.path.dirname(ch_file), "arc-agi_evaluation_solutions.json")
+    solutions = None
+    if os.path.exists(sol_file):
+        with open(sol_file) as f:
+            solutions = json.load(f)
+    ids = sorted(challenges)
+    ids = ids[:: max(1, len(ids) // max(1, BENCH_TASKS))][:BENCH_TASKS]
+    sample = os.path.join(WORK, "bench_challenges.json")
+    with open(sample, "w") as f:
+        json.dump({t: challenges[t] for t in ids}, f)
+    log(f"bench sample: {len(ids)} tasks from {ch_file}; solutions: {bool(solutions)}")
+    return sample, ids, solutions
+
+
+def bench_score(out, ids, solutions):
+    """pass@2 per test input: (hit, total), or None without solutions."""
+    if solutions is None:
+        return None
+    with open(out) as f:
+        sub = json.load(f)
+    hit = total = 0
+    for tid in ids:
+        for row, sol in zip(sub.get(tid, []), solutions[tid]):
+            hit += sol in (row.get("attempt_1"), row.get("attempt_2"))
+        total += len(solutions[tid])
+    return hit, total
+
+
+def bench_run():
+    sample, ids, solutions = bench_sample()
+    bench_t0 = time.time()
+    results = []
+    for i, cfg in enumerate(BENCH_CONFIGS):
+        name, mode = cfg.get("name", f"cfg{i}"), cfg.get("mode", "agent")
+        remaining = BENCH_BUDGET_MIN - (time.time() - bench_t0) / 60
+        if remaining < 1:
+            log(f"bench {name}: budget exhausted, skipped")
+            continue
+        out = os.path.join(WORK, f"bench_{name}.json")
+        args = ["--challenges", sample, "--out", out, "--log-dir", os.path.join(WORK, f"bench_logs_{name}"),
+                "--base-url", BASE_URL, "--n-parallel", str(cfg.get("n_parallel", N_PARALLEL)),
+                "--max-tokens", str(cfg.get("max_tokens", MAX_TOKENS)),
+                "--deadline-min", str(max(1.0, remaining / (len(BENCH_CONFIGS) - i))),
+                "--effort", str(cfg.get("effort", EFFORT))]
+        if EXTERNAL:
+            args += ["--model", os.environ.get("ARC_MODEL", "qwen")]
+        base, solver = {"agent": (AGENT_ARGS, globals().get("synth_agent")), "synth": (SYNTH_ARGS, synth)}.get(
+            mode, ([], llm_solve))
+        skip = {"name", "mode", "effort", "n_parallel", "max_tokens"}
+        extra = [x for k, v in cfg.items() if k not in skip for x in (f"--{k.replace('_', '-')}", str(v))]
+        log(f"bench {name}: mode={mode} args={extra}")
+        tee, t0 = Tee(), time.time()
+        res = {"name": name, "mode": mode, "tasks": len(ids)}
+        try:
+            with contextlib.redirect_stdout(tee):
+                solver.main(args + base + extra)
+        except BaseException as e:  # noqa: BLE001 - argparse exits via SystemExit; a bad config must not stop the rest
+            log(f"bench {name} crashed:", repr(e))
+            res["error"] = repr(e)
+        res["wall_s"] = round(time.time() - t0)
+        summary = {}
+        for line in "".join(tee.buf).splitlines():
+            if line.startswith("SUMMARY "):
+                summary = json.loads(line[8:])
+        res.update(tokens=summary.get("completion_tokens", 0), tok_s=summary.get("tok_per_s", 0),
+                   verified=summary.get("verified"))
+        try:
+            res["score"] = bench_score(out, ids, solutions) if "error" not in res else None
+        except Exception as e:  # noqa: BLE001
+            res["error"] = res.get("error") or repr(e)
+            res["score"] = None
+        sc = res["score"]
+        log(f"BENCH name={name} tasks={len(ids)} solved={f'{sc[0]}/{sc[1]}' if sc else 'UNSCORED'} "
+            f"verified={res['verified'] if res['verified'] is not None else 'n/a'} tokens={res['tokens']} "
+            f"tok_s={res['tok_s']} wall_s={res['wall_s']}")
+        results.append(res)
+        with open(os.path.join(WORK, "bench_results.json"), "w") as f:
+            json.dump(results, f, indent=1)
+
+
 try:
-    args = ["--challenges", challenges_path, "--out", OUT, "--log-dir", os.path.join(WORK, "llm_logs"),
-            "--base-url", BASE_URL, "--n-parallel", str(N_PARALLEL), "--max-tokens", str(MAX_TOKENS),
-            "--deadline-min", str(max(1.0, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", "medium")]
-    if EXTERNAL:
-        args += ["--model", os.environ.get("ARC_MODEL", "qwen")]
-    if LIMIT:
-        args += ["--limit", str(LIMIT)]
-    (synth if MODE == "synth" else llm_solve).main(args + (SYNTH_ARGS if MODE == "synth" else []))
+    if MODE == "bench":
+        bench_run()
+    else:
+        deadline_min = TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15
+        args = ["--challenges", challenges_path, "--out", OUT, "--log-dir", os.path.join(WORK, "llm_logs"),
+                "--base-url", BASE_URL, "--n-parallel", str(N_PARALLEL), "--max-tokens", str(MAX_TOKENS),
+                "--deadline-min", str(max(1.0, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", EFFORT)]
+        if EXTERNAL:
+            args += ["--model", os.environ.get("ARC_MODEL", "qwen")]
+        if LIMIT:
+            args += ["--limit", str(LIMIT)]
+        solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(
+            MODE, (llm_solve, []))
+        solver.main(args + extra)
 except Exception as e:  # noqa: BLE001 - never lose the submission to a solver crash
     log("solver crashed:", repr(e))
 finally:

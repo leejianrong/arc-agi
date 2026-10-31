@@ -188,3 +188,7 @@ sequences).
 - Reading: medium effort with a 32K cap leaves almost every ARC-AGI-2 task unsolved, in line with ARC Prize's
   13.2% (medium) vs 42.4% (xhigh). More tokens per task (xhigh, bigger caps) and faster serving are the levers, which
   is what the REPL-agent measurement (ARC-136) is for.
+
+## Pre-flight gate
+
+Run `make arc2-preflight` (or `uv run python scripts/arc2_preflight.py [--fast] [--modes direct,synth,agent,bench]`) before pushing any notebook to Kaggle. It runs ruff, the Kaggle tests, builds each mode and checks `kernel-metadata.json` (L4, no internet, private, one competition source, wheelhouse and Qwen sources) and `main.py` (compiles, no `@@` placeholders, under 1 MB, bundle holds the expected modules), then dry-runs each built notebook against a fake OpenAI server and requires a validated 3-task `submission.json`. It stops at the first failure and ends with `PREFLIGHT OK` or `PREFLIGHT FAILED: <step>`; `--fast` runs only the launcher and agent tests. It cannot see real vLLM, the real Kaggle mounts or the wheelhouse install.
