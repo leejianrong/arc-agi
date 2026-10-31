@@ -206,3 +206,15 @@ does not set it.
   `submission.json` stays the valid baseline for the test tasks. Agent mode still writes `trace.jsonl`.
 - Both modes write the baseline for the test file first and validate/repair `submission.json` at the end.
 - `ARC_FORCE_RERUN=1`/`0` overrides detection (tests, dry runs). Bench mode ignores all of this.
+
+## Pre-submission checklist (a zero score is almost always setup, not model quality)
+
+1. `make arc2-preflight` passes (builds every mode, dry-runs the launcher, checks bundle size).
+2. Kernel metadata: `machine_shape` is `NvidiaL4`, internet off, model + wheelhouse sources attached, kernel version pinned.
+3. The launcher writes the baseline `submission.json` first, then overwrites it only with a validated full answer set.
+4. Run kind: the scored rerun is detected by `KAGGLE_IS_COMPETITION_RERUN` **or** by the mounted test file not matching the public
+   placeholder's id fingerprint (`PLACEHOLDER_SHA`). The log line `run kind: ...` states which. If the placeholder is ever
+   replaced upstream, set `ARC_PLACEHOLDER_SHA` (or re-fingerprint) before submitting.
+5. Total budget at most ~11h (`deadline_min = total - elapsed - 15`); the session limit is ~12h.
+6. Canary first: submit a short run (about 100 min budget) and confirm it scores above 0 before spending a long run.
+7. One submission per day plus queue delays: plan the canary and the long run on separate days.
