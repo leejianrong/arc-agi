@@ -115,7 +115,7 @@ def _launcher_helpers():
     return mod
 
 
-def step_dry_run(mode):
+def step_dry_run(mode, rerun=True):
     h = _launcher_helpers()
     srv = h._server()
     try:
@@ -129,7 +129,11 @@ def step_dry_run(mode):
                 extra = ["--npar", "2", "--bench-config", str(cfg), "--bench-tasks", "3"]
                 files = {"arc-agi_evaluation_challenges.json": h._tasks(),
                          "arc-agi_evaluation_solutions.json": {t: [[[9, 8, 7], [3, 2, 1]]] for t in h._tasks()}}
-            r, sub = h._run(tmp, srv, mode, extra, files)
+            if not rerun:  # dev slice of the public eval set; submission.json must stay the valid baseline
+                extra = ["--npar", "2", "--dev-tasks", "2"]
+                files = {"arc-agi_evaluation_challenges.json": h._tasks(),
+                         "arc-agi_evaluation_solutions.json": {t: [[[9, 8, 7], [3, 2, 1]]] for t in h._tasks()}}
+            r, sub = h._run(tmp, srv, mode, extra, files, env_extra=None if rerun else {"ARC_FORCE_RERUN": "0"})
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         raise PreflightError(f"{mode}: dry run did not produce submission.json: {e}") from e
     finally:
@@ -138,6 +142,8 @@ def step_dry_run(mode):
         raise PreflightError(f"{mode}: dry run exit {r.returncode}: {r.stderr[-600:]}")
     if "submission validated" not in r.stdout:
         raise PreflightError(f"{mode}: 'submission validated' line missing")
+    if not rerun and "DEV score: solved 2 of 2" not in r.stdout:
+        raise PreflightError(f"{mode}: dev run did not log 'DEV score: solved 2 of 2'")
     if set(sub) != set(h._tasks()):
         raise PreflightError(f"{mode}: submission.json has tasks {sorted(sub)}")
 
@@ -154,6 +160,8 @@ def main(argv=None):
     for m in modes:
         steps += [(f"build:{m}", lambda m=m: step_build(m)), (f"dry-run:{m}", lambda m=m: step_dry_run(m)),
                   (f"size:{m}", lambda m=m: step_size(m))]
+    if dev_mode := next((m for m in modes if m != "bench"), None):  # the other kernel run type, once
+        steps.append((f"dry-run-dev:{dev_mode}", lambda: step_dry_run(dev_mode, rerun=False)))
     results, failed = [], None
     for name, fn in steps:
         try:
