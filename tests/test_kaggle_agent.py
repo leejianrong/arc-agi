@@ -112,7 +112,7 @@ def test_failed_submit_diff_then_fixed_object_args():
     assert att.status == "verified" and len(att.cands) == 2
     reply = seen[1]["messages"][-1]["content"]
     assert seen[1]["messages"][-1]["role"] == "tool"
-    assert reply.startswith("Reproduced 0 of 2 examples.")
+    assert reply.startswith("[task t1] Reproduced 0 of 2 examples.")
     assert "## Example 1 failed" in reply and "## Example 2 failed" in reply
     assert "4 of 4 cells are wrong. Expected output:\n43\n21" in reply
     assert "Your output ('.' = correct cell, digit = wrong cell):\n12\n34" in reply
@@ -142,7 +142,8 @@ def test_prose_only_gets_one_hint_then_stops():
 def test_identical_resubmit_flagged_not_double_counted():
     att, seen = attempt([call_reply(tc("submit", WRONG)), call_reply(tc("submit", WRONG)),
                          call_reply(tc("submit", GOOD))])
-    assert "identical to a previous submission" in seen[2]["messages"][-1]["content"]
+    reply = seen[2]["messages"][-1]["content"]
+    assert "identical to your submission #1; it was not re-run" in reply and "Reproduced 0 of 2" in reply
     assert len(att.cands) == 2 and att.status == "verified" and att.submits == 3
 
 
@@ -227,3 +228,53 @@ def test_real_repl_integration_explore_then_verified_submit():
     tool_msgs = [m["content"] for m in seen[-1]["messages"] if m["role"] == "tool"]
     assert tool_msgs[0].strip() == "12\n34"  # show() output from the real worker
     assert tool_msgs[1].startswith("2 ") and "cells differ" in tool_msgs[1]  # `k` persisted; diff() ran
+
+
+def test_tool_text_matches_real_namespace_and_numpy_wording():
+    tools = {t["function"]["name"]: t["function"]["description"] for t in sa.TOOLS}
+    py = tools["python"]
+    assert "train_inputs" not in py and "train_outputs" not in py and "tuple" not in py
+    for name in ("train", "test_inputs", "show(", "diff(", "objects(", "colors(", "crop(", "rot90(", "flip(", "transpose("):
+        assert name in py
+    assert "dunder" in py and "getattr" in py and "dotted" in py
+    assert all(m in py for m in sa.rp.ALLOWED_MODULES if m != "numpy")
+    assert ("np = numpy" in py) == sa.NUMPY and ("numpy" in sa.INSTRUCTIONS) == sa.NUMPY
+    assert "separate plain Python process" in tools["submit"]
+    # the names promised really exist in the worker, and the invented ones do not
+    with sa.rp.Repl(TASK, timeout=10) as r:
+        for n in ("train", "test_inputs", "show", "diff", "objects", "colors", "crop", "rot90", "flip", "transpose"):
+            assert "NameError" not in r.run(n), n
+        assert "NameError" in r.run("train_inputs")
+        assert r.has_numpy == sa.NUMPY and ("NameError" not in r.run("np")) == sa.NUMPY
+
+
+def test_tool_replies_carry_task_tag_and_trim_still_reads_headline():
+    _, seen = attempt([call_reply(tc("python", "1")), call_reply(tc("submit", WRONG)),
+                       call_reply(tc("submit", GOOD))], tag="abc")
+    tools = [m["content"] for m in seen[-1]["messages"] if m["role"] == "tool"]
+    assert len(tools) == 2 and all(t.startswith("[task abc] ") for t in tools)
+    assert sa._fail_headline(tools[1]) == "Reproduced 0 of 2 examples."
+    _, seen = attempt([call_reply(tc("python", "1")), call_reply(tc("submit", GOOD))])
+    assert seen[1]["messages"][-1]["content"] == "out:1"  # no tag set: unchanged
+
+
+def _grid(n, f):
+    return [[f(r, c) for c in range(n)] for r in range(n)]
+
+
+def test_submit_reply_shows_full_30x30_diff_and_caps_length():
+    want = _grid(30, lambda r, c: (r + c) % 10)
+    task = {"train": [{"input": want, "output": want}, {"input": want, "output": want}], "test": []}
+    code = ("def transform(grid):\n    g = [row[:] for row in grid]\n    g[29][29] = 9 - g[29][29]\n"
+            "    g[0][0] = 9 - g[0][0]\n    return g")
+    cand = sy.evaluate(code, task)
+    text = sa.submit_reply(cand, task)
+    assert text.count("## Example") == 2 and "2 of 900 cells are wrong" in text
+    assert text.count(sa.ls.grid_text(want)) == 2  # both examples' expected grids, all 30 rows
+    assert sum(ln.startswith("." * 29) for ln in text.splitlines()) >= 2 and "reply truncated" not in text
+    assert len(text) <= sa.REPLY_CAP
+    # an oversized reply says how much was cut
+    big = {"train": [{"input": [[1]], "output": [[2]]}], "test": []}
+    cand = {"code": "", "verified": False, "frac": 0.0, "fails": ["Example 1: exception: " + "x" * 9000]}
+    text = sa.submit_reply(cand, big)
+    assert len(text) <= sa.REPLY_CAP and "chars cut" in text

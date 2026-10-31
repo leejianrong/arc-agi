@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import llm_solve as ls
+import repl as rp
 import synth as sy
 
 SYSTEM_PROMPT = (
@@ -28,29 +29,31 @@ SYSTEM_PROMPT = (
     "writing Python programs."
 )
 
+NUMPY = rp.numpy_available()  # the REPL worker and the submit runner both use this interpreter
+SUBMIT_ENV = ("submit runs your program in a separate plain Python process, not the REPL sandbox: the standard "
+              "library" + (" and numpy are" if NUMPY else " is") + " importable there without the REPL's restrictions.")
+
 TOOLS = [
     {"type": "function", "function": {
         "name": "python",
-        "description": ("Run Python to inspect the puzzle. State persists between calls. Preloaded: np, train_inputs, "
-                        "train_outputs, test_inputs (lists of int numpy arrays), train (list of (input, output)), "
-                        "show(g), diff(a, b), objects(g, bg=None, diagonal=False, multicolor=False). "
-                        "Print compact summaries, never whole large grids."),
+        "description": ("Run Python to inspect the puzzle in a restricted sandbox. State persists between calls. "
+                        + rp.namespace_doc(NUMPY) + " Print compact summaries, never whole large grids."),
         "parameters": {"type": "object", "properties": {"code": {"type": "string", "description": "Python code; "
                        "print() what you need."}}, "required": ["code"]}}},
     {"type": "function", "function": {
         "name": "submit",
         "description": ("Submit the full source of a program defining transform(grid). It is run on every example "
                         "input; the reply says which examples it reproduces and, for failures, which cells are "
-                        "wrong. The attempt ends when every example is reproduced."),
+                        "wrong. The attempt ends when every example is reproduced. " + SUBMIT_ENV),
         "parameters": {"type": "object", "properties": {"code": {"type": "string", "description": "Full Python "
                        "source defining transform(grid)."}}, "required": ["code"]}}},
 ]
 
 INSTRUCTIONS = (
     "Work like a scientist. Use the python tool to measure the examples: objects, colors, sizes, positions, and "
-    "how outputs differ from inputs. Then call submit with a complete `def transform(grid):` (standard library "
-    "and numpy only; it takes and returns a list of lists of ints). Submitting is free and a failed submit shows "
-    "exactly which cells are wrong, so submit early and often instead of waiting for certainty. Fix the rule "
+    "how outputs differ from inputs. Then call submit with a complete `def transform(grid):` (standard library"
+    + (" and numpy" if NUMPY else "") + " only; it takes and returns a list of lists of ints). Submitting is free "
+    "and a failed submit shows exactly which cells are wrong, so submit early and often instead of waiting for certainty. Fix the rule "
     "rather than special-casing the examples."
 )
 
@@ -84,16 +87,17 @@ def diff_map(got, want):
     return "\n".join("".join("." if g == w else str(g) for g, w in zip(gr, wr)) for gr, wr in zip(got, want))
 
 
-def submit_reply(cand, task, repeated=False, max_examples=2):
+REPLY_CAP = 6000  # characters in one submit reply; the first failing example's grids (<= 30x30) always fit
+
+
+def submit_reply(cand, task, max_examples=2):
     """Reply text for a submit; may re-run the failing examples to show their wrong-cell maps."""
     train = task["train"]
     n = len(train)
-    pre = ("WARNING: identical to a previous submission, so the result is the same. Change the approach.\n"
-           if repeated else "")
     if cand["verified"]:
-        return pre + f"Accepted: reproduces all {n} examples."
+        return f"Accepted: reproduces all {n} examples."
     if not cand["fails"]:  # demos pass but a test input produced no valid grid
-        return pre + ("Reproduces all examples but a test input gave no valid grid (error, timeout or bad output). "
+        return ("Reproduces all examples but a test input gave no valid grid (error, timeout or bad output). "
                       "Make transform robust on other inputs and submit again.")
     idx = [int(f.split(":")[0].split()[1]) for f in cand["fails"]][:max_examples]
     wrong_cells = [i for i, f in zip(idx, cand["fails"]) if "cells wrong" in f]
@@ -101,7 +105,7 @@ def submit_reply(cand, task, repeated=False, max_examples=2):
     if wrong_cells:
         res = sy.run_program(cand["code"], [train[i - 1]["input"] for i in wrong_cells])
         got = {i: r["grid"] for i, r in zip(wrong_cells, res) if r["status"] == "ok"}
-    out = [pre + f"Reproduced {n - len(cand['fails'])} of {n} examples."]
+    out = [f"Reproduced {n - len(cand['fails'])} of {n} examples."]
     for i, f in zip(idx, cand["fails"]):
         want = train[i - 1]["output"]
         out.append(f"## Example {i} failed")
@@ -119,7 +123,11 @@ def submit_reply(cand, task, repeated=False, max_examples=2):
             if "wrong shape" in f and len(want) * len(want[0]) <= 900:
                 out.append(f"Expected output:\n{ls.grid_text(want)}")
     out.append("Fix the rule and submit again.")
-    return "\n".join(out)
+    text = "\n".join(out)
+    if len(text) > REPLY_CAP:
+        keep = REPLY_CAP - 80
+        text = f"{text[:keep]}\n[... reply truncated: {len(text) - keep} chars cut ...]"
+    return text
 
 
 class Hooks:
@@ -139,7 +147,12 @@ def _chars(msgs):
 
 
 def _fail_headline(text):
-    return next((ln for ln in text.splitlines() if ln.startswith("Reproduce")), "")
+    # a "[task <id>] " tag may precede the reply's first line
+    for ln in text.splitlines():
+        ln = ln.split("] ", 1)[1] if ln.startswith("[task ") and "] " in ln else ln
+        if ln.startswith("Reproduce"):
+            return ln
+    return ""
 
 
 @dataclass
@@ -245,7 +258,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
     att.control = asdict(ctl)
     att.messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": pre + task_message(task)}]
     kwargs = {"reasoning_effort": effort} if effort else None
-    seen = {}  # code -> cand, to flag identical resubmissions without re-running them
+    seen = {}  # code -> (cand, reply, submit number), to flag identical resubmissions without re-running them
     repl, hints, think = None, 0, thinking_budget
     state = {"attempt": att}
     sigs, overflowed = [], False
@@ -255,18 +268,20 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
         state["py_run"] = 0
         key = code.strip()
         if key in seen:
-            return submit_reply(seen[key], task, repeated=True)
+            k, reply = seen[key]
+            return (f"WARNING: identical to your submission #{k}; it was not re-run, the result is the same. "
+                    "Change the approach.\n" + reply)
         cand = sy.evaluate(code, task, sandbox_timeout)
         if cand["verified"] and any(o is None for o in cand["test_outputs"]):
             cand["verified"] = False  # a test input must produce a valid grid too
         cand.update(turn=len(att.turns))
-        seen[key] = cand
         att.cands.append(cand)
         if on_cand:
             on_cand(cand)
         if cand["verified"]:
             att.verified = True
-        return submit_reply(cand, task)
+        seen[key] = (att.submits, reply := submit_reply(cand, task))
+        return reply
 
     def dispatch(call):
         nonlocal repl
@@ -371,7 +386,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             att.messages.append(msg)
             if calls:
                 for c in calls:
-                    text = hooks.tool_result(c["name"], dispatch(c), state)
+                    text = pre + hooks.tool_result(c["name"], dispatch(c), state)
                     att.messages.append({"role": "tool", "tool_call_id": c["id"], "content": text})
                 if att.verified:
                     att.status = "verified"

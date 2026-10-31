@@ -199,3 +199,32 @@ def test_worker_crash_restarts(repl):
     out = repl.run("1 + 1")
     assert "crashed" in out and "lost" in out
     assert repl.run("1 + 1") == "2"
+
+
+def test_traceback_shows_only_user_frames(repl):
+    out = repl.run("def f(x):\n    return 1 / x\nf(0)")
+    assert 'File "<cell>", line 2, in f' in out and 'File "<cell>", line 3' in out
+    assert "<string>" not in out and "main" not in out and "ZeroDivisionError" in out
+    assert repl.run("[][1]").splitlines()[-1].startswith("IndexError")
+
+
+def test_forbidden_message_has_allowed_hint_and_namespace_doc(repl):
+    out = repl.run("type(1)")
+    assert out.startswith("Forbidden: use of type (not allowed in this sandbox") and "\n" not in out
+    assert "allowed imports: collections, copy" in out
+    doc = rp.namespace_doc(True)
+    assert "np = numpy" in doc and "numpy" in doc.split("Allowed imports")[1]
+    nodoc = rp.namespace_doc(False)
+    assert "numpy" not in nodoc and "np =" not in nodoc
+    for m in rp.ALLOWED_MODULES:
+        assert m in doc
+
+
+def test_has_numpy_reported_by_worker(repl):
+    assert repl.has_numpy is None
+    repl.run("1")
+    assert repl.has_numpy == rp.numpy_available()
+    assert ("NameError" not in repl.run("np")) == repl.has_numpy
+    for n in ("show", "diff", "objects", "colors", "crop", "rot90", "flip", "transpose", "train", "test_inputs"):
+        assert "NameError" not in repl.run(n)
+    assert "NameError" in repl.run("train_inputs")

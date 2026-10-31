@@ -20,6 +20,7 @@ points fd 1/2 at /dev/null, and the user's ``print`` goes to a captured buffer, 
 corrupt it.
 """
 import atexit
+import importlib.util
 import json
 import os
 import select
@@ -34,6 +35,31 @@ import weakref
 MAX_OUT = 4000       # characters returned by run()
 MAX_REPLY = 1 << 20  # bytes accepted from the worker per reply
 ALLOWED_MODULES = ("math", "itertools", "collections", "functools", "copy", "json", "re", "numpy")
+
+
+
+def numpy_available():
+    """Whether the worker interpreter (this one) can import numpy."""
+    return importlib.util.find_spec("numpy") is not None
+
+
+def namespace_doc(has_numpy):
+    """Exact description of what the REPL namespace holds and forbids, for the model's tool text."""
+    mods = ", ".join(m for m in ALLOWED_MODULES if has_numpy or m != "numpy")
+    return (
+        "Preloaded names (grids are plain lists of lists of ints"
+        + (", not numpy arrays" if has_numpy else "") + "): "
+        "train = list of {\"input\": grid, \"output\": grid} dicts, one per example; test_inputs = list of grids; "
+        "show(g) -> str, one digit row per line; diff(a, b) -> str listing differing cells, 'identical' or a shape "
+        "mismatch; objects(g, diag=False, bg=None) -> list of single-colour components "
+        "{\"color\", \"cells\" [(r, c)], \"bbox\" (r0, c0, r1, c1 inclusive), \"size\"}, bg defaults to the most "
+        "common colour (bg=-1 keeps every colour); colors(g) -> {colour: count}, most common first; "
+        "crop(g, r0, c0, r1, c1) with inclusive corners; rot90(g, k=1) clockwise; flip(g, axis=0) (0 = upside down, "
+        "1 = left-right); transpose(g)." + (" np = numpy (no file I/O)." if has_numpy else "")
+        + f" Allowed imports (plain `import x` / `from x import y`, no dotted imports): {mods}. Forbidden here: "
+        "type, exec, eval, compile, open, getattr, setattr, vars, globals, dir, id, input, dunder names and "
+        "attributes starting with an underscore.")
+
 
 _WORKER = r"""
 import ast, json, os, resource, sys, traceback, types
@@ -275,22 +301,26 @@ def main():
         resource.setrlimit(resource.RLIMIT_CPU, (soft, resource.RLIM_INFINITY))
         value, err = None, None
         try:
-            tree = ast.parse(req["code"], "<repl>")
+            tree = ast.parse(req["code"], "<cell>")
             check_ast(tree)
             last = None
             if tree.body and isinstance(tree.body[-1], ast.Expr):
                 last = ast.Expression(tree.body.pop().value)
-            exec(compile(tree, "<repl>", "exec"), glb)
+            exec(compile(tree, "<cell>", "exec"), glb)
             if last is not None:
-                v = eval(compile(ast.fix_missing_locations(last), "<repl>", "eval"), glb)
+                v = eval(compile(ast.fix_missing_locations(last), "<cell>", "eval"), glb)
                 if v is not None:
                     value = repr(v)[:MAX_BUF]
         except Forbidden as e:
-            err = "Forbidden: " + str(e) + " (not allowed in this sandbox)"
+            err = ("Forbidden: " + str(e) + " (not allowed in this sandbox; allowed imports: "
+                   + ", ".join(sorted(ALLOWED)) + "; no type/exec/eval/open/getattr/vars, dunder names or dotted imports)")
         except SyntaxError as e:
             err = "SyntaxError: %s (line %s)" % (e.msg, e.lineno)
         except Exception as e:
-            err = "".join(traceback.format_exc().splitlines(True)[-6:])
+            # only the user's own frames: the harness's (main, exec) would show as File "<string>"
+            frames = [f for f in traceback.extract_tb(e.__traceback__) if f.filename == "<cell>"][-4:]
+            err = ("Traceback (most recent call last):\n" if frames else "") + "".join(
+                traceback.format_list(frames) + traceback.format_exception_only(type(e), e))
         send({"out": "".join(buf), "dropped": max(0, size[0] - MAX_BUF), "value": value, "err": err})
 
 
@@ -323,6 +353,7 @@ class Repl:
     def __init__(self, task, persist=True, timeout=30, mem_mb=3072):
         self.task, self.persist, self.timeout, self.mem_mb = task, persist, timeout, mem_mb
         self.restarts = 0
+        self.has_numpy = None  # set from the worker's ready message on first start
         self._proc = None
         self._buf = b""
         self._workdir = tempfile.mkdtemp(prefix="repl-")
@@ -395,6 +426,7 @@ class Repl:
         ready = self._exchange(init, max(timeout, 20))
         if not ready.get("ready"):
             raise ValueError("worker did not start")
+        self.has_numpy = bool(ready.get("numpy"))
 
     def _exchange(self, obj, timeout):
         self._proc.stdin.write(json.dumps(obj).encode() + b"\n")
