@@ -174,3 +174,12 @@ def test_real_tasks_verify_with_handwritten_programs():
         assert sy.evaluate(code, task)["verified"], tid
     task = json.loads((data / "68b16354.json").read_text())
     assert not sy.evaluate(programs["6150a2bd"], task)["verified"]
+
+
+def test_feedback_shows_grids_color_pairs_and_flags_repeats():
+    task = {"train": [{"input": [[1, 1], [1, 1]], "output": [[8, 8], [8, 1]]}], "test": [{"input": [[1]]}]}
+    cand = sy.evaluate("def transform(grid):\n    return grid\n", task)
+    assert cand["detail"][0] == 1
+    text = sy.feedback_text(cand, 1, repeated=True)
+    assert "identical to your previous one" in text
+    assert "1->8 x3" in text and "expected output:\n88\n81" in text and "your output:\n11\n11" in text

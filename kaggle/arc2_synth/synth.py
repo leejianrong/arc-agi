@@ -114,7 +114,10 @@ def score_pair(res, expected):
     if not bad:
         return total, total, None
     shown = ", ".join(f"({r},{c}) got {g} expected {e}" for r, c, g, e in bad[:6])
-    return total - len(bad), total, f"{len(bad)} of {total} cells wrong; first: {shown}"
+    pairs = Counter((g, e) for _, _, g, e in bad).most_common(5)
+    by_color = ", ".join(f"{g}->{e} x{n}" for (g, e), n in pairs)
+    return total - len(bad), total, (f"{len(bad)} of {total} cells wrong; first: {shown}; "
+                                     f"most common (got->expected): {by_color}")
 
 
 def evaluate(code, task, timeout_s=10):
@@ -122,21 +125,32 @@ def evaluate(code, task, timeout_s=10):
     train, tests = task["train"], task["test"]
     res = run_program(code, [p["input"] for p in train] + [t["input"] for t in tests], timeout_s)
     ok = tot = 0
-    fails = []
+    fails, detail = [], None
     for i, (p, r) in enumerate(zip(train, res), 1):
         c, t, why = score_pair(r, p["output"])
         ok, tot = ok + c, tot + t
         if why:
             fails.append(f"Example {i}: {why}")
-    return {"code": code, "verified": not fails, "frac": ok / tot if tot else 0.0, "fails": fails,
+            if detail is None and r["status"] == "ok" and "wrong shape" not in why:
+                detail = (i, r["grid"], p["output"])
+    return {"code": code, "verified": not fails, "frac": ok / tot if tot else 0.0, "fails": fails, "detail": detail,
             "test_outputs": [r["grid"] if r["status"] == "ok" else None for r in res[len(train):]]}
 
 
-def feedback_text(cand, n_train):
+def feedback_text(cand, n_train, repeated=False):
     passed = n_train - len(cand["fails"])
-    return (f"Your program passed {passed} of {n_train} training examples.\n" + "\n".join(cand["fails"])
-            + "\n\nFix the program so every training example matches exactly. Think briefly about what the "
-            "diagnostics reveal, then reply with the full corrected program in ONE ```python block.")
+    out = []
+    if repeated:
+        out.append("WARNING: your program is identical to your previous one, so it fails in exactly the same way. "
+                   "Change the approach, do not resubmit it.\n")
+    out.append(f"Your program passed {passed} of {n_train} training examples.\n" + "\n".join(cand["fails"]))
+    if cand.get("detail"):
+        i, got, want = cand["detail"]
+        out.append(f"\nExample {i}, expected output:\n{ls.grid_text(want)}\nExample {i}, your output:\n{ls.grid_text(got)}")
+    out.append("\nA program with the right output shape can still have the wrong rule; look at which cells differ and "
+               "why. Prefer a simple, general rule over special cases for these examples. Think briefly, then reply "
+               "with the full corrected program in ONE ```python block.")
+    return "\n".join(out)
 
 
 def build_prompt(task):
@@ -213,11 +227,12 @@ def select_attempts(task, cands, fallback_rows, direct_rows=None):
     return rows
 
 
-def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_rows=None):
+def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_rows=None, tag=""):
     """Run up to args.chains refinement chains; returns (rows, log)."""
     fallback_rows = fallback_rows or ls.load_fallback()(task)
     n_train = len(task["train"])
-    prompt = build_prompt(task)
+    pre = f"[task {tag}] " if tag else ""  # lets semula answerers split tasks by the first 200 chars
+    prompt = pre + build_prompt(task)
     kwargs = {"reasoning_effort": args.effort} if args.effort else None
     cands, rounds, tokens = [], [], 0
 
@@ -229,6 +244,7 @@ def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_
 
     for chain in range(args.chains):
         messages = [{"role": "user", "content": prompt}]
+        prev_code = None
         for rnd in range(args.rounds):
             left = args.task_budget - tokens
             if left < 1024 or time.time() > deadline or sum(c["verified"] for c in cands) >= args.want_verified:
@@ -262,7 +278,7 @@ def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_
                 if err:  # endpoint failure: retrying the same turn immediately rarely helps
                     break
                 messages += [{"role": "assistant", "content": "(no program)"},
-                             {"role": "user", "content": "No ```python block with `def transform(grid):` was "
+                             {"role": "user", "content": pre + "No ```python block with `def transform(grid):` was "
                               "found. Reply with the complete program in ONE ```python block."}]
                 continue
             cand = evaluate(code, task, args.sandbox_timeout)
@@ -273,8 +289,9 @@ def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_
             if cand["verified"]:
                 break
             messages += [{"role": "assistant", "content": f"```python\n{code}\n```"},
-                         {"role": "user", "content": feedback_text(cand, n_train)}]
+                         {"role": "user", "content": pre + feedback_text(cand, n_train, code == prev_code)}]
             messages = messages[:1] + messages[1:][-4:]  # keep prompt + last two code/feedback pairs
+            prev_code = code
     rows = update()
     best = max((c for c in cands), key=lambda c: (c["verified"], c["frac"]), default=None)
     log = {"rounds": rounds, "tokens": tokens, "verified": sum(c["verified"] for c in cands),
@@ -311,7 +328,8 @@ def run(args):
             return
         t0 = time.time()
         try:
-            rows, log = synthesize(challenges[tid], args, deadline, lambda r: set_rows(tid, r), fallback_rows=fb[tid])
+            rows, log = synthesize(challenges[tid], args, deadline, lambda r: set_rows(tid, r), fallback_rows=fb[tid],
+                                   tag=tid if args.tag_prompts else "")
         except Exception as e:  # noqa: BLE001
             rows, log = fb[tid], {"error": repr(e), "tokens": 0, "verified": 0}
         dt = time.time() - t0
@@ -364,6 +382,7 @@ def main(argv=None):
     ap.add_argument("--request-timeout", type=int, default=3600)
     ap.add_argument("--deadline-min", type=float, default=60)
     ap.add_argument("--log-dir", default="synth_logs")
+    ap.add_argument("--tag-prompts", type=int, default=0, help="prefix every user message with [task <id>]")
     return run(ap.parse_args(argv))
 
 
