@@ -101,3 +101,31 @@ def test_forced_answer_rescues_a_truncated_thinking_call(tmp_path):
     out = json.loads((tmp_path / "o.json").read_text())
     assert out["t1"][0]["attempt_1"] == [[8, 7], [6, 5]]
     srv.shutdown()
+
+
+def test_call_cap_follows_the_time_left_so_a_slow_stream_still_gets_a_forced_answer(tmp_path):
+    """Hybrid dev run: 16 xhigh calls hit the phase deadline mid-generation, returned nothing, and left no time to force an answer."""
+    seen = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append(body.get("max_tokens"))
+            out = {"choices": [{"message": {"content": "", "reasoning": "r"}, "finish_reason": "length"}],
+                   "usage": {"completion_tokens": 5}}
+            data = json.dumps(out).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    _, argv = _args(tmp_path, srv)
+    ls.main([*argv, "--max-tokens", "40000", "--deadline-min", "10", "--reserve-sec", "300", "--default-rate", "10",
+             "--n-parallel", "1", "--force-answer", "0"])
+    srv.shutdown()
+    assert 2900 <= seen[0] <= 3000  # (600 - 300) s share x 10 tok/s, far below the 40000 ceiling
