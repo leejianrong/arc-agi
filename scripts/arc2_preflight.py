@@ -75,7 +75,7 @@ def step_ruff():
 
 
 def step_tests(fast):
-    files = ["tests/test_kaggle_launcher.py", "tests/test_kaggle_agent.py"] if fast else sorted(
+    files = ["tests/test_kaggle_launcher.py", "tests/test_kaggle_agent.py", "tests/test_kaggle_scripted_player.py"] if fast else sorted(
         str(p.relative_to(ROOT)) for p in (ROOT / "tests").glob("test_kaggle_*.py"))
     r = subprocess.run(["uv", "run", "pytest", "-q", *files], cwd=ROOT, capture_output=True, text=True, check=False)
     if r.returncode:
@@ -150,7 +150,7 @@ def step_dry_run(mode, rerun=True):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--fast", action="store_true", help="run only the launcher and agent tests")
+    ap.add_argument("--fast", action="store_true", help="run only the launcher, agent and scripted-player tests")
     ap.add_argument("--modes", default=",".join(MODES))
     args = ap.parse_args(argv)
     modes = [m for m in args.modes.split(",") if m]
