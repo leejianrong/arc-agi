@@ -301,7 +301,7 @@ class Control(Hooks):
                 d["last"] = _fail_headline(text)
         note = (f"[Older turns were removed to save context: {d['exchanges']} exchanges, {d['python']} python calls, "
                 f"{d['failed']} failed submits." + (f" Last failed submit: {d['last']}" if d["last"] else "")
-                + " Your python variables persist.]")
+                + (" Your python variables persist." if state["attempt"].persist else "") + "]")
         messages[2:head + len(drop)] = [{"role": "user", "content": note}]
         state["marker"], state["prompt_tokens"] = True, 0
         ev = state["attempt"].events
