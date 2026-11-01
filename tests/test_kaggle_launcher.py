@@ -1,9 +1,14 @@
 """Dry-run the generated Kaggle notebook against a fake OpenAI server (no GPU, no install)."""
+import base64
+import io
 import json
 import os
+import re
 import subprocess
 import sys
+import tarfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -16,7 +21,7 @@ def _tasks():
     return {f"t{i}": {"train": train, "test": [{"input": [[7, 8, 9], [1, 2, 3]]}]} for i in range(3)}
 
 
-def _server(die_after=None, smoke_fails=False, tools_fail=False):
+def _server(die_after=None, smoke_fails=False, tools_fail=False, delay=0.0, direct_answer=None):
     count = {"n": 0}
 
     class H(BaseHTTPRequestHandler):
@@ -29,6 +34,8 @@ def _server(die_after=None, smoke_fails=False, tools_fail=False):
                 self.end_headers()
                 return
             tool_smoke = "Call the python tool" in json.dumps(req)
+            if delay and not smoke_req and not tool_smoke:
+                time.sleep(delay)
             if tools_fail and req.get("tools"):
                 self.send_response(400)  # a server started without --enable-auto-tool-choice
                 self.end_headers()
@@ -37,6 +44,9 @@ def _server(die_after=None, smoke_fails=False, tools_fail=False):
                 name, code = ("python", "print(2)") if tool_smoke else ("submit", FLIP.strip("`").removeprefix("python\n"))
                 msg = {"content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {
                     "name": name, "arguments": json.dumps({"code": code})}}]}
+            elif direct_answer is not None and not smoke_req:  # a direct-solver reply: a parseable answer block
+                g = json.dumps(direct_answer)
+                msg = {"content": f'```json\n{{"outputs": [{{"attempt_1": {g}, "attempt_2": {g}}}]}}\n```'}
             else:
                 msg = {"content": "1 2 3" if smoke_req else FLIP}
             body = json.dumps({"choices": [{"message": msg, "finish_reason": "stop"}],
@@ -54,7 +64,19 @@ def _server(die_after=None, smoke_fails=False, tools_fail=False):
     return srv
 
 
-def _run(tmp_path, srv, mode="synth", extra=(), eval_files=None):
+def _strip_from_bundle(main_py, name):
+    src = main_py.read_text()
+    m = re.search(r'^BUNDLE_B64 = "([^"]*)"', src, re.MULTILINE)
+    out = io.BytesIO()
+    with tarfile.open(fileobj=io.BytesIO(base64.b64decode(m.group(1))), mode="r:gz") as old, \
+            tarfile.open(fileobj=out, mode="w:gz") as new:
+        for ti in old.getmembers():
+            if ti.name != name:
+                new.addfile(ti, old.extractfile(ti))
+    main_py.write_text(src.replace(m.group(1), base64.b64encode(out.getvalue()).decode()))
+
+
+def _run(tmp_path, srv, mode="synth", extra=(), eval_files=None, env_extra=None, work_setup=None, strip_trace=False):
     inp = tmp_path / "input"
     inp.mkdir()
     (inp / "arc-agi_test_challenges.json").write_text(json.dumps(_tasks()))
@@ -63,10 +85,20 @@ def _run(tmp_path, srv, mode="synth", extra=(), eval_files=None):
     kern = tmp_path / "kern"
     subprocess.run([sys.executable, str(ROOT / "kaggle/arc2_synth/build_kernel.py"), str(kern), "--mode", mode,
                     "--synth-args", "--rounds 2 --chains 1", "--budget-min", "17", *extra], check=True, capture_output=True)
+    if strip_trace:  # a kernel whose bundle predates trace.py
+        _strip_from_bundle(kern / "main.py", "trace.py")
     work = tmp_path / "work"
     work.mkdir()
+    if work_setup:
+        work_setup(work)
     env = dict(os.environ, ARC_EXTERNAL_SERVER=f"http://127.0.0.1:{srv.server_port}/v1", ARC_INPUT_ROOT=str(inp),
                ARC_WORK=str(work), ARC_EFFORT="", ARC_MODEL="qwen")
+    env.pop("KAGGLE_IS_COMPETITION_RERUN", None)
+    for k, v in {"ARC_FORCE_RERUN": "1", **(env_extra or {})}.items():
+        if v is None:
+            env.pop(k, None)  # unset
+        else:
+            env[k] = v
     r = subprocess.run([sys.executable, str(kern / "main.py")], env=env, capture_output=True, text=True, timeout=120, check=False)
     sub = json.loads((work / "submission.json").read_text())
     return r, sub
@@ -209,3 +241,270 @@ def test_builder_bench_defaults(tmp_path):
         assert n in src
     assert "MAX_LEN = 98304" in src and '"12"' in src and '"150"' in src
     subprocess.run([sys.executable, "-m", "py_compile", str(tmp_path / "main.py")], check=True)
+
+
+def _trace_mod():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("arc2_trace_t", ROOT / "kaggle/arc2_synth/trace.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _events(path):
+    return [json.loads(ln) for ln in path.read_text().splitlines()]
+
+
+def test_bench_agent_configs_write_one_valid_trace_each(tmp_path):
+    srv = _server()
+    r, sub, *_ = _bench(tmp_path, srv, [{"name": "a1", "mode": "agent", "persist": 0},
+                                                {"name": "a2", "mode": "agent"},
+                                                {"name": "dir", "mode": "direct"}])
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    work = tmp_path / "work"
+    assert not (work / "trace_dir.jsonl").exists() and not (work / "trace.jsonl").exists()
+    assert r.stdout.count("trace ok ") == 2
+    for name in ("a1", "a2"):
+        path = work / f"trace_{name}.jsonl"
+        n, errs = _trace_mod().validate_file(str(path))
+        assert errs == [] and n > 0
+        evs = _events(path)
+        assert evs[0]["ev"] == "run_start" and evs[-1]["ev"] == "run_end"
+        assert {e["cfg"] for e in evs} == {name}  # the viewer merges files with the same cfg
+        starts = [e for e in evs if e["ev"] == "task_start"]
+        ends = [e for e in evs if e["ev"] == "task_end"]
+        assert len(starts) == len(ends) == 3
+        assert all(e["answers"] == [[[9, 8, 7], [3, 2, 1]]] for e in starts)
+        assert all(e["solved"] == [True] for e in ends)
+    assert _valid(sub)
+
+
+def test_bench_trace_without_solutions_omits_answers(tmp_path):
+    srv = _server()
+    r, *_ = _bench(tmp_path, srv, [{"name": "ag", "mode": "agent"}], solutions=False)
+    srv.shutdown()
+    evs = _events(tmp_path / "work" / "trace_ag.jsonl")
+    assert r.returncode == 0 and "answers" not in next(e for e in evs if e["ev"] == "task_start")
+    assert next(e for e in evs if e["ev"] == "task_end")["solved"] is None
+
+
+def test_agent_mode_writes_trace_jsonl_with_heartbeats(tmp_path):
+    stats = ("INFO Avg prompt throughput: 1.0 tokens/s, Avg generation throughput: 42.5 tokens/s, Running: 3 reqs, "
+             "Waiting: 1 reqs, GPU KV cache usage: 12.5%, Prefix cache hit rate: 0.0%\n")
+    srv = _server(delay=0.4)
+    r, sub = _run(tmp_path, srv, "agent", ["--npar", "1", "--budget-min", "40"], env_extra={"ARC_HB_SEC": "0.1"},
+                  work_setup=lambda w: (w / "vllm_server.log").write_text("noise\n" + stats))
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    path = tmp_path / "work" / "trace.jsonl"
+    n, errs = _trace_mod().validate_file(str(path))
+    assert errs == [] and n > 0
+    beats = [e for e in _events(path) if e["ev"] == "heartbeat"]
+    assert beats and beats[0]["tok_s"] == 42.5 and beats[0]["running"] == 3 and beats[0]["waiting"] == 1
+    assert beats[0]["kv_pct"] == 12.5
+    assert _valid(sub)
+
+
+def test_direct_and_synth_modes_write_no_trace(tmp_path):
+    for mode in ("direct", "synth"):
+        d = tmp_path / mode
+        d.mkdir()
+        srv = _server()
+        r, sub = _run(d, srv, mode)
+        srv.shutdown()
+        assert r.returncode == 0, r.stderr[-800:]
+        assert _valid(sub) and not list((d / "work").glob("trace*"))
+
+
+def test_bundle_without_trace_py_still_finishes_with_a_valid_submission(tmp_path):
+    srv = _server()
+    r, sub = _run(tmp_path, srv, "agent", ["--npar", "2"], strip_trace=True)
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    assert _valid(sub) and "submission validated: 3 tasks, 0 repaired" in r.stdout
+
+
+def test_bundle_contains_trace_py(tmp_path):
+    for mode in ("direct", "agent"):
+        subprocess.run([sys.executable, str(ROOT / "kaggle/arc2_synth/build_kernel.py"), str(tmp_path), "--mode", mode],
+                       check=True, capture_output=True)
+        m = re.search(r'^BUNDLE_B64 = "([^"]*)"', (tmp_path / "main.py").read_text(), re.MULTILINE)
+        with tarfile.open(fileobj=io.BytesIO(base64.b64decode(m.group(1))), mode="r:gz") as tf:
+            assert "trace.py" in tf.getnames()
+
+
+def _dev(tmp_path, mode, solutions=True, eval_tasks=True, rerun="0", npar="2"):
+    """A run over 3 test tasks (t*) plus 5 eval tasks (e0..e4); the e1 solution is deliberately wrong."""
+    ev = {f"e{i}": _tasks()["t0"] for i in range(5)}
+    files = {"arc-agi_evaluation_challenges.json": ev} if eval_tasks else {}
+    if solutions:
+        sol = {t: [[[9, 8, 7], [3, 2, 1]]] for t in ev}
+        sol["e1"] = [[[0]]]
+        files["arc-agi_evaluation_solutions.json"] = sol
+    srv = _server()
+    r, sub = _run(tmp_path, srv, mode, ["--npar", npar, "--dev-tasks", "2"], files, env_extra={"ARC_FORCE_RERUN": rerun})
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    return r, sub, tmp_path / "work"
+
+
+def test_dev_run_solves_only_the_eval_slice_and_keeps_the_baseline_submission(tmp_path):
+    for mode in ("agent", "direct"):
+        d = tmp_path / mode
+        d.mkdir()
+        r, sub, work = _dev(d, mode)
+        dev = json.loads((work / "dev_submission.json").read_text())
+        assert sorted(dev) == ["e0", "e1"]  # first 2 ids by sorted order
+        assert "RERUN: dev slice of 2 eval tasks" in r.stdout and "RERUN: full run" not in r.stdout
+        assert "DEV score: solved 1 of 2 test inputs (pass@2) on 2 eval tasks in " in r.stdout
+        assert _valid(sub) and "submission validated: 3 tasks, 0 repaired" in r.stdout
+        assert (work / "trace.jsonl").exists() == (mode == "agent")
+
+
+def test_dev_run_agent_trace_carries_the_answers(tmp_path):
+    _, _, work = _dev(tmp_path, "agent")
+    starts = [e for e in _events(work / "trace.jsonl") if e["ev"] == "task_start"]
+    assert len(starts) == 2 and all(e["answers"] for e in starts)
+
+
+def test_dev_run_without_solutions_is_unscored(tmp_path):
+    r, sub, _ = _dev(tmp_path, "direct", solutions=False)
+    assert "DEV: unscored (no solutions file)" in r.stdout and "DEV score" not in r.stdout
+    assert _valid(sub)
+
+
+def test_dev_run_without_eval_file_falls_back_to_test_tasks(tmp_path):
+    r, sub, work = _dev(tmp_path, "direct", solutions=False, eval_tasks=False)
+    assert "sampling the test challenges instead" in r.stdout
+    assert sorted(json.loads((work / "dev_submission.json").read_text())) == ["t0", "t1"]
+    assert _valid(sub)
+
+
+def test_rerun_solves_every_test_task_into_submission_json(tmp_path):
+    for mode in ("agent", "synth"):
+        d = tmp_path / mode
+        d.mkdir()
+        r, sub, work = _dev(d, mode, rerun="1")
+        assert "RERUN: full run over 3 test tasks" in r.stdout and "DEV" not in r.stdout
+        assert _valid(sub) and not (work / "dev_submission.json").exists()
+        assert all(rows[0]["attempt_1"] == [[9, 8, 7], [3, 2, 1]] for rows in sub.values())
+
+
+def _detect(tmp_path, kaggle_env, placeholder):
+    """Run with ARC_FORCE_RERUN unset; `placeholder` says whether the fake test file's ids match the known placeholder."""
+    import hashlib
+    sha = hashlib.sha256("\n".join(sorted(_tasks())).encode()).hexdigest() if placeholder else "0" * 64
+    extra = {"ARC_FORCE_RERUN": None, "ARC_PLACEHOLDER_SHA": sha, "KAGGLE_IS_COMPETITION_RERUN": kaggle_env}
+    srv = _server()
+    r, sub = _run(tmp_path, srv, "direct", ["--npar", "2", "--dev-tasks", "2"], {}, env_extra=extra)
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    return r, sub, tmp_path / "work"
+
+
+def test_run_kind_detection_never_silently_downgrades_a_real_test_set(tmp_path):
+    cases = {  # (env var set, file is placeholder) -> full rerun?
+        "env_only": ("1", True, True),
+        "file_only": (None, False, True),  # env var missing but the test file is not the placeholder
+        "both": ("1", False, True),
+        "neither": (None, True, False),
+    }
+    for name, (env, placeholder, full) in cases.items():
+        d = tmp_path / name
+        d.mkdir()
+        r, sub, work = _detect(d, env, placeholder)
+        assert ("run kind: RERUN (full)" in r.stdout) is full, (name, r.stdout[-600:])
+        assert _valid(sub), name
+        assert (work / "dev_submission.json").exists() is (not full), name
+
+
+def test_builder_dev_flags(tmp_path):
+    subprocess.run([sys.executable, str(ROOT / "kaggle/arc2_synth/build_kernel.py"), str(tmp_path), "--dev-tasks", "7",
+                    "--dev-budget-min", "9"], check=True, capture_output=True)
+    src = (tmp_path / "main.py").read_text()
+    assert '"ARC_DEV_TASKS", "7"' in src and '"ARC_DEV_BUDGET_MIN", "9"' in src
+
+
+WRONG = [[1, 1, 1], [1, 1, 1]]
+RIGHT = [[9, 8, 7], [3, 2, 1]]
+
+
+def _hybrid(tmp_path, srv, budget="17", extra=()):
+    return _run(tmp_path, srv, "hybrid", ["--npar", "2", "--agent-args", "--reserve-sec 0 --min-call-tokens 16", *extra],
+                env_extra={"ARC_FORCE_RERUN": "1", "ARC_BUDGET_MIN": budget})  # a tiny reserve and call floor so the 2 min of fake-server time is usable
+
+
+def test_hybrid_rerun_verified_agent_program_supersedes_direct_answer(tmp_path):
+    srv = _server(direct_answer=WRONG)
+    r, sub = _hybrid(tmp_path, srv)
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "HYBRID phase 1 (direct)" in r.stdout and "HYBRID phase 2 (agent)" in r.stdout
+    assert _valid(sub) and "submission validated: 3 tasks, 0 repaired" in r.stdout
+    for rows in sub.values():  # verified program first, the direct answer kept as the second attempt
+        assert rows[0]["attempt_1"] == RIGHT and rows[0]["attempt_2"] == WRONG
+    assert (tmp_path / "work" / "trace.jsonl").exists()
+
+
+def test_hybrid_rerun_with_no_time_for_phase_2_keeps_every_direct_answer(tmp_path):
+    srv = _server(direct_answer=WRONG)
+    r, sub = _hybrid(tmp_path, srv, budget="15.4")  # ~0.3 min after the 15 min reserve: phase 2 cannot start
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "HYBRID phase 2 skipped" in r.stdout and "HYBRID phase 2 (agent)" not in r.stdout
+    assert _valid(sub) and all(rows[0]["attempt_1"] == WRONG for rows in sub.values())
+    assert "submission validated: 3 tasks, 0 repaired" in r.stdout
+
+
+def test_hybrid_phase_2_never_runs_past_the_global_deadline(tmp_path):
+    srv = _server(direct_answer=WRONG, delay=3.0)  # every agent turn is slower than the time left
+    r, sub = _hybrid(tmp_path, srv, budget="16.2")  # deadline at ~1.2 min of runtime
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    done = re.findall(r"\+([\d.]+)m done", r.stdout)
+    assert done and float(done[-1]) <= 1.2 + 0.35, r.stdout[-800:]
+    assert _valid(sub)
+    assert all(rows[0]["attempt_1"] in (WRONG, RIGHT) for rows in sub.values())
+
+
+def test_hybrid_signal_orders_unanswered_direct_tasks_first(tmp_path):
+    srv = _server()  # direct replies are unparseable: every task has no direct answer
+    r, sub = _hybrid(tmp_path, srv)
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    order = json.loads((tmp_path / "work" / "submission.json.order.json").read_text())
+    assert sorted(order) == sorted(_tasks())
+    assert _valid(sub) and all(rows[0]["attempt_1"] == RIGHT for rows in sub.values())
+
+
+def test_hybrid_dev_run_solves_the_eval_slice_and_keeps_the_baseline(tmp_path):
+    r, sub, work = _dev(tmp_path, "hybrid")
+    assert sorted(json.loads((work / "dev_submission.json").read_text())) == ["e0", "e1"]
+    assert "RERUN: dev slice of 2 eval tasks" in r.stdout and "RERUN: full run" not in r.stdout
+    assert "DEV score: solved 1 of 2 test inputs (pass@2) on 2 eval tasks in " in r.stdout
+    assert _valid(sub)
+
+
+def test_select_hybrid_never_replaces_a_direct_answer_with_something_worse():
+    import importlib.util
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "kaggle/arc2_synth"))
+    try:
+        import synth
+    finally:
+        _sys.path.pop(0)
+    task = _tasks()["t0"]
+    direct = [{"attempt_1": WRONG, "attempt_2": [[2]]}]
+
+    def cand(out, verified, frac=1.0):
+        return {"verified": verified, "frac": frac, "test_outputs": [out], "code": "x"}
+
+    assert importlib.util is not None
+    rows = synth.select_hybrid(task, [cand(RIGHT, True)], direct)
+    assert rows == [{"attempt_1": RIGHT, "attempt_2": WRONG}]
+    rows = synth.select_hybrid(task, [cand([[5, 5, 5], [5, 5, 5]], False, 0.9)], direct)  # partial only
+    assert rows == [{"attempt_1": WRONG, "attempt_2": [[5, 5, 5], [5, 5, 5]]}]
+    rows = synth.select_hybrid(task, [cand([[7]], True)], direct)  # verified but plausibility-flagged (shape)
+    assert rows == [{"attempt_1": WRONG, "attempt_2": [[7]]}]
+    assert synth.select_hybrid(task, [], direct) == direct

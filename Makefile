@@ -1,4 +1,4 @@
-.PHONY: help install test test-py test-py-slow test-ts rollout train viz build-frontend demo prune-runs print-task arc2-preflight
+.PHONY: help arc-watch install test test-py test-py-slow test-ts rollout train viz build-frontend demo prune-runs print-task arc2-preflight
 
 .DEFAULT_GOAL := help
 
@@ -19,6 +19,7 @@ help:
 	@echo "  demo            - train + viz: one command to produce a run and open the visualizer on it"
 	@echo "  prune-runs      - dry-run report of stale runs/ dirs (add YES=1 to actually delete)"
 	@echo "  print-task      - print an ARC task's grids to the terminal: make print-task TASK=928ad970"
+	@echo "  arc-watch       - open/bundle agent traces in the viewer: make arc-watch ARGS=\"open path/to/out\""
 	@echo "  arc2-preflight  - go/no-go gate before pushing a Kaggle notebook (FAST=1 for the quick path)"
 
 install:
@@ -63,3 +64,6 @@ print-task:
 
 arc2-preflight:
 	uv run python scripts/arc2_preflight.py $(if $(FAST),--fast)
+
+arc-watch:
+	uv run python scripts/arc_watch.py $(ARGS)

@@ -254,6 +254,14 @@ def _colors(g):
     return {c for row in g for c in row}
 
 
+ENVELOPE_K = 2.5  # the change-envelope rule flags a test change fraction above ENVELOPE_K x the largest train fraction
+
+
+def _changed(a, b):
+    """Fraction of cells that differ between two same-shape grids."""
+    return sum(x != y for ra, rb in zip(a, b) for x, y in zip(ra, rb)) / (len(a) * len(a[0]))
+
+
 def plausibility(task, cand):
     """Overfit guard: per test input, (n_flags, reasons) for a verified candidate's test output.
 
@@ -273,6 +281,10 @@ def plausibility(task, cand):
     seen = Counter(c for o in outs for c in _colors(o))
     shared = {c for c, n in seen.items() if n >= 2}
     pal_ok = all(_colors(o) <= _colors(i) | shared for i, o in zip(ins, outs))
+    leaked = set.intersection(*(_colors(i) for i in ins)) - seen.keys() if len(train) >= 2 else set()
+    fracs = [_changed(i, o) for i, o in zip(ins, outs)] if same else []
+    # k=2.5: 0.4% (train) / 1.8% (eval) false alarms on true answers; k=3 costs 0.3% / 0.6% but misses 135a2760's overfit
+    cap = max(ENVELOPE_K * max(fracs), max(fracs) + 0.02) if fracs else None
     res = []
     for t, out in zip(task["test"], cand["test_outputs"]):
         why = []
@@ -290,6 +302,10 @@ def plausibility(task, cand):
                 why.append("test output is one colour; no train output is")
             if pal_ok and _colors(out) - _colors(ti) - set(seen):
                 why.append("test output uses a colour seen in no train output or the test input")
+            for c in sorted(leaked & _colors(out)):
+                why.append(f"leaked colour {c} (in every train input, in no train output)")
+            if cap is not None and _shape(out) == _shape(ti) and _changed(ti, out) > cap:
+                why.append(f"changes {_changed(ti, out):.0%} of cells (train changes at most {max(fracs):.0%})")
         res.append((len(why), why))
     return res
 
@@ -326,6 +342,36 @@ def select_attempts(task, cands, fallback_rows, direct_rows=None):
             if len(chosen) == 2:
                 break
         rows.append({"attempt_1": chosen[0], "attempt_2": chosen[-1]})
+    return rows
+
+
+def select_hybrid(task, cands, direct_rows):
+    """Never worse than the direct answer. Per test input: a verified candidate whose output carries no
+    plausibility flag becomes attempt_1 and the direct answer attempt_2; otherwise the direct answer stays
+    attempt_1 and attempt_2 is the agent's best remaining output (flagged-verified, then best partial)."""
+    select_attempts(task, cands, direct_rows)  # sets c["flags"] on verified candidates
+    verified = [c for c in cands if c["verified"]]
+    partial = sorted((c for c in cands if not c["verified"]), key=lambda c: -c["frac"])
+    rows = []
+    for i in range(len(task["test"])):
+        d1, d2 = direct_rows[i]["attempt_1"], direct_rows[i]["attempt_2"]
+        good, flagged, best = Counter(), [], {}
+        for pos, c in enumerate(verified):
+            out = c["test_outputs"][i]
+            if out is None:
+                continue
+            if c["flags"][i]:
+                flagged.append(out)
+            else:
+                k = json.dumps(out)
+                good[k] += 1
+                best[k] = min(best.get(k, (1 << 60, pos)), (len(c.get("code", "")), pos))
+        goods = [json.loads(k) for k in sorted(good, key=lambda k: (-good[k], *best[k]))]
+        agent = goods + flagged + [c["test_outputs"][i] for c in partial]
+        a1 = goods[0] if goods else d1
+        rest = ([d1, d2] + agent) if goods else (agent + [d2])
+        a2 = next((g for g in rest if g is not None and g != a1), a1)
+        rows.append({"attempt_1": a1, "attempt_2": a2})
     return rows
 
 

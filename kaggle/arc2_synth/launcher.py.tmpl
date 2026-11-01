@@ -6,14 +6,22 @@ vLLM from the attached wheelhouse, serves the attached Qwen model, proves it can
 retried off if the first burst fails), and overwrites submission.json incrementally as tasks solve.
 The submission is validated and repaired at the end. Never exits non-zero.
 
+Kaggle sets KAGGLE_IS_COMPETITION_RERUN only when it re-executes the notebook on the hidden test set.
+That scored rerun solves every test task into submission.json. Any other run (a push, an interactive
+run) is a dev run: it solves a small fixed slice of the public eval set into dev_submission.json,
+scores it when the solutions file is mounted, and leaves submission.json as the valid baseline.
+ARC_FORCE_RERUN=1/0 overrides the detection.
+
 Dry-run (no GPU, no install): set ARC_EXTERNAL_SERVER=http://host:port/v1 plus ARC_INPUT_ROOT and
 ARC_WORK; ARC_LIMIT / ARC_BUDGET_MIN / ARC_NPAR override the baked-in values.
 """
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -28,11 +36,23 @@ TOTAL_BUDGET_MIN = float(os.environ.get("ARC_BUDGET_MIN", "@@BUDGET@@"))  # whol
 N_PARALLEL = int(os.environ.get("ARC_NPAR", "@@NPAR@@"))
 MAX_TOKENS = @@MAX_TOKENS@@
 MTP = @@MTP@@                      # speculative tokens (0 = off)
-MODE = "@@MODE@@"                  # "direct" (answer grids), "synth" (verified programs), "agent" (tool-calling REPL) or "bench"
+MODE = "@@MODE@@"                  # "direct" (answer grids), "synth" (verified programs), "agent" (tool-calling REPL), "hybrid" or "bench"
+HYBRID_FRAC = float(os.environ.get("ARC_HYBRID_DIRECT_FRAC", "@@HYBRID_FRAC@@"))  # hybrid: direct pass's share of the budget
+HYBRID_MIN_P2_MIN = 1.0            # hybrid: phase 2 is skipped when less than this many minutes remain
 BENCH_CONFIGS = @@BENCH_CONFIGS@@  # bench: [{name, mode, effort, ...extra solver args}], run in order on one server
 BENCH_TASKS = int(os.environ.get("ARC_BENCH_TASKS", "@@BENCH_TASKS@@"))
+DEV_TASKS = int(os.environ.get("ARC_DEV_TASKS", "@@DEV_TASKS@@"))      # dev run: first N public-eval ids by sorted order
+DEV_BUDGET_MIN = float(os.environ.get("ARC_DEV_BUDGET_MIN", "@@DEV_BUDGET@@"))  # dev run: minutes after startup
+_force = os.environ.get("ARC_FORCE_RERUN")
+# sha256 of "\n".join(sorted task ids) of the PUBLIC placeholder arc-agi_test_challenges.json (240 ids, downloaded
+# 2026-11-01 with `kaggle competitions download -f arc-agi_test_challenges.json`). The scored rerun mounts the hidden
+# test file instead, whose ids differ. A second signal next to KAGGLE_IS_COMPETITION_RERUN: if the variable were ever
+# not set during the scored run, a file that is NOT the public placeholder still means "rerun", so the failure mode is
+# a wasted full run on a commit, never a silent baseline-only submission.
+PLACEHOLDER_SHA = os.environ.get("ARC_PLACEHOLDER_SHA", "0425e31f8c028fd6d6c2953fd5dbed115c065b8c657375a57f8b477c6f1d650c")
+RERUN = None  # decided once the test challenges file is known (see below)
 BENCH_BUDGET_MIN = float(os.environ.get("ARC_BENCH_BUDGET_MIN", "@@BENCH_BUDGET@@"))  # minutes after startup, all configs
-SERVES_TOOLS = MODE == "agent" or any(c.get("mode") == "agent" for c in BENCH_CONFIGS)  # vLLM needs the tool-call flags
+SERVES_TOOLS = MODE in ("agent", "hybrid") or any(c.get("mode") == "agent" for c in BENCH_CONFIGS)  # vLLM needs the tool-call flags
 SYNTH_ARGS = @@SYNTH_ARGS@@        # extra synth.py flags
 AGENT_ARGS = @@AGENT_ARGS@@        # extra synth_agent.py flags
 EFFORT = "@@EFFORT@@"              # default reasoning_effort; env ARC_EFFORT overrides
@@ -45,6 +65,8 @@ SRC = os.path.join(WORK, "src")
 OUT = os.path.join(WORK, "submission.json")
 T0 = time.time()
 server = None
+HB_SEC = float(os.environ.get("ARC_HB_SEC", "120"))
+ACTIVE_TRACE = None  # {"path", "t0", "cfg"} of the trace being written now; only agent runs emit traces (direct/synth do not)
 
 
 def log(*a):
@@ -71,6 +93,12 @@ if SERVES_TOOLS:
 
 challenges_path = baseline.find_challenges(INPUT_ROOT)
 baseline.main(["--challenges", challenges_path, "--out", OUT])
+with open(challenges_path) as _f:
+    IS_PLACEHOLDER = hashlib.sha256("\n".join(sorted(json.load(_f))).encode()).hexdigest() == PLACEHOLDER_SHA
+RERUN = _force in ("1", "true") or (_force is None and (bool(os.environ.get("KAGGLE_IS_COMPETITION_RERUN")) or not IS_PLACEHOLDER))
+log(f"run kind: {'RERUN (full)' if RERUN else 'DEV (small slice)'} | KAGGLE_IS_COMPETITION_RERUN set: "
+    f"{bool(os.environ.get('KAGGLE_IS_COMPETITION_RERUN'))} | test file is the public placeholder: {IS_PLACEHOLDER} | "
+    f"ARC_FORCE_RERUN: {_force}")
 log("baseline submission written; challenges at", challenges_path)
 
 
@@ -154,10 +182,35 @@ def smoke():
         return False
 
 
+VLLM_STATS = re.compile(r"Avg generation throughput: ([\d.]+) tokens/s.*?Running: (\d+) reqs, Waiting: (\d+) reqs, "
+                        r"GPU KV cache usage: ([\d.]+)%")
+
+
+def trace_heartbeat(gpu_mem):
+    """Append one `heartbeat` event to the active trace from the last vLLM stats line. Never raises."""
+    try:
+        tr = ACTIVE_TRACE
+        if not tr or not os.path.exists(tr["path"]):  # run_start must stay the first event
+            return
+        ev = {"ev": "heartbeat", "t": round(time.time() - tr["t0"], 3), "cfg": tr.get("cfg", "default"),
+              "tok_s": None, "running": None, "waiting": None, "kv_pct": None, "gpu_mem_mib": gpu_mem}
+        with contextlib.suppress(OSError), open(os.path.join(WORK, "vllm_server.log"), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 65536))
+            hits = VLLM_STATS.findall(f.read().decode("utf-8", "replace"))
+            if hits:
+                tok_s, running, waiting, kv = hits[-1]
+                ev.update(tok_s=float(tok_s), running=int(running), waiting=int(waiting), kv_pct=float(kv))
+        with open(tr["path"], "a", encoding="utf-8") as f:
+            f.write(json.dumps(ev) + "\n")  # one write call: a whole line, safe beside the solver's writer
+    except Exception:  # noqa: BLE001, S110 - observability only
+        pass
+
+
 def heartbeat():
     """One line per 2 min into the kernel log (readable after the run): GPU state and vLLM log age."""
     while True:
-        time.sleep(120)
+        time.sleep(HB_SEC)
         gpu = ""
         try:
             gpu = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,utilization.gpu", "--format=csv,noheader,nounits"],
@@ -167,6 +220,8 @@ def heartbeat():
         path = os.path.join(WORK, "vllm_server.log")
         age = int(time.time() - os.path.getmtime(path)) if os.path.exists(path) else -1
         log(f"HB gpu(mem MiB,util %)={gpu} vllm_log_age={age}s")
+        mem = re.match(r"\s*(\d+)", gpu)
+        trace_heartbeat(int(mem.group(1)) if mem else None)
 
 
 def launch_server(mtp, max_len):
@@ -273,10 +328,13 @@ class Tee:
         sys.__stdout__.flush()
 
 
-def bench_sample():
-    """Fixed sample: every k-th public-eval task by sorted id (stable), plus solutions when mounted."""
+def bench_sample(n=None, first=False, name="bench_challenges.json"):
+    """Fixed sample: every k-th (or the first, for dev runs) public-eval task by sorted id, plus solutions when mounted."""
+    n = n or BENCH_TASKS
     ch_path = find_dir_with(INPUT_ROOT, lambda d, f: "arc-agi_evaluation_challenges.json" in f)
     ch_file = os.path.join(ch_path, "arc-agi_evaluation_challenges.json") if ch_path else challenges_path
+    if not ch_path:
+        log("eval challenges file not found; sampling the test challenges instead")
     with open(ch_file) as f:
         challenges = json.load(f)
     sol_file = os.path.join(os.path.dirname(ch_file), "arc-agi_evaluation_solutions.json")
@@ -285,12 +343,34 @@ def bench_sample():
         with open(sol_file) as f:
             solutions = json.load(f)
     ids = sorted(challenges)
-    ids = ids[:: max(1, len(ids) // max(1, BENCH_TASKS))][:BENCH_TASKS]
-    sample = os.path.join(WORK, "bench_challenges.json")
+    ids = ids[:n] if first else ids[:: max(1, len(ids) // max(1, n))][:n]
+    sample = os.path.join(WORK, name)
     with open(sample, "w") as f:
         json.dump({t: challenges[t] for t in ids}, f)
-    log(f"bench sample: {len(ids)} tasks from {ch_file}; solutions: {bool(solutions)}")
-    return sample, ids, solutions
+    log(f"sample: {len(ids)} tasks from {ch_file}; solutions: {bool(solutions)}")
+    return sample, ids, solutions, sol_file if solutions else None
+
+
+def trace_args(path, solutions_file, cfg="default"):
+    """`--trace` (and `--solutions` when known) for synth_agent; the trace's clock for heartbeats starts here."""
+    global ACTIVE_TRACE
+    ACTIVE_TRACE = {"path": path, "t0": time.time(), "cfg": cfg}
+    return ["--trace", path, "--cfg", cfg] + (["--solutions", solutions_file] if solutions_file else [])
+
+
+def trace_done(path):
+    """Bench: log whether the finished trace validates. Never fatal."""
+    global ACTIVE_TRACE
+    ACTIVE_TRACE = None
+    try:
+        import importlib.util  # trace.py is loaded by path: the stdlib has a module named `trace`
+        spec = importlib.util.spec_from_file_location("arc2_trace_check", os.path.join(SRC, "trace.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        n, errs = mod.validate_file(path)
+        log(f"trace ok {n} events" if not errs else f"trace {os.path.basename(path)} invalid ({n} events): {errs[:3]}")
+    except Exception as e:  # noqa: BLE001 - e.g. a bundle without trace.py
+        log("trace check skipped:", repr(e))
 
 
 def bench_score(out, ids, solutions):
@@ -308,7 +388,7 @@ def bench_score(out, ids, solutions):
 
 
 def bench_run():
-    sample, ids, solutions = bench_sample()
+    sample, ids, solutions, sol_file = bench_sample()
     bench_t0 = time.time()
     results = []
     for i, cfg in enumerate(BENCH_CONFIGS):
@@ -329,6 +409,9 @@ def bench_run():
             mode, ([], llm_solve))
         skip = {"name", "mode", "effort", "n_parallel", "max_tokens"}
         extra = [x for k, v in cfg.items() if k not in skip for x in (f"--{k.replace('_', '-')}", str(v))]
+        trace = os.path.join(WORK, f"trace_{name}.jsonl") if mode == "agent" and solver is not None else None
+        if trace:
+            extra += trace_args(trace, sol_file, name)
         log(f"bench {name}: mode={mode} args={extra}")
         tee, t0 = Tee(), time.time()
         res = {"name": name, "mode": mode, "tasks": len(ids)}
@@ -339,6 +422,8 @@ def bench_run():
             log(f"bench {name} crashed:", repr(e))
             res["error"] = repr(e)
         res["wall_s"] = round(time.time() - t0)
+        if trace and os.path.exists(trace):
+            trace_done(trace)
         summary = {}
         for line in "".join(tee.buf).splitlines():
             if line.startswith("SUMMARY "):
@@ -359,21 +444,98 @@ def bench_run():
             json.dump(results, f, indent=1)
 
 
+def solve_args(challenges, out, deadline_min, floor=1.0, log_dir="llm_logs"):
+    args = ["--challenges", challenges, "--out", out, "--log-dir", os.path.join(WORK, log_dir),
+            "--base-url", BASE_URL, "--n-parallel", str(N_PARALLEL), "--max-tokens", str(MAX_TOKENS),
+            "--deadline-min", str(max(floor, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", EFFORT)]
+    return args + (["--model", os.environ.get("ARC_MODEL", "qwen")] if EXTERNAL else [])
+
+
+def hybrid_order(challenges, log_dir):
+    """Phase 2 task order: least sure direct answers first (no parsed answer, then a forced answer, then the
+    rest), each group easiest first. Falls back to easiest-first when a task has no readable direct log."""
+    def doubt(tid):
+        try:
+            with open(os.path.join(log_dir, f"{tid}.json")) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            return 2  # never ran (deadline) or unreadable: no direct answer
+        if not d.get("parsed"):
+            return 2
+        return 1 if (d.get("usage") or {}).get("retried") else 0
+
+    return sorted(challenges, key=lambda t: (-doubt(t), synth.task_size(challenges[t]), t))
+
+
+def hybrid_run(challenges, out, deadline_min, limit=0, trace=None, sol_file=None):
+    """Phase 1: the direct solver over every task for HYBRID_FRAC of `deadline_min` (out always holds a full valid
+    file). Phase 2: the agent on whatever time remains, the direct rows as its fallback, never replacing a direct
+    answer with a worse one (synth.select_hybrid). Both phases stop at the same absolute deadline."""
+    end = time.time() + deadline_min * 60
+    p1_min = max(0.0, deadline_min * min(max(HYBRID_FRAC, 0.0), 1.0))
+    log(f"HYBRID phase 1 (direct): {p1_min:.1f} of {deadline_min:.1f} min")
+    args = solve_args(challenges, out, p1_min, floor=0.02, log_dir="llm_logs")
+    llm_solve.main(args + (["--limit", str(limit)] if limit else []))
+    left = (end - time.time()) / 60
+    if left < HYBRID_MIN_P2_MIN:
+        log(f"HYBRID phase 2 skipped: {left:.1f} min left (< {HYBRID_MIN_P2_MIN:g}); direct answers stand")
+        return
+    with open(challenges) as f:
+        order = hybrid_order(json.load(f), os.path.join(WORK, "llm_logs"))
+    order_file = out + ".order.json"
+    with open(order_file, "w") as f:
+        json.dump(order, f)
+    log(f"HYBRID phase 2 (agent): {left:.1f} min, least-sure-first order {order[:5]}...")
+    args = solve_args(challenges, out, left, log_dir="agent_logs") + ["--fallback-submission", out, "--order-file", order_file]
+    if limit:
+        args += ["--limit", str(limit)]
+    synth_agent.main(args + AGENT_ARGS + trace_args(trace or os.path.join(WORK, "trace.jsonl"), sol_file, "hybrid"))
+
+
+def dev_run():
+    """Not a scored rerun: solve a small public-eval slice into dev_submission.json and log its score."""
+    sample, ids, solutions, sol_file = bench_sample(DEV_TASKS, first=True, name="dev_challenges.json")
+    log(f"RERUN: dev slice of {len(ids)} eval tasks (not a scored rerun); budget {DEV_BUDGET_MIN:g} min; "
+        f"submission.json stays the baseline")
+    out, t0 = os.path.join(WORK, "dev_submission.json"), time.time()
+    solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(
+        MODE, (llm_solve, []))
+    if MODE == "agent":
+        extra = extra + trace_args(os.path.join(WORK, "trace.jsonl"), sol_file, "agent")
+    budget = min(DEV_BUDGET_MIN, TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15)
+    try:
+        if MODE == "hybrid":
+            hybrid_run(sample, out, max(1.0, budget), trace=os.path.join(WORK, "trace.jsonl"), sol_file=sol_file)
+        else:
+            solver.main(solve_args(sample, out, budget) + extra)
+    finally:
+        sc = bench_score(out, ids, solutions) if solutions is not None and os.path.exists(out) else None
+        log(f"DEV score: solved {sc[0]} of {sc[1]} test inputs (pass@2) on {len(ids)} eval tasks in "
+            f"{round(time.time() - t0)} s" if sc else "DEV: unscored (no solutions file)")
+
+
 try:
     if MODE == "bench":
         bench_run()
+    elif not RERUN:
+        dev_run()
     else:
-        deadline_min = TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15
-        args = ["--challenges", challenges_path, "--out", OUT, "--log-dir", os.path.join(WORK, "llm_logs"),
-                "--base-url", BASE_URL, "--n-parallel", str(N_PARALLEL), "--max-tokens", str(MAX_TOKENS),
-                "--deadline-min", str(max(1.0, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", EFFORT)]
-        if EXTERNAL:
-            args += ["--model", os.environ.get("ARC_MODEL", "qwen")]
-        if LIMIT:
-            args += ["--limit", str(LIMIT)]
-        solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(
-            MODE, (llm_solve, []))
-        solver.main(args + extra)
+        with open(challenges_path) as f:
+            log(f"RERUN: full run over {len(json.load(f))} test tasks")
+        sol = os.path.join(os.path.dirname(challenges_path), "arc-agi_evaluation_solutions.json")
+        sol = sol if os.path.exists(sol) else None
+        left_min = TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15
+        if MODE == "hybrid":
+            hybrid_run(challenges_path, OUT, left_min, LIMIT, os.path.join(WORK, "trace.jsonl"), sol)
+        else:
+            args = solve_args(challenges_path, OUT, left_min)
+            if LIMIT:
+                args += ["--limit", str(LIMIT)]
+            solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(
+                MODE, (llm_solve, []))
+            if MODE == "agent":  # direct and synth do not emit traces
+                extra = extra + trace_args(os.path.join(WORK, "trace.jsonl"), sol, "agent")
+            solver.main(args + extra)
 except Exception as e:  # noqa: BLE001 - never lose the submission to a solver crash
     log("solver crashed:", repr(e))
 finally:

@@ -264,7 +264,7 @@ def run(args):
                   f"tok={usage.get('completion_tokens')} fin={usage.get('finish_reason')} retry={retried} "
                   f"{dt:.0f}s", flush=True)
         with open(os.path.join(args.log_dir, f"{tid}.json"), "w") as f:
-            json.dump({"usage": usage, "error": err, "elapsed": dt, "text": text,
+            json.dump({"usage": usage, "error": err, "elapsed": dt, "text": text, "parsed": bool(parsed),
                        "reasoning_tail": reasoning[-1500:]}, f)
 
     flush()

@@ -192,3 +192,38 @@ sequences).
 ## Pre-flight gate
 
 Run `make arc2-preflight` (or `uv run python scripts/arc2_preflight.py [--fast] [--modes direct,synth,agent,bench]`) before pushing any notebook to Kaggle. It runs ruff, the Kaggle tests, builds each mode and checks `kernel-metadata.json` (L4, no internet, private, one competition source, wheelhouse and Qwen sources) and `main.py` (compiles, no `@@` placeholders, under 1 MB, bundle holds the expected modules), then dry-runs each built notebook against a fake OpenAI server and requires a validated 3-task `submission.json`. It stops at the first failure and ends with `PREFLIGHT OK` or `PREFLIGHT FAILED: <step>`; `--fast` runs only the launcher and agent tests. It cannot see real vLLM, the real Kaggle mounts or the wheelhouse install.
+
+## Dev run vs scored rerun
+
+The notebook (`launcher.py.tmpl`) checks `KAGGLE_IS_COMPETITION_RERUN`, which Kaggle sets only when it
+re-executes a submitted notebook on the hidden test set. Pushing the kernel or running it interactively
+does not set it.
+
+- Scored rerun: solves every test task into `submission.json` with the baked budget (log line `RERUN: full run over N test tasks`).
+- Anything else (dev run): solves the first `--dev-tasks` (default 4, env `ARC_DEV_TASKS`) public-eval tasks
+  by sorted id within `--dev-budget-min` (default 20, env `ARC_DEV_BUDGET_MIN`) into `dev_submission.json`,
+  then logs `DEV score: solved A of B test inputs (pass@2) ...` (or `DEV: unscored` without the solutions file).
+  `submission.json` stays the valid baseline for the test tasks. Agent mode still writes `trace.jsonl`.
+- Both modes write the baseline for the test file first and validate/repair `submission.json` at the end.
+- `ARC_FORCE_RERUN=1`/`0` overrides detection (tests, dry runs). Bench mode ignores all of this.
+
+## Pre-submission checklist (a zero score is almost always setup, not model quality)
+
+1. `make arc2-preflight` passes (builds every mode, dry-runs the launcher, checks bundle size).
+2. Kernel metadata: `machine_shape` is `NvidiaL4`, internet off, model + wheelhouse sources attached, kernel version pinned.
+3. The launcher writes the baseline `submission.json` first, then overwrites it only with a validated full answer set.
+4. Run kind: the scored rerun is detected by `KAGGLE_IS_COMPETITION_RERUN` **or** by the mounted test file not matching the public
+   placeholder's id fingerprint (`PLACEHOLDER_SHA`). The log line `run kind: ...` states which. If the placeholder is ever
+   replaced upstream, set `ARC_PLACEHOLDER_SHA` (or re-fingerprint) before submitting.
+5. Total budget at most ~11h (`deadline_min = total - elapsed - 15`); the session limit is ~12h.
+6. Canary first: submit a short run (about 100 min budget) and confirm it scores above 0 before spending a long run.
+7. One submission per day plus queue delays: plan the canary and the long run on separate days.
+
+## Hybrid mode (safe floor for a scored run)
+
+`build_kernel.py --mode hybrid [--hybrid-direct-frac 0.45]` (env `ARC_HYBRID_DIRECT_FRAC`): phase 1 runs the direct solver over
+all tasks for that share of the budget (`deadline_min = total - elapsed - 15`), writing `submission.json` as it goes; phase 2 runs
+the agent on the rest (agent flags such as `--max-turns`, `--agent-args` apply here), least-sure direct answers first (no parsed
+answer, then a forced answer), skipped when under 1 minute remains. Both phases stop at the same absolute deadline. Per test input
+the merge (`synth.select_hybrid`) puts a verified, non-plausibility-flagged agent output in attempt_1 with the direct answer as
+attempt_2; otherwise the direct answer stays attempt_1 and attempt_2 is the agent's best other output. Dev runs use the same flow on the eval slice.

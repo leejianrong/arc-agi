@@ -346,3 +346,51 @@ def test_tight_budget_attempts_the_head_not_skips_it(monkeypatch):
     assert lim is not None and lim[0] >= 2048
     now[0] = 330.0  # only 10 s of working time left: now the tail is skipped
     assert b.call_limits(3000, 600) is None
+
+
+def test_plausibility_leaked_colour():
+    t = _task([([[8, 1, 2]], [[1, 2, 2]]), ([[8, 3, 4]], [[4, 3, 3]])], [[8, 5, 6]])
+    assert _flags(t, [[5, 6, 6]])[0] == 0
+    n, why = _flags(t, [[8, 6, 6]])
+    assert n == 1 and "leaked colour 8 (in every train input, in no train output)" in why[0]
+    one = _task([([[8, 1, 2]], [[1, 2, 2]])], [[8, 5, 6]])  # needs two train pairs
+    assert _flags(one, [[8, 6, 6]])[0] == 0
+    kept = _task([([[8, 1]], [[8, 1]]), ([[8, 3]], [[3, 8]])], [[8, 5]])  # 8 appears in an output
+    assert _flags(kept, [[5, 8]])[0] == 0
+
+
+def test_plausibility_change_envelope():
+    base = [[1] * 10 for _ in range(10)]
+    one = [r[:] for r in base]
+    one[0][0] = 2
+    t = _task([(base, one), (base, one)], base)  # train changes 1% of cells
+    ok = [r[:] for r in base]
+    ok[0][0] = 2
+    ok[1][1] = 2  # 2% < 3 * 1%
+    assert _flags(t, ok)[0] == 0
+    big = [r[:] for r in base]
+    for c in range(6):
+        big[0][c] = 2  # 6%
+    n, why = _flags(t, big)
+    assert n == 1 and "changes 6% of cells (train changes at most 1%)" in why[0]
+    resized = _task([([[1, 2]], [[1, 2, 1, 2]]), ([[3]], [[3, 3]])], [[1]])  # not same-shape: rule off
+    assert _flags(resized, [[1, 1]])[0] == 0
+    assert _flags(t, [[2]])[0] >= 1  # shape change is caught by the shape rule, not the envelope
+    assert all("changes" not in w for w in _flags(t, [[2]])[1])
+
+
+def test_change_envelope_catches_the_135a2760_proportions():
+    """Real case: train changed 1.5% and 1.9% of cells; the verified-but-wrong program changed 5.6% of the test grid
+    (threshold at k=2.5 is 4.9%; k=3 would not have flagged it)."""
+    def grid_with(n_changed, h, w):
+        g = [[1] * w for _ in range(h)]
+        for i in range(n_changed):
+            g[i // w][i % w] = 2
+        return g
+    base_a, base_b = [[1] * 13 for _ in range(5)], [[1] * 22 for _ in range(21)]
+    t = _task([(base_a, grid_with(1, 5, 13)), (base_b, grid_with(9, 21, 22))], [[1] * 29 for _ in range(29)])
+    over = grid_with(47, 29, 29)   # 5.6% of 841 cells
+    under = grid_with(30, 29, 29)  # 3.6%, inside the envelope
+    n, why = _flags(t, over)
+    assert n == 1 and "changes 6% of cells" in why[0]
+    assert _flags(t, under)[0] == 0
