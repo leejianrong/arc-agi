@@ -531,3 +531,24 @@ def test_heartbeat_never_writes_after_run_end(tmp_path):
         f.write('{"ev": "run_end", "t": 1.0}\n')
     ns["trace_heartbeat"](1)
     assert trace.read_text().count("heartbeat") == 1
+
+
+def test_watchdog_relaunches_a_dead_server_a_bounded_number_of_times():
+    import ast
+    import re
+
+    src = re.sub(r"@@\w+@@", "0", (ROOT / "kaggle/arc2_synth/launcher.py.tmpl").read_text())
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "watchdog_step")
+    calls = []
+    ns = {"MAX_RESTARTS": 2, "log": lambda *a: None}
+    exec(compile(ast.Module([fn], []), "launcher", "exec"), ns)  # noqa: S102 - our own template function
+    step = ns["watchdog_step"]
+    relaunch = lambda: calls.append(1) or True
+    assert step(0, relaunch, lambda: True, lambda: False) == 0 and not calls  # alive: nothing
+    assert step(0, relaunch, lambda: False, lambda: True) == 0 and not calls  # finishing: leave it down
+    n = step(0, relaunch, lambda: False, lambda: False)
+    n = step(n, relaunch, lambda: False, lambda: False)
+    assert n == 2 and len(calls) == 2
+    assert step(n, relaunch, lambda: False, lambda: False) == 2 and len(calls) == 2  # capped
+    boom = lambda: (_ for _ in ()).throw(RuntimeError("x"))
+    assert step(0, boom, lambda: False, lambda: False) == 1  # a failing relaunch never kills the watchdog

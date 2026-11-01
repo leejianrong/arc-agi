@@ -84,6 +84,7 @@ def test_dead_server_still_yields_valid_file(tmp_path, monkeypatch):
         return real(*a, **k)
 
     monkeypatch.setattr(ta.ls, "chat_full", dying)
+    monkeypatch.setattr(sa, "RETRY_PAUSE", 0.001)  # the real pause is 20 s; a server that never returns exhausts the retries
     _, tp = _run(tmp_path, monkeypatch, [ta.call_reply(ta.tc("python", "1"))])
     _, errs = tr.validate_file(str(tp))
     assert errs == []
@@ -126,3 +127,22 @@ def test_without_trace_no_file_and_no_events(tmp_path, monkeypatch):
 def test_cfg_flag_labels_every_event(tmp_path, monkeypatch):
     _, tp = _run(tmp_path, monkeypatch, [ta.call_reply(ta.tc("submit", ta.GOOD))], None, "--cfg", "agent_xhigh_fresh")
     assert {e["cfg"] for e in _events(tp)} == {"agent_xhigh_fresh"}
+
+
+def test_server_restart_midway_does_not_end_the_attempt(tmp_path, monkeypatch):
+    """vLLM restarts show as refused connections for a while; the turn waits and the attempt carries on."""
+    real, calls = ta.ls.chat_full, []
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) in (2, 3):
+            raise urllib.error.URLError("connection refused")
+        return real(*a, **k)
+
+    monkeypatch.setattr(ta.ls, "chat_full", flaky)
+    monkeypatch.setattr(sa, "RETRY_PAUSE", 0.001)
+    _, tp = _run(tmp_path, monkeypatch, [ta.call_reply(ta.tc("python", "1")), ta.call_reply(ta.tc("submit", ta.GOOD))])
+    _, errs = tr.validate_file(str(tp))
+    assert errs == []
+    assert [e["finish"] for e in _events(tp) if e["ev"] == "turn"] == ["tool_calls", "tool_calls"]
+    assert next(e for e in _events(tp) if e["ev"] == "attempt_end")["status"] == "verified"

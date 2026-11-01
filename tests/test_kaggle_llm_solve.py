@@ -88,7 +88,7 @@ def test_unreachable_model_still_writes_valid_fallback(tmp_path):
     _, argv = _args(tmp_path, srv)
     srv.shutdown()
     srv.server_close()
-    ls.main(argv)
+    ls.main([*argv, "--retry-pause", "0.01"])
     out = json.loads((tmp_path / "o.json").read_text())
     assert set(out["t1"][0]) == {"attempt_1", "attempt_2"}
 
@@ -129,3 +129,42 @@ def test_call_cap_follows_the_time_left_so_a_slow_stream_still_gets_a_forced_ans
              "--n-parallel", "1", "--force-answer", "0"])
     srv.shutdown()
     assert 2900 <= seen[0] <= 3000  # (600 - 300) s share x 10 tok/s, far below the 40000 ceiling
+
+
+def test_server_restart_midway_loses_no_task(tmp_path):
+    """A vLLM crash/restart shows as refused connections for minutes; the task must wait and be answered afterwards."""
+    good = '```json\n{"outputs": [{"attempt_1": [[8, 7], [6, 5]], "attempt_2": [[0, 0], [0, 0]]}]}\n```'
+    srv = _server(good)
+    port = srv.server_port
+    srv.shutdown()
+    srv.server_close()  # down at first
+    started = []
+
+    def revive():
+        import time as _t
+        _t.sleep(0.5)
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                data = json.dumps({"choices": [{"message": {"content": good, "reasoning": "r"}, "finish_reason": "stop"}],
+                                   "usage": {"completion_tokens": 5}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        s2 = HTTPServer(("127.0.0.1", port), H)
+        started.append(s2)
+        s2.serve_forever()
+
+    threading.Thread(target=revive, daemon=True).start()
+    class Fake:
+        server_port = port
+    _, argv = _args(tmp_path, Fake)
+    ls.main([*argv, "--retry-pause", "0.2"])
+    out = json.loads((tmp_path / "o.json").read_text())
+    assert out["t1"][0]["attempt_1"] == [[8, 7], [6, 5]]
+    started[0].shutdown()
