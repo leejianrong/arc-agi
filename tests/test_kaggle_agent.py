@@ -324,10 +324,12 @@ def test_main_persist_flag_default_and_zero(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(sa, "_default_repl", lambda task, persist=True: seen.append(persist) or StubRepl(task, persist))
     for extra, want in (([], True), (["--persist", "0"], False)):
-        srv, _ = server([call_reply(tc("python", "1")), call_reply(tc("submit", GOOD))])
-        _main(tmp_path, srv, *extra)
+        srv, requests = server([call_reply(tc("python", "1")), call_reply(tc("submit", GOOD))])
+        n = len(seen)
+        summary, _ = _main(tmp_path, srv, *extra)
         srv.shutdown()
-        assert seen[-1] is want
+        assert requests and summary["verified"] == 1  # the model was actually called under the default reserve
+        assert len(seen) == n + 1 and seen[-1] is want
 
 
 # Suspect-submit loop: train outputs never contain 9, the test input does.
