@@ -78,6 +78,8 @@ CAP_HINT = ("Your per-turn thinking limit was hit. Stop analysing: call python t
 NUDGE = ("\n\n[{n} python calls without a submit. Submitting is free and returns a cell diff: submit your best "
          "transform now, then refine it.]")
 REPEAT_HINT = "You have made the same call three times in a row with the same result. Change approach."
+FORCE_PROMPT = ("Time is running out and you have not submitted anything. Stop exploring now and call submit(code) "
+                "with your best `def transform(grid)`; a partial rule is fine, the reply shows what to fix.")
 RESCUE_PROMPT = ("Out of thinking budget. Reply now, without further analysis, with your best program as a "
                  "submit(code) call.")
 
@@ -246,8 +248,10 @@ class Control(Hooks):
     keep_recent: int = 6        # messages after the head that eviction never touches
     rescue: bool = True         # one no-think turn asking for submit(code) before an attempt ends
     rescue_tokens: int = 8192
+    rescue_min_tokens: int = 512  # skip a rescue/forced turn when the time left allows fewer tokens than this
     overflow_retry: bool = True  # HTTP 400 over context: shrink budget by a quarter, trim, retry once
     repeat_guard: bool = True   # three identical tool-call turns in a row: ask for a new approach once
+    submit_frac: float = 0.5    # no submit yet after this share of the attempt's time share: force one (0 = off)
 
     def tool_result(self, name, text, state):
         if name != "python" or not self.nudge_every:
@@ -335,7 +339,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                 attempt_tokens=120000, request_timeout=3600, temperature=0.6, effort="", thinking_budget=0,
                 sandbox_timeout=10, repl_factory=None, hooks=None, on_cand=None, max_hints=1,
                 tool_timeout=None, control=None, persist=1, trace=None, task_id="", att_idx=0,
-                suspect_rounds=2):
+                suspect_rounds=2, progress=1):
     """One conversation. Returns an Attempt (cands feed ``synth.select_attempts``).
     ``trace``: optional ``trace.TraceWriter``; task_id/att_idx label its events."""
     pre = f"[task {tag}] " if tag else ""
@@ -353,6 +357,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
     state = {"attempt": att}
     sigs, overflowed = [], False
     t_att = sy.clock()
+    submit_by = t_att + budget.share() * ctl.submit_frac if ctl.submit_frac else None
 
     def emit(ev, **f):
         if trace:
@@ -383,7 +388,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
 
     def push_submissions():
         """Mirror the submit history into the REPL namespace (only REPLs that support it)."""
-        if repl is None or not hasattr(repl, "push") or not hist:
+        if not progress or repl is None or not hasattr(repl, "push") or not hist:
             return
         keep = {e["n"] for e in hist[-SUBMISSIONS_KEPT:]} | {_best(hist)["n"]}
         subs = [dict(e, code=e["code"][:CODE_CAP]) for e in hist if e["n"] in keep]
@@ -431,7 +436,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
                      "Fix the rule so it generalizes (the test input is a different instance of the same puzzle), "
                      "then submit again.")
         else:
-            prog, gave = progress_block(hist, hinted)
+            prog, gave = progress_block(hist, hinted) if progress else ("", False)
             hinted = hinted or gave
             reply = submit_reply(cand, task, progress=prog)
         seen[key] = (att.submits, reply)
@@ -472,20 +477,22 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
              reasoning=r["reasoning"], content=r["content"],
              tool_calls=[{"id": c["id"], "name": c["name"], "args": c["arguments"]} for c in r["tool_calls"]])
 
-    def rescue(why):
-        """One last request with thinking off, asking for the best submit; a call or fenced code counts."""
-        lim = budget.call_limits(ctl.rescue_tokens, request_timeout)
-        if not ctl.rescue or att.events.get("rescue") or sy.clock() > deadline or lim is None:
+    def ask_submit(key, why, prompt):
+        """One last request with thinking off, asking for the best submit; a call or fenced code counts. Its call
+        limits come from the time left until the deadline, not from the task's time share (the share is what ran out)."""
+        left_s = deadline - sy.clock() - 2
+        toks = min(ctl.rescue_tokens, int(left_s * max(budget.rate(), 1.0)))
+        if not ctl.rescue or att.events.get(key) or toks < ctl.rescue_min_tokens:
             return
-        att.events["rescue"] = why
-        emit("rescue", turn=len(att.turns) + 1, reason=why)
-        att.messages.append({"role": "user", "content": pre + RESCUE_PROMPT})
-        info = {"turn": len(att.turns), "rescue": why}
+        att.events[key] = why
+        emit("rescue", turn=len(att.turns) + 1, reason=f"{key}:{why}")
+        att.messages.append({"role": "user", "content": pre + prompt})
+        info = {"turn": len(att.turns), key: why}
         att.turns.append(info)
         t_r = sy.clock()
         try:
-            r = ls.chat_full(base_url, model, hooks.prepare(att.messages, state), lim[0], lim[1], temperature,
-                             {"enable_thinking": False}, tools=TOOLS, tool_choice="auto")
+            r = ls.chat_full(base_url, model, hooks.prepare(att.messages, state), toks, max(15, min(request_timeout, left_s)),
+                             temperature, {"enable_thinking": False}, tools=TOOLS, tool_choice="auto")
         except Exception as e:  # noqa: BLE001
             info["error"] = repr(e)
             emit_turn(None, 0.0, error=e)
@@ -493,25 +500,50 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
         emit_turn(r, sy.clock() - t_r)
         att.tokens += r["completion_tokens"]
         budget.add_tokens(r["completion_tokens"])
-        code = next((c["arguments"]["code"] for c in r["tool_calls"] if c["name"] == "submit"
+        calls = r["tool_calls"]
+        code = next((c["arguments"]["code"] for c in calls if c["name"] == "submit"
                      and isinstance(c["arguments"].get("code"), str)), None) or sy.extract_code(r["content"])
         info.update(tokens=r["completion_tokens"], submit=bool(code and code.strip()))
+        if calls:  # keep the history well formed for later turns: the call needs its reply
+            att.messages.append({"role": "assistant", "content": r["content"] or None, "tool_calls": [
+                {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])}}
+                for c in calls]})
+        else:
+            att.messages.append({"role": "assistant", "content": r["content"] or "(no reply)"})
         if info["submit"]:
-            submit(code)
+            reply = submit(code)
+            for c in calls:
+                att.messages.append({"role": "tool", "tool_call_id": c["id"], "content": pre + reply})
+            if not calls:
+                att.messages.append({"role": "user", "content": pre + reply})
             if att.verified:
                 att.status = "verified"
+        else:
+            for c in calls:
+                att.messages.append({"role": "tool", "tool_call_id": c["id"], "content": pre + "(not run)"})
+
+    def rescue(why):
+        ask_submit("rescue", why, RESCUE_PROMPT)
 
     try:
         for _ in range(max_turns):
             if sy.clock() > deadline:
                 att.status = "deadline"
                 break
+            if (submit_by and not att.submits and sy.clock() > submit_by and ctl.rescue
+                    and not att.events.get("force")):
+                ask_submit("force", "time", FORCE_PROMPT)
+                if att.verified and not att.pending:
+                    att.status = "verified"
+                    break
             left = attempt_tokens - att.tokens
             limits = budget.call_limits(min(max_tokens, left), request_timeout) if left >= 1024 else None
             if limits is None:
                 att.status = "no_budget"
                 if left < 1024:
                     rescue("tokens")
+                elif not att.submits:
+                    rescue("time")
                 break
             info = {"turn": len(att.turns)}
             att.turns.append(info)
@@ -643,7 +675,8 @@ def solve_task(task, args, deadline, on_update=None, fallback_rows=None, tag="",
             request_timeout=args.request_timeout, temperature=args.temperature, effort=args.effort,
             thinking_budget=args.thinking_budget, sandbox_timeout=args.sandbox_timeout,
             repl_factory=repl_factory, hooks=hooks, persist=getattr(args, "persist", 1),
-            suspect_rounds=getattr(args, "suspect_rounds", 2),
+            suspect_rounds=getattr(args, "suspect_rounds", 2), progress=getattr(args, "progress", 1),
+            control=hooks if isinstance(hooks, Control) else Control(submit_frac=getattr(args, "submit_frac", 0.5)),
             on_cand=lambda c: (cands.append(c), update()), trace=trace, task_id=task_id, att_idx=idx)
         logs.append(dict(att.log(), turns_detail=att.turns))
     rows = update()
@@ -789,6 +822,10 @@ def main(argv=None):
     ap.add_argument("--order", choices=["easy", "given"], default="easy")
     ap.add_argument("--log-dir", default="agent_logs")
     ap.add_argument("--persist", type=int, choices=[0, 1], default=1, help="python variables survive between calls")
+    ap.add_argument("--progress", type=int, choices=[0, 1], default=1,
+                    help="submit replies carry the submission history and `submissions` is pushed into the REPL")
+    ap.add_argument("--submit-frac", type=float, default=0.5,
+                    help="no submit after this share of a task's time share: ask for one now (0 = off)")
     ap.add_argument("--tag-prompts", type=int, default=0, help="prefix every user message with [task <id>]")
     ap.add_argument("--suspect-rounds", type=int, default=2,
                     help="per attempt: replies to a verified-but-implausible submit before accepting it (0 = off)")

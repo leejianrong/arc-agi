@@ -61,7 +61,8 @@ def serve(policy):
         def do_POST(self):
             req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             seen.append(json.loads(json.dumps(req)))  # snapshot: the agent mutates its list in place
-            kind, payload = policy(len(seen) - 1, req["messages"])
+            kind, payload, *delay = policy(len(seen) - 1, req["messages"])
+            time.sleep(delay[0] if delay else 0)
             if kind == "text":
                 msg = {"content": payload, "tool_calls": None}
             else:
@@ -83,11 +84,12 @@ def serve(policy):
     return srv, seen
 
 
-def run_scenario(policy, persist=1, control=None, max_turns=40, sandbox_timeout=10):
+def run_scenario(policy, persist=1, control=None, max_turns=40, sandbox_timeout=10, time_limit=300, min_call=2048):
     srv, seen = serve(policy)
     try:
         att = sa.run_attempt(TASK, base_url=f"http://127.0.0.1:{srv.server_port}/v1", model="scripted",
-                             budget=sy.Budget(time.time() + 300, 1, 1), deadline=time.time() + 300, max_turns=max_turns,
+                             budget=sy.Budget(time.time() + time_limit, 1, 1, reserve_sec=1, min_call_tokens=min_call),
+                             deadline=time.time() + time_limit, max_turns=max_turns,
                              persist=persist, control=control, tool_timeout=sandbox_timeout, sandbox_timeout=sandbox_timeout)
     finally:
         srv.shutdown()
@@ -262,6 +264,46 @@ def sc_long(persist=1):
     return _seq(*steps), {"persist": persist, "control": ctl}, check
 
 
+def _slow_explorer(trigger, answer):
+    """Explores with slow python turns (the model 'thinks' for a while) until the harness asks for a submit."""
+    def pol(i, msgs):
+        last = str(msgs[-1].get("content"))
+        if trigger in last:
+            return ("submit", answer)
+        return ("python", f"print({i})", 2.5)
+    return pol
+
+
+def sc_forced_submit():
+    """No submit by half of the time share: the harness asks for one while there is still time to refine."""
+    pol = _slow_explorer("Time is running out", program(1))
+
+    def check(att, seen):
+        f = []
+        if att.events.get("force") != "time":
+            f.append(f"no forced-submit turn: events={att.events}")
+        if att.submits < 1:
+            f.append("attempt ended with zero submits despite the forced-submit rule")
+        if not any("Time is running out" in str(m.get("content")) for m in seen[-1]["messages"]):
+            f.append("the forced-submit prompt never reached the model")
+        return f
+    return pol, {"time_limit": 14, "min_call": 64, "control": sa.Control(rescue_min_tokens=16, nudge_every=0)}, check
+
+
+def sc_time_exhausted_rescue():
+    """With the forced-submit rule off, running out of time still ends with a rescue turn that can submit."""
+    pol = _slow_explorer("Out of thinking budget", program(1))
+
+    def check(att, seen):
+        f = []
+        if att.events.get("rescue") != "time":
+            f.append(f"no rescue turn when the time share ran out: events={att.events}, status={att.status}")
+        if att.submits < 1:
+            f.append("attempt ended with zero submits after time ran out")
+        return f
+    return pol, {"time_limit": 14, "min_call": 64, "control": sa.Control(submit_frac=0, nudge_every=0, rescue_min_tokens=16)}, check
+
+
 SCENARIOS = {
     "plateau": sc_plateau,
     "repeat": sc_repeat,
@@ -272,6 +314,8 @@ SCENARIOS = {
     "nudge": sc_nudge,
     "long_trim": sc_long,
     "long_trim_no_persist": lambda: sc_long(0),
+    "forced_submit": sc_forced_submit,
+    "time_exhausted_rescue": sc_time_exhausted_rescue,
 }
 
 
