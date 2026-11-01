@@ -21,7 +21,7 @@ def _tasks():
     return {f"t{i}": {"train": train, "test": [{"input": [[7, 8, 9], [1, 2, 3]]}]} for i in range(3)}
 
 
-def _server(die_after=None, smoke_fails=False, tools_fail=False, delay=0.0):
+def _server(die_after=None, smoke_fails=False, tools_fail=False, delay=0.0, direct_answer=None):
     count = {"n": 0}
 
     class H(BaseHTTPRequestHandler):
@@ -44,6 +44,9 @@ def _server(die_after=None, smoke_fails=False, tools_fail=False, delay=0.0):
                 name, code = ("python", "print(2)") if tool_smoke else ("submit", FLIP.strip("`").removeprefix("python\n"))
                 msg = {"content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {
                     "name": name, "arguments": json.dumps({"code": code})}}]}
+            elif direct_answer is not None and not smoke_req:  # a direct-solver reply: a parseable answer block
+                g = json.dumps(direct_answer)
+                msg = {"content": f'```json\n{{"outputs": [{{"attempt_1": {g}, "attempt_2": {g}}}]}}\n```'}
             else:
                 msg = {"content": "1 2 3" if smoke_req else FLIP}
             body = json.dumps({"choices": [{"message": msg, "finish_reason": "stop"}],
@@ -421,3 +424,87 @@ def test_builder_dev_flags(tmp_path):
                     "--dev-budget-min", "9"], check=True, capture_output=True)
     src = (tmp_path / "main.py").read_text()
     assert '"ARC_DEV_TASKS", "7"' in src and '"ARC_DEV_BUDGET_MIN", "9"' in src
+
+
+WRONG = [[1, 1, 1], [1, 1, 1]]
+RIGHT = [[9, 8, 7], [3, 2, 1]]
+
+
+def _hybrid(tmp_path, srv, budget="17", extra=()):
+    return _run(tmp_path, srv, "hybrid", ["--npar", "2", "--agent-args", "--reserve-sec 0 --min-call-tokens 16", *extra],
+                env_extra={"ARC_FORCE_RERUN": "1", "ARC_BUDGET_MIN": budget})  # a tiny reserve and call floor so the 2 min of fake-server time is usable
+
+
+def test_hybrid_rerun_verified_agent_program_supersedes_direct_answer(tmp_path):
+    srv = _server(direct_answer=WRONG)
+    r, sub = _hybrid(tmp_path, srv)
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "HYBRID phase 1 (direct)" in r.stdout and "HYBRID phase 2 (agent)" in r.stdout
+    assert _valid(sub) and "submission validated: 3 tasks, 0 repaired" in r.stdout
+    for rows in sub.values():  # verified program first, the direct answer kept as the second attempt
+        assert rows[0]["attempt_1"] == RIGHT and rows[0]["attempt_2"] == WRONG
+    assert (tmp_path / "work" / "trace.jsonl").exists()
+
+
+def test_hybrid_rerun_with_no_time_for_phase_2_keeps_every_direct_answer(tmp_path):
+    srv = _server(direct_answer=WRONG)
+    r, sub = _hybrid(tmp_path, srv, budget="15.4")  # ~0.3 min after the 15 min reserve: phase 2 cannot start
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "HYBRID phase 2 skipped" in r.stdout and "HYBRID phase 2 (agent)" not in r.stdout
+    assert _valid(sub) and all(rows[0]["attempt_1"] == WRONG for rows in sub.values())
+    assert "submission validated: 3 tasks, 0 repaired" in r.stdout
+
+
+def test_hybrid_phase_2_never_runs_past_the_global_deadline(tmp_path):
+    srv = _server(direct_answer=WRONG, delay=3.0)  # every agent turn is slower than the time left
+    r, sub = _hybrid(tmp_path, srv, budget="16.2")  # deadline at ~1.2 min of runtime
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    done = re.findall(r"\+([\d.]+)m done", r.stdout)
+    assert done and float(done[-1]) <= 1.2 + 0.35, r.stdout[-800:]
+    assert _valid(sub)
+    assert all(rows[0]["attempt_1"] in (WRONG, RIGHT) for rows in sub.values())
+
+
+def test_hybrid_signal_orders_unanswered_direct_tasks_first(tmp_path):
+    srv = _server()  # direct replies are unparseable: every task has no direct answer
+    r, sub = _hybrid(tmp_path, srv)
+    srv.shutdown()
+    assert r.returncode == 0, r.stderr[-800:]
+    order = json.loads((tmp_path / "work" / "submission.json.order.json").read_text())
+    assert sorted(order) == sorted(_tasks())
+    assert _valid(sub) and all(rows[0]["attempt_1"] == RIGHT for rows in sub.values())
+
+
+def test_hybrid_dev_run_solves_the_eval_slice_and_keeps_the_baseline(tmp_path):
+    r, sub, work = _dev(tmp_path, "hybrid")
+    assert sorted(json.loads((work / "dev_submission.json").read_text())) == ["e0", "e1"]
+    assert "RERUN: dev slice of 2 eval tasks" in r.stdout and "RERUN: full run" not in r.stdout
+    assert "DEV score: solved 1 of 2 test inputs (pass@2) on 2 eval tasks in " in r.stdout
+    assert _valid(sub)
+
+
+def test_select_hybrid_never_replaces_a_direct_answer_with_something_worse():
+    import importlib.util
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "kaggle/arc2_synth"))
+    try:
+        import synth
+    finally:
+        _sys.path.pop(0)
+    task = _tasks()["t0"]
+    direct = [{"attempt_1": WRONG, "attempt_2": [[2]]}]
+
+    def cand(out, verified, frac=1.0):
+        return {"verified": verified, "frac": frac, "test_outputs": [out], "code": "x"}
+
+    assert importlib.util is not None
+    rows = synth.select_hybrid(task, [cand(RIGHT, True)], direct)
+    assert rows == [{"attempt_1": RIGHT, "attempt_2": WRONG}]
+    rows = synth.select_hybrid(task, [cand([[5, 5, 5], [5, 5, 5]], False, 0.9)], direct)  # partial only
+    assert rows == [{"attempt_1": WRONG, "attempt_2": [[5, 5, 5], [5, 5, 5]]}]
+    rows = synth.select_hybrid(task, [cand([[7]], True)], direct)  # verified but plausibility-flagged (shape)
+    assert rows == [{"attempt_1": WRONG, "attempt_2": [[7]]}]
+    assert synth.select_hybrid(task, [], direct) == direct

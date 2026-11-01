@@ -218,3 +218,12 @@ does not set it.
 5. Total budget at most ~11h (`deadline_min = total - elapsed - 15`); the session limit is ~12h.
 6. Canary first: submit a short run (about 100 min budget) and confirm it scores above 0 before spending a long run.
 7. One submission per day plus queue delays: plan the canary and the long run on separate days.
+
+## Hybrid mode (safe floor for a scored run)
+
+`build_kernel.py --mode hybrid [--hybrid-direct-frac 0.45]` (env `ARC_HYBRID_DIRECT_FRAC`): phase 1 runs the direct solver over
+all tasks for that share of the budget (`deadline_min = total - elapsed - 15`), writing `submission.json` as it goes; phase 2 runs
+the agent on the rest (agent flags such as `--max-turns`, `--agent-args` apply here), least-sure direct answers first (no parsed
+answer, then a forced answer), skipped when under 1 minute remains. Both phases stop at the same absolute deadline. Per test input
+the merge (`synth.select_hybrid`) puts a verified, non-plausibility-flagged agent output in attempt_1 with the direct answer as
+attempt_2; otherwise the direct answer stays attempt_1 and attempt_2 is the agent's best other output. Dev runs use the same flow on the eval slice.

@@ -1,6 +1,6 @@
 """Go/no-go gate before pushing an ARC-AGI-2 notebook to Kaggle.
 
-python scripts/arc2_preflight.py [--fast] [--modes direct,synth,agent,bench]
+python scripts/arc2_preflight.py [--fast] [--modes direct,synth,agent,hybrid,bench]
 Stops at the first failing step and exits non-zero.
 """
 import argparse
@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "kaggle/arc2_synth/build_kernel.py"
-MODES = ["direct", "synth", "agent", "bench"]
+MODES = ["direct", "synth", "agent", "hybrid", "bench"]
 MAX_MAIN_BYTES = 1_000_000
 BASE_MODULES = {"llm_solve.py", "synth.py", "solve.py", "trace.py"}
 AGENT_MODULES = {"repl.py", "synth_agent.py"}
@@ -103,7 +103,7 @@ def step_size(mode):
         src = main.read_text()
         if len(src.encode()) >= MAX_MAIN_BYTES:
             raise PreflightError(f"{mode}: main.py is {len(src)} bytes, limit {MAX_MAIN_BYTES}")
-        want = BASE_MODULES | (AGENT_MODULES if mode in ("agent", "bench") else set())
+        want = BASE_MODULES | (AGENT_MODULES if mode in ("agent", "hybrid", "bench") else set())
         if missing := want - bundle_modules(src):
             raise PreflightError(f"{mode}: bundle is missing {sorted(missing)}")
 

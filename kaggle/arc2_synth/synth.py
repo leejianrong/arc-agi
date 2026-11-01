@@ -345,6 +345,36 @@ def select_attempts(task, cands, fallback_rows, direct_rows=None):
     return rows
 
 
+def select_hybrid(task, cands, direct_rows):
+    """Never worse than the direct answer. Per test input: a verified candidate whose output carries no
+    plausibility flag becomes attempt_1 and the direct answer attempt_2; otherwise the direct answer stays
+    attempt_1 and attempt_2 is the agent's best remaining output (flagged-verified, then best partial)."""
+    select_attempts(task, cands, direct_rows)  # sets c["flags"] on verified candidates
+    verified = [c for c in cands if c["verified"]]
+    partial = sorted((c for c in cands if not c["verified"]), key=lambda c: -c["frac"])
+    rows = []
+    for i in range(len(task["test"])):
+        d1, d2 = direct_rows[i]["attempt_1"], direct_rows[i]["attempt_2"]
+        good, flagged, best = Counter(), [], {}
+        for pos, c in enumerate(verified):
+            out = c["test_outputs"][i]
+            if out is None:
+                continue
+            if c["flags"][i]:
+                flagged.append(out)
+            else:
+                k = json.dumps(out)
+                good[k] += 1
+                best[k] = min(best.get(k, (1 << 60, pos)), (len(c.get("code", "")), pos))
+        goods = [json.loads(k) for k in sorted(good, key=lambda k: (-good[k], *best[k]))]
+        agent = goods + flagged + [c["test_outputs"][i] for c in partial]
+        a1 = goods[0] if goods else d1
+        rest = ([d1, d2] + agent) if goods else (agent + [d2])
+        a2 = next((g for g in rest if g is not None and g != a1), a1)
+        rows.append({"attempt_1": a1, "attempt_2": a2})
+    return rows
+
+
 def synthesize(task, args, deadline, on_update=None, direct_rows=None, fallback_rows=None, tag="", budget=None):
     """Run up to args.chains refinement chains (fewer when the budget runs short); returns (rows, log)."""
     budget = budget or Budget(deadline, 1, 1, args.reserve_sec, args.min_call_tokens)

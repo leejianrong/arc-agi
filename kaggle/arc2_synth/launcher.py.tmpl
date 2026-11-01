@@ -36,7 +36,9 @@ TOTAL_BUDGET_MIN = float(os.environ.get("ARC_BUDGET_MIN", "@@BUDGET@@"))  # whol
 N_PARALLEL = int(os.environ.get("ARC_NPAR", "@@NPAR@@"))
 MAX_TOKENS = @@MAX_TOKENS@@
 MTP = @@MTP@@                      # speculative tokens (0 = off)
-MODE = "@@MODE@@"                  # "direct" (answer grids), "synth" (verified programs), "agent" (tool-calling REPL) or "bench"
+MODE = "@@MODE@@"                  # "direct" (answer grids), "synth" (verified programs), "agent" (tool-calling REPL), "hybrid" or "bench"
+HYBRID_FRAC = float(os.environ.get("ARC_HYBRID_DIRECT_FRAC", "@@HYBRID_FRAC@@"))  # hybrid: direct pass's share of the budget
+HYBRID_MIN_P2_MIN = 1.0            # hybrid: phase 2 is skipped when less than this many minutes remain
 BENCH_CONFIGS = @@BENCH_CONFIGS@@  # bench: [{name, mode, effort, ...extra solver args}], run in order on one server
 BENCH_TASKS = int(os.environ.get("ARC_BENCH_TASKS", "@@BENCH_TASKS@@"))
 DEV_TASKS = int(os.environ.get("ARC_DEV_TASKS", "@@DEV_TASKS@@"))      # dev run: first N public-eval ids by sorted order
@@ -50,7 +52,7 @@ _force = os.environ.get("ARC_FORCE_RERUN")
 PLACEHOLDER_SHA = os.environ.get("ARC_PLACEHOLDER_SHA", "0425e31f8c028fd6d6c2953fd5dbed115c065b8c657375a57f8b477c6f1d650c")
 RERUN = None  # decided once the test challenges file is known (see below)
 BENCH_BUDGET_MIN = float(os.environ.get("ARC_BENCH_BUDGET_MIN", "@@BENCH_BUDGET@@"))  # minutes after startup, all configs
-SERVES_TOOLS = MODE == "agent" or any(c.get("mode") == "agent" for c in BENCH_CONFIGS)  # vLLM needs the tool-call flags
+SERVES_TOOLS = MODE in ("agent", "hybrid") or any(c.get("mode") == "agent" for c in BENCH_CONFIGS)  # vLLM needs the tool-call flags
 SYNTH_ARGS = @@SYNTH_ARGS@@        # extra synth.py flags
 AGENT_ARGS = @@AGENT_ARGS@@        # extra synth_agent.py flags
 EFFORT = "@@EFFORT@@"              # default reasoning_effort; env ARC_EFFORT overrides
@@ -442,11 +444,52 @@ def bench_run():
             json.dump(results, f, indent=1)
 
 
-def solve_args(challenges, out, deadline_min):
-    args = ["--challenges", challenges, "--out", out, "--log-dir", os.path.join(WORK, "llm_logs"),
+def solve_args(challenges, out, deadline_min, floor=1.0, log_dir="llm_logs"):
+    args = ["--challenges", challenges, "--out", out, "--log-dir", os.path.join(WORK, log_dir),
             "--base-url", BASE_URL, "--n-parallel", str(N_PARALLEL), "--max-tokens", str(MAX_TOKENS),
-            "--deadline-min", str(max(1.0, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", EFFORT)]
+            "--deadline-min", str(max(floor, deadline_min)), "--effort", os.environ.get("ARC_EFFORT", EFFORT)]
     return args + (["--model", os.environ.get("ARC_MODEL", "qwen")] if EXTERNAL else [])
+
+
+def hybrid_order(challenges, log_dir):
+    """Phase 2 task order: least sure direct answers first (no parsed answer, then a forced answer, then the
+    rest), each group easiest first. Falls back to easiest-first when a task has no readable direct log."""
+    def doubt(tid):
+        try:
+            with open(os.path.join(log_dir, f"{tid}.json")) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            return 2  # never ran (deadline) or unreadable: no direct answer
+        if not d.get("parsed"):
+            return 2
+        return 1 if (d.get("usage") or {}).get("retried") else 0
+
+    return sorted(challenges, key=lambda t: (-doubt(t), synth.task_size(challenges[t]), t))
+
+
+def hybrid_run(challenges, out, deadline_min, limit=0, trace=None, sol_file=None):
+    """Phase 1: the direct solver over every task for HYBRID_FRAC of `deadline_min` (out always holds a full valid
+    file). Phase 2: the agent on whatever time remains, the direct rows as its fallback, never replacing a direct
+    answer with a worse one (synth.select_hybrid). Both phases stop at the same absolute deadline."""
+    end = time.time() + deadline_min * 60
+    p1_min = max(0.0, deadline_min * min(max(HYBRID_FRAC, 0.0), 1.0))
+    log(f"HYBRID phase 1 (direct): {p1_min:.1f} of {deadline_min:.1f} min")
+    args = solve_args(challenges, out, p1_min, floor=0.02, log_dir="llm_logs")
+    llm_solve.main(args + (["--limit", str(limit)] if limit else []))
+    left = (end - time.time()) / 60
+    if left < HYBRID_MIN_P2_MIN:
+        log(f"HYBRID phase 2 skipped: {left:.1f} min left (< {HYBRID_MIN_P2_MIN:g}); direct answers stand")
+        return
+    with open(challenges) as f:
+        order = hybrid_order(json.load(f), os.path.join(WORK, "llm_logs"))
+    order_file = out + ".order.json"
+    with open(order_file, "w") as f:
+        json.dump(order, f)
+    log(f"HYBRID phase 2 (agent): {left:.1f} min, least-sure-first order {order[:5]}...")
+    args = solve_args(challenges, out, left, log_dir="agent_logs") + ["--fallback-submission", out, "--order-file", order_file]
+    if limit:
+        args += ["--limit", str(limit)]
+    synth_agent.main(args + AGENT_ARGS + trace_args(trace or os.path.join(WORK, "trace.jsonl"), sol_file, "hybrid"))
 
 
 def dev_run():
@@ -459,8 +502,12 @@ def dev_run():
         MODE, (llm_solve, []))
     if MODE == "agent":
         extra = extra + trace_args(os.path.join(WORK, "trace.jsonl"), sol_file, "agent")
+    budget = min(DEV_BUDGET_MIN, TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15)
     try:
-        solver.main(solve_args(sample, out, min(DEV_BUDGET_MIN, TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15)) + extra)
+        if MODE == "hybrid":
+            hybrid_run(sample, out, max(1.0, budget), trace=os.path.join(WORK, "trace.jsonl"), sol_file=sol_file)
+        else:
+            solver.main(solve_args(sample, out, budget) + extra)
     finally:
         sc = bench_score(out, ids, solutions) if solutions is not None and os.path.exists(out) else None
         log(f"DEV score: solved {sc[0]} of {sc[1]} test inputs (pass@2) on {len(ids)} eval tasks in "
@@ -475,15 +522,20 @@ try:
     else:
         with open(challenges_path) as f:
             log(f"RERUN: full run over {len(json.load(f))} test tasks")
-        args = solve_args(challenges_path, OUT, TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15)
-        if LIMIT:
-            args += ["--limit", str(LIMIT)]
-        solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(
-            MODE, (llm_solve, []))
-        if MODE == "agent":  # direct and synth do not emit traces
-            sol = os.path.join(os.path.dirname(challenges_path), "arc-agi_evaluation_solutions.json")
-            extra = extra + trace_args(os.path.join(WORK, "trace.jsonl"), sol if os.path.exists(sol) else None, "agent")
-        solver.main(args + extra)
+        sol = os.path.join(os.path.dirname(challenges_path), "arc-agi_evaluation_solutions.json")
+        sol = sol if os.path.exists(sol) else None
+        left_min = TOTAL_BUDGET_MIN - (time.time() - T0) / 60 - 15
+        if MODE == "hybrid":
+            hybrid_run(challenges_path, OUT, left_min, LIMIT, os.path.join(WORK, "trace.jsonl"), sol)
+        else:
+            args = solve_args(challenges_path, OUT, left_min)
+            if LIMIT:
+                args += ["--limit", str(LIMIT)]
+            solver, extra = {"synth": (synth, SYNTH_ARGS), "agent": (globals().get("synth_agent"), AGENT_ARGS)}.get(
+                MODE, (llm_solve, []))
+            if MODE == "agent":  # direct and synth do not emit traces
+                extra = extra + trace_args(os.path.join(WORK, "trace.jsonl"), sol, "agent")
+            solver.main(args + extra)
 except Exception as e:  # noqa: BLE001 - never lose the submission to a solver crash
     log("solver crashed:", repr(e))
 finally:

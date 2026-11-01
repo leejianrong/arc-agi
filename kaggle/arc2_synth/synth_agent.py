@@ -645,12 +645,12 @@ NO_ANSWERS = object()  # solve_task default: no solutions known, task_start carr
 
 
 def trace_task_end(trace, tid, rows, verified, answers):
-    solved = [a in (r["attempt_1"], r["attempt_2"]) for r, a in zip(rows, answers)] if answers else None
+    solved = [a in (r["attempt_1"], r["attempt_2"]) for r, a in zip(rows, answers)] if answers and answers is not NO_ANSWERS else None
     trace.emit("task_end", task=tid, rows=rows, verified=verified, solved=solved)
 
 
 def solve_task(task, args, deadline, on_update=None, fallback_rows=None, tag="", budget=None, repl_factory=None,
-               hooks=None, trace=None, task_id="", answers=NO_ANSWERS):
+               hooks=None, trace=None, task_id="", answers=NO_ANSWERS, hybrid=False):
     """Up to args.attempts sequential attempts (stops once args.want_verified programs verified); returns (rows, log).
     ``answers`` (public solutions, list or None) is only for the trace; the model never sees it."""
     budget = budget or sy.Budget(deadline, 1, 1, args.reserve_sec, args.min_call_tokens)
@@ -661,7 +661,7 @@ def solve_task(task, args, deadline, on_update=None, fallback_rows=None, tag="",
                    **({} if answers is NO_ANSWERS else {"answers": answers}))
 
     def update():
-        rows = sy.select_attempts(task, cands, fallback_rows)
+        rows = (sy.select_hybrid if hybrid else sy.select_attempts)(task, cands, fallback_rows)
         if on_update:
             on_update(rows)
         return rows
@@ -697,8 +697,25 @@ def run(args):
     ids = sorted(challenges)[: args.limit] if args.limit else sorted(challenges)
     if args.order == "easy":
         ids.sort(key=lambda t: (sy.task_size(challenges[t]), t))
+    if getattr(args, "order_file", None):  # hybrid: the launcher's order; ids it does not list keep their place, last
+        with open(args.order_file) as f:
+            want = [t for t in json.load(f) if t in ids]
+        ids = want + [t for t in ids if t not in want]
     fallback = ls.load_fallback()
     fb = {tid: fallback(challenges[tid]) for tid in challenges}
+    hybrid = bool(getattr(args, "fallback_submission", None))
+    if hybrid:  # the direct pass's answers replace the baseline rows; only valid rows are taken
+        try:
+            with open(args.fallback_submission) as f:
+                prior = json.load(f)
+        except (OSError, ValueError):
+            prior = {}
+        for tid, task in challenges.items():
+            rows = prior.get(tid)
+            if isinstance(rows, list) and len(rows) == len(task["test"]) and all(
+                    isinstance(r, dict) and ls.valid_grid(r.get("attempt_1")) and ls.valid_grid(r.get("attempt_2"))
+                    for r in rows):
+                fb[tid] = rows
     sub = {tid: fb[tid] for tid in challenges}
     lock = threading.Lock()
     stats = {"done": 0, "verified": 0, "inflight": 0}
@@ -740,7 +757,7 @@ def run(args):
             stats["inflight"] += 1
         try:
             rows, log = solve_task(challenges[tid], args, deadline, lambda r: set_rows(tid, r), fallback_rows=fb[tid],
-                                   tag=tid if args.tag_prompts else "", budget=budget, trace=tw, task_id=tid,
+                                   tag=tid if args.tag_prompts else "", budget=budget, trace=tw, task_id=tid, hybrid=hybrid,
                                    **({"answers": sol.get(tid)} if sol is not None else {}))
         except Exception as e:  # noqa: BLE001 - one task's failure must not stop the run
             rows, log = fb[tid], {"error": repr(e), "tokens": 0, "verified": 0}
@@ -829,6 +846,9 @@ def main(argv=None):
     ap.add_argument("--tag-prompts", type=int, default=0, help="prefix every user message with [task <id>]")
     ap.add_argument("--suspect-rounds", type=int, default=2,
                     help="per attempt: replies to a verified-but-implausible submit before accepting it (0 = off)")
+    ap.add_argument("--fallback-submission", default=None,
+                    help="hybrid: submission.json of a direct pass; its rows are the per-task fallback and are never replaced by a worse pick")
+    ap.add_argument("--order-file", default=None, help="JSON list of task ids to run first, in this order")
     ap.add_argument("--trace", default=None, help="append a JSONL event trace (docs/arc2-trace-schema.md) here")
     ap.add_argument("--cfg", default="default", help="config name written on every trace event (bench: one per config)")
     return run(ap.parse_args(argv))
