@@ -508,3 +508,26 @@ def test_select_hybrid_never_replaces_a_direct_answer_with_something_worse():
     rows = synth.select_hybrid(task, [cand([[7]], True)], direct)  # verified but plausibility-flagged (shape)
     assert rows == [{"attempt_1": WRONG, "attempt_2": [[7]]}]
     assert synth.select_hybrid(task, [], direct) == direct
+
+
+def test_heartbeat_never_writes_after_run_end(tmp_path):
+    """The heartbeat thread outlives the solver; a finished trace must not grow (it made validate_file flaky)."""
+    import ast
+    import contextlib
+    import re
+    import time
+
+    src = (ROOT / "kaggle/arc2_synth/launcher.py.tmpl").read_text()
+    src = re.sub(r"@@\w+@@", "0", src)
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "trace_heartbeat")
+    trace = tmp_path / "t.jsonl"
+    trace.write_text('{"ev": "run_start", "t": 0.0}\n')
+    ns = {"os": os, "json": json, "time": time, "re": re, "contextlib": contextlib, "WORK": str(tmp_path),
+          "VLLM_STATS": re.compile("x"), "ACTIVE_TRACE": {"path": str(trace), "t0": time.time(), "cfg": "c"}}
+    exec(compile(ast.Module([fn], []), "launcher", "exec"), ns)  # noqa: S102 - our own template function
+    ns["trace_heartbeat"](1)
+    assert trace.read_text().count("heartbeat") == 1
+    with trace.open("a") as f:
+        f.write('{"ev": "run_end", "t": 1.0}\n')
+    ns["trace_heartbeat"](1)
+    assert trace.read_text().count("heartbeat") == 1

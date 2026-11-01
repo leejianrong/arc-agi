@@ -201,6 +201,11 @@ def trace_heartbeat(gpu_mem):
             if hits:
                 tok_s, running, waiting, kv = hits[-1]
                 ev.update(tok_s=float(tok_s), running=int(running), waiting=int(waiting), kv_pct=float(kv))
+        with open(tr["path"], "rb") as f:  # a finished run must stay finished: nothing after run_end
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 4096))
+            if b'"ev": "run_end"' in f.read():
+                return
         with open(tr["path"], "a", encoding="utf-8") as f:
             f.write(json.dumps(ev) + "\n")  # one write call: a whole line, safe beside the solver's writer
     except Exception:  # noqa: BLE001, S110 - observability only
