@@ -47,6 +47,8 @@ NUMPY = rp.numpy_available()  # the REPL worker and the submit runner both use t
 SUBMIT_ENV = ("submit runs your program in a separate plain Python process, not the REPL sandbox: the standard "
               "library" + (" and numpy are" if NUMPY else " is") + " importable there without the REPL's restrictions.")
 
+RETRY_PAUSE = 20.0  # seconds between retries of a transient server error (module attribute so tests can shrink it)
+
 TOOLS = [
     {"type": "function", "function": {
         "name": "python",
@@ -551,8 +553,10 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
             try:
                 sent = hooks.prepare(att.messages, state)
                 state["sent"] = len(sent)
-                r = ls.chat_full(base_url, model, sent, limits[0], limits[1], temperature,
-                                 kwargs, tools=TOOLS, tool_choice="auto", thinking_token_budget=think)
+                r = ls.with_retries(  # a vLLM restart must not end the attempt: wait for it, within the time left
+                    lambda sent=sent, limits=limits, think=think: ls.chat_full(base_url, model, sent, limits[0], limits[1], temperature,
+                                         kwargs, tools=TOOLS, tool_choice="auto", thinking_token_budget=think),
+                    time.time() + max(0.0, budget.deadline - sy.clock() - 60), RETRY_PAUSE)
             except urllib.error.HTTPError as e:
                 body = e.read().decode("utf-8", "replace").lower() if e.fp else ""
                 if think and e.code == 400 and any(w in body for w in ("thinking", "budget", "reasoning")):
@@ -773,7 +777,7 @@ def run(args):
             flush()
             print(f"[{stats['done']}/{len(ids)}] {tid} verified={log.get('verified')} tok={log.get('tokens')} "
                   f"turns={len(log.get('rounds', []))} {dt:.0f}s", flush=True)
-        with open(os.path.join(args.log_dir, f"{tid}.json"), "w") as f:
+        with contextlib.suppress(Exception), open(os.path.join(args.log_dir, f"{tid}.json"), "w") as f:  # logs are not worth a run
             json.dump(dict(log, elapsed=dt), f)
 
     def on_term(signum, frame):
@@ -792,8 +796,14 @@ def run(args):
 
     progress()
     threading.Thread(target=ticker, daemon=True).start()
+    def safe_work(tid):
+        try:
+            work(tid)
+        except Exception as e:  # noqa: BLE001 - one task's crash must not abort the pool and skip the rest
+            print(f"task {tid} crashed: {e!r}", flush=True)
+
     with ThreadPoolExecutor(args.n_parallel) as ex:
-        list(ex.map(work, ids))
+        list(ex.map(safe_work, ids))
     stop.set()
     flush()
     progress()
@@ -803,8 +813,9 @@ def run(args):
     if args.solutions:
         with open(args.solutions) as f:
             sol = json.load(f)
-        hits = sum(1 for tid in ids for row, s in zip(sub[tid], sol[tid]) if s in (row["attempt_1"], row["attempt_2"]))
-        summary["solved_test_inputs"] = f"{hits}/{sum(len(sol[tid]) for tid in ids)}"
+        known = [tid for tid in ids if tid in sol]  # a scored rerun can sit beside the public solutions: ids differ
+        hits = sum(1 for tid in known for row, s in zip(sub[tid], sol[tid]) if s in (row["attempt_1"], row["attempt_2"]))
+        summary["solved_test_inputs"] = f"{hits}/{sum(len(sol[tid]) for tid in known)}"
     print("SUMMARY " + json.dumps(summary), flush=True)
     if tw:
         tw.emit("run_end", summary={

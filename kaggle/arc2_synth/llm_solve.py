@@ -8,10 +8,14 @@ pre-filled with a fallback so a crash or deadline still leaves a complete file.
     python llm_solve.py --challenges C.json --out sub.json [--solutions S.json]
 """
 import argparse
+import contextlib
+import http.client
 import importlib.util
 import json
+import math
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -195,6 +199,29 @@ def force_answer(base_url, model, prompt, reasoning, max_tokens, timeout, temper
     return FORCE_TAIL.split("</think>")[1] + choice.get("text", ""), d.get("usage", {})
 
 
+def transient(e):
+    """Server hiccups worth another try (restart, preemption, 5xx, reset); a read timeout is not: it already burned its time."""
+    import urllib.error
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code >= 500 or e.code == 429
+    if isinstance(e, (TimeoutError, socket.timeout)):
+        return False
+    return isinstance(e, (urllib.error.URLError, ConnectionError, http.client.HTTPException, OSError))
+
+
+def with_retries(fn, give_up_at, pause=20.0, tries=40):
+    """Call fn(); on a transient error wait and retry until give_up_at, so a vLLM restart (~10 min) loses no task."""
+    n = 0
+    while True:
+        try:
+            return fn()
+        except Exception as e:
+            n += 1
+            if not transient(e) or n >= tries or time.time() + pause >= give_up_at:
+                raise
+            time.sleep(pause)
+
+
 def merge(fallback_rows, parsed):
     out = []
     for fb, p in zip(fallback_rows, parsed or [{}] * len(fallback_rows)):
@@ -223,6 +250,19 @@ def run(args):
             json.dump(sub, f)
         os.replace(tmp, args.out)
 
+    seen = {"tok": 0.0, "sec": 0.0}  # observed per-stream decode rate, ratio of sums
+
+    def limits():
+        """(max_tokens, timeout) that let the call finish, and leave room for a forced answer, before the deadline.
+        A non-streaming call that outlives the deadline returns nothing, so the cap must follow the time left."""
+        with lock:
+            remaining = max(1, len(ids) - stats["done"])
+            rate = seen["tok"] / seen["sec"] if seen["sec"] else args.default_rate
+        share = (deadline - time.time() - args.reserve_sec) / math.ceil(remaining / args.n_parallel)
+        cap = max(512, min(args.max_tokens, int(share * rate)))
+        timeout = max(30, min(args.request_timeout, share * 1.6 + 30, deadline - time.time() - args.reserve_sec / 2))
+        return cap, timeout
+
     def work(tid):
         task = challenges[tid]
         if time.time() > deadline:
@@ -232,8 +272,14 @@ def run(args):
         prompt = build_prompt(task)
         kwargs = {"reasoning_effort": args.effort} if args.effort else None
         try:
-            text, usage = chat(args.base_url, args.model, prompt, args.max_tokens,
-                               max(30, min(args.request_timeout, deadline - time.time())), args.temperature, kwargs)
+            def call():
+                cap, timeout = limits()  # recomputed per try: a retry after a restart has less time left
+                return chat(args.base_url, args.model, prompt, cap, timeout, args.temperature, kwargs)
+
+            text, usage = with_retries(call, deadline - args.reserve_sec, args.retry_pause)
+            with lock:
+                seen["tok"] += usage.get("completion_tokens", 0)
+                seen["sec"] += time.time() - t0
         except Exception as e:  # noqa: BLE001 - one task's failure must not stop the run
             err = repr(e)
         parsed = parse_outputs(text, len(task["test"])) if text else None
@@ -241,8 +287,10 @@ def run(args):
         if not parsed and args.force_answer and reasoning and time.time() < deadline:
             retried = True
             try:
-                text2, usage2 = force_answer(args.base_url, args.model, prompt, reasoning, args.force_max_tokens,
-                                             max(30, min(900, deadline - time.time())), args.temperature)
+                text2, usage2 = with_retries(
+                    lambda: force_answer(args.base_url, args.model, prompt, reasoning, args.force_max_tokens,
+                                         max(30, min(900, deadline - time.time())), args.temperature),
+                    deadline - 30, args.retry_pause)
                 usage["retry_completion_tokens"] = usage2.get("completion_tokens", 0)
                 parsed = parse_outputs(text2, len(task["test"]))
                 text = text + "\n=====FORCED=====\n" + text2
@@ -263,14 +311,20 @@ def run(args):
             print(f"[{stats['done']}/{len(ids)}] {tid} parsed={bool(parsed)} err={err} "
                   f"tok={usage.get('completion_tokens')} fin={usage.get('finish_reason')} retry={retried} "
                   f"{dt:.0f}s", flush=True)
-        with open(os.path.join(args.log_dir, f"{tid}.json"), "w") as f:
+        with contextlib.suppress(Exception), open(os.path.join(args.log_dir, f"{tid}.json"), "w") as f:
             json.dump({"usage": usage, "error": err, "elapsed": dt, "text": text, "parsed": bool(parsed),
                        "reasoning_tail": reasoning[-1500:]}, f)
 
     flush()
     t_start = time.time()
+    def safe_work(tid):
+        try:
+            work(tid)
+        except Exception as e:  # noqa: BLE001 - one task's crash must not abort the pool and skip the rest
+            print(f"task {tid} crashed: {e!r}", flush=True)
+
     with ThreadPoolExecutor(args.n_parallel) as ex:
-        list(ex.map(work, ids))
+        list(ex.map(safe_work, ids))
     wall = time.time() - t_start
     summary = {"tasks": len(ids), "parsed": stats["parsed"], "errors": stats["errors"], "wall_s": round(wall),
                "completion_tokens": stats["completion_tokens"],
@@ -278,8 +332,9 @@ def run(args):
     if args.solutions:
         with open(args.solutions) as f:
             sol = json.load(f)
-        hits = sum(1 for tid in ids for row, s in zip(sub[tid], sol[tid]) if s in (row["attempt_1"], row["attempt_2"]))
-        total = sum(len(sol[tid]) for tid in ids)
+        known = [tid for tid in ids if tid in sol]
+        hits = sum(1 for tid in known for row, s in zip(sub[tid], sol[tid]) if s in (row["attempt_1"], row["attempt_2"]))
+        total = sum(len(sol[tid]) for tid in known)
         summary["solved_test_inputs"] = f"{hits}/{total}"
     print("SUMMARY " + json.dumps(summary), flush=True)
     return summary
@@ -301,6 +356,9 @@ def main(argv=None):
     ap.add_argument("--force-max-tokens", type=int, default=8192)
     ap.add_argument("--request-timeout", type=int, default=3600)
     ap.add_argument("--deadline-min", type=float, default=60)
+    ap.add_argument("--reserve-sec", type=float, default=300, help="kept free before the deadline for forced answers")
+    ap.add_argument("--retry-pause", type=float, default=20.0, help="seconds between retries of a transient server error")
+    ap.add_argument("--default-rate", type=float, default=12.0, help="tokens/s per stream assumed until calls finish")
     ap.add_argument("--log-dir", default="llm_logs")
     run(ap.parse_args(argv))
 

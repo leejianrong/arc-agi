@@ -191,7 +191,7 @@ sequences).
 
 ## Pre-flight gate
 
-Run `make arc2-preflight` (or `uv run python scripts/arc2_preflight.py [--fast] [--modes direct,synth,agent,bench]`) before pushing any notebook to Kaggle. It runs ruff, the Kaggle tests, builds each mode and checks `kernel-metadata.json` (L4, no internet, private, one competition source, wheelhouse and Qwen sources) and `main.py` (compiles, no `@@` placeholders, under 1 MB, bundle holds the expected modules), then dry-runs each built notebook against a fake OpenAI server and requires a validated 3-task `submission.json`. It stops at the first failure and ends with `PREFLIGHT OK` or `PREFLIGHT FAILED: <step>`; `--fast` runs only the launcher and agent tests. It cannot see real vLLM, the real Kaggle mounts or the wheelhouse install.
+Run `make arc2-preflight` (or `uv run python scripts/arc2_preflight.py [--fast] [--modes direct,synth,agent,bench]`) before pushing any notebook to Kaggle. It runs ruff, the Kaggle tests, builds each mode and checks `kernel-metadata.json` (L4, no internet, private, one competition source, wheelhouse and Qwen sources) and `main.py` (compiles, no `@@` placeholders, under 1 MB, bundle holds the expected modules), then dry-runs each built notebook against a fake OpenAI server and requires a validated 3-task `submission.json`. It stops at the first failure and ends with `PREFLIGHT OK` or `PREFLIGHT FAILED: <step>`; `--fast` runs only the launcher, agent and scripted-player tests. It cannot see real vLLM, the real Kaggle mounts or the wheelhouse install.
 
 ## Dev run vs scored rerun
 
@@ -216,8 +216,10 @@ does not set it.
    placeholder's id fingerprint (`PLACEHOLDER_SHA`). The log line `run kind: ...` states which. If the placeholder is ever
    replaced upstream, set `ARC_PLACEHOLDER_SHA` (or re-fingerprint) before submitting.
 5. Total budget at most ~11h (`deadline_min = total - elapsed - 15`); the session limit is ~12h.
-6. Canary first: submit a short run (about 100 min budget) and confirm it scores above 0 before spending a long run.
-7. One submission per day plus queue delays: plan the canary and the long run on separate days.
+6. Real-vLLM dev run of the exact build: a normal Save & Run (not a rerun) solves the first `--dev-tasks` public-eval tasks,
+   scores them against the public solutions, and leaves `submission.json` as the baseline. Check it scores at least what direct
+   did on the same tasks (6/16 on the first 16) with no crash, then submit that same kernel version, not a rebuild.
+7. One submission per day plus queue delays: submit early enough that a failed run can still be retried before the deadline.
 
 ## Hybrid mode (safe floor for a scored run)
 
