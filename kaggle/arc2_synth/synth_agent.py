@@ -485,7 +485,7 @@ def run_attempt(task, *, base_url, model, budget, deadline, tag="", max_turns=40
         if not ctl.rescue or att.events.get(key) or toks < ctl.rescue_min_tokens:
             return
         att.events[key] = why
-        emit("rescue", turn=len(att.turns) + 1, reason=f"{key}:{why}")
+        emit("rescue", turn=len(att.turns) + 1, reason=why if key == "rescue" else f"{key}:{why}")
         att.messages.append({"role": "user", "content": pre + prompt})
         info = {"turn": len(att.turns), key: why}
         att.turns.append(info)
